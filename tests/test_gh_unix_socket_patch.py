@@ -27,7 +27,8 @@ def run_gh(tmp_path, *args, env=None):
     clean = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("GH_") and k not in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+        if not k.startswith("GH_")
+        and k not in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
     }
     return subprocess.run(
         [GH, *args],
@@ -58,7 +59,12 @@ def test_rest_request_arrives_as_plain_http_with_the_real_host(short_tmp):
     proxy = FakeProxy(short_tmp / "s", {"login": "via-socket"})
     try:
         result = run_gh(
-            short_tmp, "api", "user", "--jq", ".login", env={"GH_HTTP_UNIX_SOCKET": str(short_tmp / "s")}
+            short_tmp,
+            "api",
+            "user",
+            "--jq",
+            ".login",
+            env={"GH_HTTP_UNIX_SOCKET": str(short_tmp / "s")},
         )
     finally:
         proxy.close()

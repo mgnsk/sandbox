@@ -44,7 +44,9 @@ def ask(name, text, show_cmd, width, height=None):
             f"tmux wait-for -S {channel}"
         )
         size = ["-w", str(width)] + (["-h", str(height)] if height else [])
-        with subprocess.Popen(["tmux", "display-popup", "-E", *size, popup_cmd]) as popup:
+        with subprocess.Popen(
+            ["tmux", "display-popup", "-E", *size, popup_cmd]
+        ) as popup:
 
             def watch_popup():
                 # A popup that fails to launch (e.g. no attached client) never

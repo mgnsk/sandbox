@@ -105,7 +105,9 @@ def gh(tmp_path_factory, github):
         server = proxy.ProxyServer(
             sock,
             REAL_TOKEN,
-            upstream=lambda host: http.client.HTTPConnection("127.0.0.1", port, timeout=10),
+            upstream=lambda host: http.client.HTTPConnection(
+                "127.0.0.1", port, timeout=10
+            ),
             confirm=confirm,
         )
         servers.append(server)
@@ -144,12 +146,22 @@ def test_rest_read_uses_the_real_token(gh):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "someone"
     [seen] = FakeGitHub.seen
-    assert (seen["host"], seen["headers"]["Authorization"]) == ("api.github.com", f"token {REAL_TOKEN}")
+    assert (seen["host"], seen["headers"]["Authorization"]) == (
+        "api.github.com",
+        f"token {REAL_TOKEN}",
+    )
     assert confirm.prompts == []
 
 
 def test_graphql_query_needs_no_prompt(gh):
-    result, confirm = gh("api", "graphql", "-f", "query={ viewer { login } }", "--jq", ".data.viewer.login")
+    result, confirm = gh(
+        "api",
+        "graphql",
+        "-f",
+        "query={ viewer { login } }",
+        "--jq",
+        ".data.viewer.login",
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "someone"
@@ -157,7 +169,9 @@ def test_graphql_query_needs_no_prompt(gh):
 
 
 def test_declined_write_fails_in_gh_and_never_reaches_github(gh):
-    result, confirm = gh("api", "-X", "POST", "repos/o/r/labels", "-f", "name=x", answer=None)
+    result, confirm = gh(
+        "api", "-X", "POST", "repos/o/r/labels", "-f", "name=x", answer=None
+    )
 
     assert result.returncode != 0
     assert "declined by user" in result.stderr
@@ -166,7 +180,9 @@ def test_declined_write_fails_in_gh_and_never_reaches_github(gh):
 
 
 def test_approved_write_goes_through(gh):
-    result, _ = gh("api", "-X", "POST", "repos/o/r/labels", "-f", "name=x", answer="once")
+    result, _ = gh(
+        "api", "-X", "POST", "repos/o/r/labels", "-f", "name=x", answer="once"
+    )
 
     assert result.returncode == 0, result.stderr
     [seen] = FakeGitHub.seen
@@ -178,7 +194,9 @@ def test_release_upload_sends_a_content_length(gh, tmp_path):
     asset = tmp_path / "asset.txt"
     asset.write_bytes(b"payload" * 1000)
 
-    result, confirm = gh("release", "upload", "v1", str(asset), "-R", "o/r", answer="always")
+    result, confirm = gh(
+        "release", "upload", "v1", str(asset), "-R", "o/r", answer="always"
+    )
 
     assert result.returncode == 0, result.stderr
     # gh looks the repo up with a GraphQL query (a read) first.

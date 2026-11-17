@@ -58,7 +58,9 @@ def test_no_tmux_skips_the_popup(monkeypatch):
     "written, answer",
     [("once\n", "once"), ("always\n", "always"), ("", None), ("garbage\n", None)],
 )
-def test_marker_decides_the_answer_and_temp_files_go(monkeypatch, created, tmux, written, answer):
+def test_marker_decides_the_answer_and_temp_files_go(
+    monkeypatch, created, tmux, written, answer
+):
     def fake_popen(_cmd):
         with open(created[0], "w", encoding="utf-8") as f:
             f.write(written)
@@ -112,7 +114,15 @@ def test_popup_size_and_prompt(monkeypatch, created, tmux):
 
 @pytest.mark.parametrize(
     "typed, answer",
-    [("y", "once"), ("Y", "once"), ("a", "always"), ("A", "always"), ("", None), ("n", None), ("yes", None)],
+    [
+        ("y", "once"),
+        ("Y", "once"),
+        ("a", "always"),
+        ("A", "always"),
+        ("", None),
+        ("n", None),
+        ("yes", None),
+    ],
 )
 def test_typed_answer_through_a_real_shell(monkeypatch, created, tmux, typed, answer):
     """Runs the popup's command for real, with `tmux` shadowed by a no-op."""
@@ -120,7 +130,10 @@ def test_typed_answer_through_a_real_shell(monkeypatch, created, tmux, typed, an
     def fake_popen(argv):
         popup_cmd = "tmux() { :; }; " + argv[-1]
         with REAL_POPEN(
-            ["bash", "-c", popup_cmd], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True
+            ["bash", "-c", popup_cmd],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            text=True,
         ) as shell:
             shell.communicate(typed + "\n")
         return FakePopup(shell.returncode)

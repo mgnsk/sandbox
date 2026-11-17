@@ -60,7 +60,9 @@ class ProxyServer(api_proxy.ProxyServer):
     name = "forgejo-api-proxy"
     popup_title = "Allow sandboxed Forgejo API write?"
 
-    def __init__(self, path, tokens=None, upstream=api_proxy.open_upstream, confirm=None):
+    def __init__(
+        self, path, tokens=None, upstream=api_proxy.open_upstream, confirm=None
+    ):
         super().__init__(path, upstream=upstream, confirm=confirm)
         self.tokens = tokens or (lambda: host_tokens(keys_path()))
 

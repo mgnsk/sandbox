@@ -92,7 +92,9 @@ def link_generation(home, generation):
         target = os.readlink(link)
         if (
             target.startswith(f"{store_dir}/")
-            and target[len(store_dir) + 1 :].split("/", 1)[0].endswith("-home-manager-files")
+            and target[len(store_dir) + 1 :]
+            .split("/", 1)[0]
+            .endswith("-home-manager-files")
             and not target.startswith(f"{home_files}/")
         ):
             link.unlink()

@@ -143,14 +143,18 @@ def cache_identities(payload):
             key_blob, offset = read_string(payload, offset)
             comment, offset = read_string(payload, offset)
             with IDENTITY_LOCK:
-                IDENTITY_COMMENTS[fingerprint(key_blob)] = comment.decode("utf-8", "replace")
+                IDENTITY_COMMENTS[fingerprint(key_blob)] = comment.decode(
+                    "utf-8", "replace"
+                )
     except (struct.error, IndexError):
         pass
 
 
 def peer_pid(sock):
     """PID of the process on the other end of a connected AF_UNIX socket."""
-    creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    creds = sock.getsockopt(
+        socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+    )
     pid, _uid, _gid = struct.unpack("3i", creds)
     return pid
 
@@ -261,7 +265,9 @@ def handle_client(client, upstream_path):
                 with IDENTITY_LOCK:
                     key_comment = IDENTITY_COMMENTS.get(key_fp)
                 if not is_commit_signature and not APPROVALS.approve(
-                    lambda: confirm_via_tmux(cwd, cmdline, key_comment)
+                    lambda key_comment=key_comment: confirm_via_tmux(
+                        cwd, cmdline, key_comment
+                    )
                 ):
                     write_frame(client, bytes([SSH_AGENT_FAILURE]))
                     continue
@@ -270,7 +276,9 @@ def handle_client(client, upstream_path):
             response = read_frame(upstream)
             if response is None:
                 break
-            is_identities_answer = response and response[0] == SSH_AGENT_IDENTITIES_ANSWER
+            is_identities_answer = (
+                response and response[0] == SSH_AGENT_IDENTITIES_ANSWER
+            )
             if msg_type == SSH_AGENTC_REQUEST_IDENTITIES and is_identities_answer:
                 cache_identities(response)
             write_frame(client, response)

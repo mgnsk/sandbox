@@ -30,7 +30,12 @@ class FakeForgejo(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
         self.seen.append(
-            {"method": self.command, "path": self.path, "headers": dict(self.headers), "body": body}
+            {
+                "method": self.command,
+                "path": self.path,
+                "headers": dict(self.headers),
+                "body": body,
+            }
         )
         out = json.dumps({"login": "someone", "path": self.path}).encode()
         self.send_response(200)
@@ -78,7 +83,9 @@ def test_tokens_come_from_every_login_type(tmp_path):
     assert proxy.host_tokens(keys) == {"a.example": "app", "b.example:3000": "oauth"}
 
 
-@pytest.mark.parametrize("content", [None, "", "not json", "[]", '{"hosts": []}', '{"hosts": {"a": 1}}'])
+@pytest.mark.parametrize(
+    "content", [None, "", "not json", "[]", '{"hosts": []}', '{"hosts": {"a": 1}}']
+)
 def test_missing_or_odd_keys_file_means_no_hosts(tmp_path, content):
     keys = tmp_path / "keys.json"
     if content is not None:
@@ -114,7 +121,9 @@ def make_proxy(tmp_path_factory, upstream):
         server = proxy.ProxyServer(
             path,
             tokens=lambda: dict(tokens),
-            upstream=lambda host: http.client.HTTPConnection("127.0.0.1", port, timeout=10),
+            upstream=lambda host: http.client.HTTPConnection(
+                "127.0.0.1", port, timeout=10
+            ),
             confirm=confirm,
         )
         threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
@@ -145,7 +154,9 @@ def request(sock_path, method, host, path, body=b"", headers=()):
 
 def test_read_gets_the_hosts_token_without_a_prompt(make_proxy):
     path, confirm = make_proxy({HOST: "real"})
-    status, _ = request(path, "GET", HOST, "/api/v1/user", headers=["Authorization: token fake"])
+    status, _ = request(
+        path, "GET", HOST, "/api/v1/user", headers=["Authorization: token fake"]
+    )
     assert status == 200
     [seen] = FakeForgejo.seen
     assert seen["headers"]["Authorization"] == "token real"
@@ -185,7 +196,9 @@ def test_a_login_on_the_host_applies_without_a_restart(make_proxy):
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
 def test_declined_write_never_reaches_upstream(make_proxy, method):
     path, confirm = make_proxy({HOST: "real"})
-    status, body = request(path, method, HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}')
+    status, body = request(
+        path, method, HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}'
+    )
     assert status == 403
     assert "declined by user" in json.loads(body)["message"]
     assert FakeForgejo.seen == []
@@ -194,7 +207,12 @@ def test_declined_write_never_reaches_upstream(make_proxy, method):
 
 def test_approved_write_goes_through_with_its_body(make_proxy):
     path, _ = make_proxy({HOST: "real"}, answer="once")
-    status, _ = request(path, "POST", HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}')
+    status, _ = request(
+        path, "POST", HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}'
+    )
     assert status == 200
     [seen] = FakeForgejo.seen
-    assert (seen["body"], seen["headers"]["Authorization"]) == (b'{"title":"x"}', "token real")
+    assert (seen["body"], seen["headers"]["Authorization"]) == (
+        b'{"title":"x"}',
+        "token real",
+    )

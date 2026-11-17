@@ -62,7 +62,7 @@ def test_graphql_queries_are_reads(query):
 @pytest.mark.parametrize(
     "query",
     [
-        "mutation { addStar(input: {starrableId: \"x\"}) { clientMutationId } }",
+        'mutation { addStar(input: {starrableId: "x"}) { clientMutationId } }',
         "subscription { viewer { login } }",
         # A mutation anywhere in the document counts, whichever operation
         # operationName selects.

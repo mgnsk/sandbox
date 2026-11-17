@@ -65,7 +65,9 @@ def test_everything_else_is_refused(url):
 
 @pytest.fixture(autouse=True)
 def fresh_approvals(monkeypatch):
-    monkeypatch.setattr(open_url_guard, "APPROVALS", open_url_guard.guard_popup.Approvals())
+    monkeypatch.setattr(
+        open_url_guard, "APPROVALS", open_url_guard.guard_popup.Approvals()
+    )
 
 
 def request(data, approve="once"):
@@ -214,7 +216,11 @@ def stub_guard(tmp_path):
 def run_shim(runtime_dir, *args):
     env = {**os.environ, "XDG_RUNTIME_DIR": str(runtime_dir)}
     return subprocess.run(
-        [sys.executable, str(SHIM), *args], env=env, capture_output=True, text=True, timeout=10
+        [sys.executable, str(SHIM), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
 
 
