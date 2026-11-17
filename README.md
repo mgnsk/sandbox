@@ -245,6 +245,24 @@ What to know:
   sandbox, so the project reaches it on `127.0.0.1` without `hostPorts`
   (that's for services on the host). Ports bound inside are reachable from
   the host's `127.0.0.1` too, e.g. to open a dev server in your browser.
+- **One sandbox per network.** Each `sandbox` run has its own network
+  namespace, so services from `devenv up` in one sandbox aren't on
+  `127.0.0.1` in another sandbox of the same project. The simplest fix is to
+  run everything in one sandbox: `devenv up -d` (detached) and then
+  `claude`, or tmux panes inside one `sandbox`. To reach them from a second
+  sandbox, go through the host: the first one's ports already show up on the
+  host's `127.0.0.1`, so give the second one those ports:
+
+  ```sh
+  sandbox devenv up                                               # first: services
+  SANDBOX_HOST_PORTS="5432 6379" sandbox devenv shell -- claude   # second
+  ```
+
+  Pass them only to the second sandbox, never through `hostPorts` in
+  sandbox.nix. That applies to both sandboxes, and the first one's port
+  would then be held for the forward, so its service fails with "address
+  in use". Each port can also be taken by only one sandbox (or host
+  service) on the host at a time.
 - **Containers: build inside, run elsewhere.** `devenv container build` is
   a nix build, so it works; running or loading the image doesn't, as there
   is no Docker daemon inside and rootless podman needs the user namespaces
@@ -413,12 +431,11 @@ profiles.audio = {
 ## Development
 
 ```sh
-nix develop
-pytest tests                                  # unit tests; real-sandbox ones skip
-SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox pytest tests   # on a real host
-nix flake check                               # the unit tests, as a nix build
-ruff check . && ruff format --check .         # lint and formatting
+make test             # everything: all tests against a fresh build, and lint
+make test K=host_port # only the pytest tests matching a -k filter, no lint
+make fmt              # format Python and nix files
 ```
 
-The real-sandbox tests need unprivileged user namespaces, so they skip inside
-a running sandbox.
+Each target enters the dev shell itself when run outside it. The real-sandbox
+tests need unprivileged user namespaces, so they skip inside a running
+sandbox: run `make test` on the host for the full suite.

@@ -1150,6 +1150,131 @@ def test_host_addresses_are_not_reachable(project_dir):
     assert not reached, f"host service reachable via host address(es) {reached}: {got}"
 
 
+SANDBOX_REPLY = b"sandbox-service"
+
+
+@contextlib.contextmanager
+def _sandbox_service(project_dir, tmp_path, port, extra_env=None):
+    """A sandbox of project_dir running a TCP listener on 127.0.0.1:port inside
+    that answers every connection with SANDBOX_REPLY, like a service from
+    `devenv up`. Yields once the host's 127.0.0.1:port reaches it (pasta's
+    `-t auto` forward); the sandbox stops on exit."""
+    code = (
+        "import socket\n"
+        "s = socket.socket()\n"
+        "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+        f"s.bind(('127.0.0.1', {port}))\n"
+        "s.listen()\n"
+        "while True:\n"
+        "    c, _ = s.accept()\n"
+        f"    c.sendall({SANDBOX_REPLY!r})\n"
+        "    c.close()\n"
+    )
+    # `read` holds the sandbox open until stdin closes, as in
+    # test_loopback_server_in_sandbox_is_reachable_from_host.
+    script = f"python3 -c \"$(cat <<'EOF'\n{code}EOF\n)\" &\nread -r _\n"
+    log = tmp_path / f"sandbox-service-{port}.log"
+    with log.open("w") as stderr:
+        proc = subprocess.Popen(
+            [SANDBOX],
+            env={
+                **os.environ,
+                "SANDBOX_STATE_DIR": str(project_dir.parent / "state"),
+                **(extra_env or {}),
+            },
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+            cwd=project_dir,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            proc.stdin.write(script)
+            proc.stdin.flush()
+            last = "no attempt made"
+            deadline = time.monotonic() + 30
+            while True:
+                assert proc.poll() is None, f"sandbox exited early:\n{log.read_text()}"
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=2) as c:
+                        got = c.recv(64)
+                    if got == SANDBOX_REPLY:
+                        break
+                    last = f"connected, then got {got!r}"
+                except OSError as e:
+                    last = f"{type(e).__name__}: {e}"
+                assert time.monotonic() < deadline, (
+                    f"the service in the sandbox never answered on the host's "
+                    f"127.0.0.1:{port}; last attempt: {last}\n"
+                    f"sandbox stderr:\n{log.read_text()}"
+                )
+                time.sleep(0.5)
+            yield
+        finally:
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+
+
+def test_service_in_one_sandbox_is_reachable_from_another_through_the_host(
+    project_dir, tmp_path
+):
+    """The README's devenv section: services from `devenv up` in one sandbox
+    aren't on another sandbox's 127.0.0.1 (each has its own netns), but the
+    second reaches them through the host when given the port in
+    SANDBOX_HOST_PORTS."""
+    port = _free_non_ephemeral_port(socket.AF_INET, "127.0.0.1")
+    if port is None:
+        pytest.skip("no free non-ephemeral port on 127.0.0.1 on this host")
+    with _sandbox_service(project_dir, tmp_path, port):
+        unlisted = _probe_from_sandbox(
+            project_dir, [("127.0.0.1", port)], {"SANDBOX_HOST_PORTS": ""}
+        )
+        listed = _probe_from_sandbox(
+            project_dir, [("127.0.0.1", port)], {"SANDBOX_HOST_PORTS": str(port)}
+        )
+    assert unlisted["127.0.0.1"] != SANDBOX_REPLY.decode(), (
+        "a second sandbox reached the first's service without SANDBOX_HOST_PORTS - "
+        "sandboxes of a project are expected to have separate netns"
+    )
+    assert listed["127.0.0.1"] == SANDBOX_REPLY.decode(), (
+        f"a second sandbox with SANDBOX_HOST_PORTS={port} didn't reach the first's "
+        f"service through the host: {listed}"
+    )
+
+
+def test_listed_host_port_cannot_be_bound_inside(project_dir):
+    """The README's devenv section warns against `hostPorts` for a port a
+    service in the same sandbox listens on: pasta holds a listed port inside
+    to forward it to the host, so the service gets "address in use"."""
+    port = _free_non_ephemeral_port(socket.AF_INET, "127.0.0.1")
+    if port is None:
+        pytest.skip("no free non-ephemeral port on 127.0.0.1 on this host")
+    script = (
+        "python3 - <<'PYEOF'\n"
+        "import socket\n"
+        "s = socket.socket()\n"
+        "try:\n"
+        f"    s.bind(('127.0.0.1', {port}))\n"
+        "    print('BOUND')\n"
+        "except OSError as e:\n"
+        "    print('FAILED', e.errno == __import__('errno').EADDRINUSE)\n"
+        "PYEOF\n"
+    )
+    result = run_sandbox(
+        script, cwd=project_dir, extra_env={"SANDBOX_HOST_PORTS": str(port)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "FAILED True", (
+        f"binding listed host port {port} inside gave {result.stdout.strip()!r}, "
+        f"expected address in use - the README's hostPorts warning is wrong"
+    )
+
+
 @pytest.mark.parametrize("bad", ["0", "70000", "10-5", "abc", "22/sctp"])
 def test_bad_host_ports_stop_the_sandbox(project_dir, bad):
     result = run_sandbox(
