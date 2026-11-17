@@ -46,14 +46,14 @@ it every guarded request is refused.
 Standalone:
 
 ```sh
-nix profile add git+ssh://git@forgejo.tiffany-sirius.ts.net/mgnsk/sandbox
+nix profile add github:mgnsk/sandbox
 ```
 
 With home-manager:
 
 ```nix
 {
-  inputs.sandbox.url = "git+ssh://git@forgejo.tiffany-sirius.ts.net/mgnsk/sandbox";
+  inputs.sandbox.url = "github:mgnsk/sandbox";
   inputs.sandbox.inputs.nixpkgs.follows = "nixpkgs";
   # ...
   modules = [
