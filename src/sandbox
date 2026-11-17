@@ -1,0 +1,582 @@
+"""Runs a command (default: a login bash) in a per-project sandbox.
+
+bwrap + pasta + seccomp, with guard proxies on the host for ssh-agent, a
+Secret Service, the GitHub and Forgejo APIs and opening URLs. See SECURITY.md
+for the threat model; the reasoning for individual flags is next to them here.
+
+Started by the `sandbox` wrapper nix builds, as
+`python3 -E -s sandbox CONFIG.json [COMMAND...]`. Everything it runs - bwrap,
+pasta, the guards, the environment inside - comes from store paths in
+CONFIG.json, never from the host's PATH.
+"""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import ExitStack
+from pathlib import Path
+from string import Template
+
+
+class SandboxError(Exception):
+    """A reason not to start, printed as `sandbox: <message>`."""
+
+
+# -- paths ------------------------------------------------------------------
+
+
+def expand(value, variables):
+    """value with a leading ~ and $VAR/${VAR} references from variables
+    expanded; unknown variables are left as they are."""
+    if value == "~" or value.startswith("~/"):
+        value = "$HOME" + value[1:]
+    return Template(value).safe_substitute(variables)
+
+
+def check_cwd(cwd, home):
+    """Refuse directories the read-write project bind must never cover."""
+    # $PWD is bound read-write; in ~ (or above it) that would be the whole
+    # host home over the volume.
+    if f"{home}/".startswith(f"{cwd.rstrip('/')}/"):
+        raise SandboxError(f"refusing to run in {cwd}, it contains $HOME")
+    # The dot directories directly under ~ hold host state no sandbox should
+    # write: ssh keys and config, every sandbox's volume, secrets and
+    # exchange dir, the gh token, an ssh agent socket, ...
+    if f"{cwd}/".startswith(f"{home}/."):
+        raise SandboxError(f"refusing to run in {cwd}, it is host state under $HOME")
+
+
+def check_outside(cwd, state_dir):
+    """The state dir holds every sandbox's volume and secrets."""
+    if f"{cwd}/".startswith(f"{state_dir.rstrip('/')}/") or f"{state_dir}/".startswith(f"{cwd}/"):
+        raise SandboxError(f"refusing to run in {cwd}, it overlaps the sandbox state dir {state_dir}")
+
+
+def project_root(cwd):
+    """The enclosing git work tree's top level (where .git is, as a directory
+    or a worktree's file), or cwd itself outside one.
+
+    Found by looking, not by running git: git on the host reads the repo's
+    config, which the sandbox can write.
+    """
+    path = Path(cwd)
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return str(candidate)
+    return cwd
+
+
+def volume_name(project):
+    """Per-project name: the path made flat, plus a hash so that flattening
+    can't make two projects collide."""
+    digest = hashlib.sha256(project.encode()).hexdigest()[:8]
+    return project.replace("/", "_") + f"-{digest}"
+
+
+# -- host ports -------------------------------------------------------------
+
+HOST_PORT_RE = re.compile(r"^([0-9]{1,5})(-([0-9]{1,5}))?(/(tcp|udp))?$")
+
+
+def parse_host_ports(specs):
+    """(tcp, udp) port lists for pasta's -T/-U from entries like 5037,
+    8080/udp or 9000-9010."""
+    tcp, udp = [], []
+    for spec in specs:
+        m = HOST_PORT_RE.match(spec)
+        if not m:
+            raise SandboxError(f"bad SANDBOX_HOST_PORTS entry '{spec}' (want PORT[-PORT][/tcp|/udp])")
+        first = int(m.group(1))
+        last = int(m.group(3) or first)
+        if first < 1 or last > 65535 or last < first:
+            raise SandboxError(f"bad SANDBOX_HOST_PORTS range '{spec}' (ports are 1-65535)")
+        ports = str(first) if first == last else f"{first}-{last}"
+        (udp if m.group(5) == "udp" else tcp).append(ports)
+    return tcp, udp
+
+
+def host_port_specs(configured, environ):
+    """The configured ports plus SANDBOX_HOST_PORTS from the host's
+    environment - never from inside, since --clearenv keeps it out."""
+    return [*configured, *environ.get("SANDBOX_HOST_PORTS", "").replace(",", " ").split()]
+
+
+# -- profiles ---------------------------------------------------------------
+
+
+def select_profile(config, cwd, project, variables):
+    """The highest-priority profile matching cwd (by path prefix) or the
+    project (by a file in its root), else the default one."""
+    best = None
+    for profile in config["profiles"]:
+        paths = [expand(p, variables).rstrip("/") for p in profile["paths"]]
+        matches = any(f"{cwd}/".startswith(f"{p}/") for p in paths) or any(
+            os.path.lexists(os.path.join(project, f)) for f in profile["projectFiles"]
+        )
+        if matches and (best is None or profile["priority"] > best["priority"]):
+            best = profile
+    return best or config["default"]
+
+
+# -- bwrap arguments --------------------------------------------------------
+
+
+def bind_args(binds, variables, project, cwd):
+    """bwrap args for the profile's extra binds and the project. Returns
+    (args, project_bound)."""
+    args = []
+    project_bound = False
+    for bind in binds:
+        src = os.path.realpath(expand(bind["src"], variables))
+        dst = expand(bind["dst"], variables) if bind["dst"] else src
+        if bind["writableWhenProject"] and src == project:
+            # Bound whole, rather than just $PWD, so starting in a
+            # subdirectory still gets .git.
+            args += ["--bind", src, dst]
+            project_bound = True
+            continue
+        flag = "--bind" if bind["mode"] == "rw" else "--ro-bind"
+        args += [flag + ("-try" if bind["optional"] else ""), src, dst]
+        if bind["hideGit"] and os.path.isdir(os.path.join(src, ".git")):
+            # Its history, with whatever was ever committed and removed
+            # again, is none of another project's business.
+            args += ["--tmpfs", os.path.join(dst, ".git")]
+    if not project_bound:
+        args += ["--bind", cwd, cwd]
+    return args, project_bound
+
+
+def base_args(config, env):
+    """Namespaces, environment and the filesystem every sandbox has."""
+    fhs = config["fhs"]
+    args = [
+        # Includes --unshare-pid, so a sandbox shows up as two bwrap processes
+        # on the host: the outer one waits in the host's pid namespace to relay
+        # the exit status, the inner one is pid 1 inside, reaping zombies and
+        # forwarding signals.
+        "--unshare-all",
+        "--unshare-user",
+        "--disable-userns",
+        # pasta maps the invoking user to uid 0 in its own userns; pin the
+        # real uid/gid so bwrap doesn't inherit that and look like real root.
+        "--uid", str(os.getuid()),
+        "--gid", str(os.getgid()),
+        # Retains the netns bwrap starts in - a fresh one from pasta, not the
+        # host's. Sharing the host's would also expose its abstract AF_UNIX
+        # namespace (e.g. @/tmp/.X11-unix/X0, which Xwayland accepts
+        # unauthenticated local connections on).
+        "--share-net",
+        "--die-with-parent",
+        "--cap-drop", "ALL",
+        # Otherwise the host env passes through untouched, e.g. a GitHub token
+        # in the host shell would reach the API directly, bypassing the gh
+        # write popups.
+        "--clearenv",
+    ]  # fmt: skip
+    for name, value in env.items():
+        args += ["--setenv", name, value]
+
+    args += [
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--tmpfs", "/tmp",
+        "--tmpfs", env["XDG_RUNTIME_DIR"],
+        # Read-only is enough for builds to land in the host store: the
+        # daemon socket stays connectable on a ro mount, and the host's
+        # nix-daemon does the actual store writes.
+        "--ro-bind", "/nix", "/nix",
+        # Nothing of the host's /usr, /bin or /lib: the few fixed paths
+        # programs expect, from the store.
+        "--ro-bind", fhs["bin"], "/bin",
+        "--ro-bind", fhs["usrBin"], "/usr/bin",
+        "--ro-bind", fhs["nixLd"], fhs["ldPath"],
+        "--ro-bind", fhs["ssl"], "/etc/ssl",
+    ]  # fmt: skip
+    for path in config["hostEtc"]:
+        args += ["--ro-bind-try", path, path]
+    return args
+
+
+# -- guards -----------------------------------------------------------------
+
+
+class Guards:
+    """Host-side guard processes and their temp dirs, torn down on close.
+
+    An "always" answer to any guard's popup lives in that guard's memory, so
+    it ends with this sandbox.
+    """
+
+    def __init__(self, config):
+        self.config = config
+        self.procs = []
+        self.dirs = []
+        self.env = dict(os.environ)
+        # tmux, gh, xdg-open, ... from the store first; the host's PATH after,
+        # for what xdg-open hands URLs to (the browser).
+        self.env["PATH"] = config["hostPath"] + ":" + os.environ.get("PATH", "")
+        self.env.pop("PYTHONPATH", None)
+
+    def tempdir(self):
+        path = tempfile.mkdtemp(prefix="sandbox-")
+        self.dirs.append(path)
+        return path
+
+    def start(self, argv):
+        proc = subprocess.Popen(argv, env=self.env)
+        self.procs.append(proc)
+        return proc
+
+    def guard(self, name, *args):
+        python = self.config["python"]
+        return self.start([python, "-E", "-s", os.path.join(self.config["src"], name), *args])
+
+    def wait_for(self, path, proc, what, timeout=5.0):
+        """Wait for proc to create path. Failing here names the guard, rather
+        than leaving bwrap to trip over a missing bind source."""
+        deadline = time.monotonic() + timeout
+        while not os.path.exists(path):
+            if proc.poll() is not None:
+                raise SandboxError(f"{what} exited with status {proc.returncode}")
+            if time.monotonic() > deadline:
+                raise SandboxError(f"{what} didn't start ({path} missing)")
+            time.sleep(0.05)
+
+    def close(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in self.procs:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        for path in self.dirs:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def ssh_agent_args(guards, cfg, variables):
+    """Sandboxed processes only see this proxy's socket, never the real one -
+    sign requests other than commit signing are gated behind a popup."""
+    socket_path = expand(cfg["socket"], variables) if cfg["socket"] else os.environ.get("SSH_AUTH_SOCK")
+    if not socket_path:
+        print("sandbox: no ssh agent ($SSH_AUTH_SOCK unset), none inside", file=sys.stderr)
+        return []
+    sock = os.path.join(guards.tempdir(), "agent.sock")
+    proc = guards.guard("ssh-agent-guard", socket_path, sock)
+    guards.wait_for(sock, proc, "ssh-agent-guard")
+    inside = expand(cfg["path"], variables)
+    return ["--bind", sock, inside, "--setenv", "SSH_AUTH_SOCK", inside]
+
+
+BUS_CONF = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path={sock}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"""
+
+
+def secret_service_args(guards, volume_dir, runtime_dir):
+    """Private, ephemeral D-Bus bus with a fake Secret Service, so credentials
+    go through libsecret instead of plaintext files. The database itself is
+    never bound in, only the socket, so it's only reachable through the API."""
+    tmp = guards.tempdir()
+    sock = os.path.join(tmp, "bus.sock")
+    conf = os.path.join(tmp, "bus.conf")
+    ready = os.path.join(tmp, "ready")
+    # The database holds credentials in plaintext; secret-service-guard keeps
+    # the file itself at 0600, this keeps the directory around it as private.
+    os.makedirs(volume_dir, exist_ok=True)
+    os.chmod(volume_dir, 0o700)
+    db = os.path.join(volume_dir, "secrets.sqlite3")
+    Path(conf).write_text(BUS_CONF.format(sock=sock), encoding="utf-8")
+
+    bus = guards.start([guards.config["dbusDaemon"], f"--config-file={conf}", "--nofork", "--nopidfile"])
+    guard = guards.guard("secret-service-guard", f"unix:path={sock}", db, ready)
+    guards.wait_for(sock, bus, "dbus-daemon")
+    guards.wait_for(ready, guard, "secret-service-guard")
+    inside = f"{runtime_dir}/bus"
+    return ["--bind", sock, inside, "--setenv", "DBUS_SESSION_BUS_ADDRESS", f"unix:path={inside}"]
+
+
+def github_args(guards, runtime_dir):
+    """gh inside (patched to send its API requests over GH_HTTP_UNIX_SOCKET)
+    has just a placeholder token; gh-api-proxy, out here, swaps in the host's
+    real one and gates writes behind a popup. One host token for every
+    sandbox - per-sandbox OAuth logins hit GitHub's cap on simultaneously
+    valid tokens."""
+    sock = os.path.join(guards.tempdir(), "gh-api.sock")
+    proc = guards.guard("gh-api-proxy", sock)
+    try:
+        guards.wait_for(sock, proc, "gh-api-proxy")
+    except SandboxError as e:
+        print(f"sandbox: {e} - gh inside has no API access", file=sys.stderr)
+        return []
+    inside = f"{runtime_dir}/gh-api.sock"
+    return [
+        "--bind", sock, inside,
+        "--setenv", "GH_HTTP_UNIX_SOCKET", inside,
+        # Only so gh considers itself logged in; never a real credential.
+        "--setenv", "GH_TOKEN", "sandbox-placeholder",
+    ]  # fmt: skip
+
+
+def forgejo_args(guards, runtime_dir):
+    """The same for fj: forgejo-api-proxy adds the token the host's fj is
+    logged in with, read per request, so no login is needed to start."""
+    sock = os.path.join(guards.tempdir(), "forgejo-api.sock")
+    proc = guards.guard("forgejo-api-proxy", sock)
+    guards.wait_for(sock, proc, "forgejo-api-proxy")
+    inside = f"{runtime_dir}/forgejo-api.sock"
+    return ["--bind", sock, inside, "--setenv", "FJ_HTTP_UNIX_SOCKET", inside]
+
+
+def open_url_args(guards, runtime_dir):
+    """No display in here, so xdg-open (/usr/bin/xdg-open, the shim) hands
+    http(s) URLs to open-url-guard, which opens them in the host's browser
+    behind a popup."""
+    sock = os.path.join(guards.tempdir(), "open-url.sock")
+    proc = guards.guard("open-url-guard", sock)
+    guards.wait_for(sock, proc, "open-url-guard")
+    # BROWSER because Python's webbrowser doesn't try xdg-open without a
+    # display variable, and npm's open honors it when it can't detect a
+    # desktop.
+    return [
+        "--bind", sock, f"{runtime_dir}/open-url.sock",
+        "--setenv", "BROWSER", "/usr/bin/xdg-open",
+    ]  # fmt: skip
+
+
+def exchange_args(volume_dir):
+    """Drop box for output of commands the user runs on the host, read back
+    instead of pasted. Bound at its host path so a command naming
+    $SANDBOX_EXCHANGE's value runs verbatim on either side.
+
+    Read-only: only the host writes here, and a symlink a sandbox planted
+    would point that write at any host file. Links left from when it was
+    read-write are dropped.
+    """
+    exchange = os.path.join(volume_dir, "exchange")
+    os.makedirs(exchange, exist_ok=True)
+    os.chmod(exchange, 0o700)
+    for entry in Path(exchange).rglob("*"):
+        if entry.is_symlink():
+            entry.unlink()
+    return ["--ro-bind", exchange, exchange, "--setenv", "SANDBOX_EXCHANGE", exchange]
+
+
+# -- network ----------------------------------------------------------------
+
+
+def host_addresses(ip):
+    """The host's global addresses, which get prohibit routes inside."""
+    out = subprocess.run(
+        [ip, "-o", "addr", "show", "scope", "global"], capture_output=True, text=True, check=True
+    ).stdout
+    return [line.split()[3].split("/")[0] for line in out.splitlines() if len(line.split()) > 3]
+
+
+# Run by pasta, inside its netns, before bwrap: adds the prohibit routes while
+# it still has pasta's CAP_NET_ADMIN (bwrap drops it, so the sandbox can't
+# remove them), and opens the seccomp filter - here rather than in the
+# launcher, since pasta closes inherited fds past stdio before running it.
+PASTA_INNER = """
+set -e
+ip=$1 seccomp=$2 n=$3
+shift 3
+for addr in "${@:1:n}"; do
+	"$ip" route replace prohibit "$addr"
+done
+shift "$n"
+exec 10<"$seccomp"
+exec "$@"
+"""
+
+
+def pasta_argv(config, tcp, udp, addrs, bwrap_args):
+    """pasta creates a fresh net namespace with a userspace TAP and runs
+    bwrap inside it; --config-net has pasta assign address/route/DNS.
+
+    Ports bound inside are forwarded to the host's 127.0.0.1 (the explicit
+    range because a bare `-t auto` skips the ephemeral range, where an OAuth
+    login's callback listener binds); --host-lo-to-ns-lo delivers them to the
+    namespace's loopback, so dev servers on 127.0.0.1 accept them. The host
+    side binds 127.0.0.1 only: on *:port a browser opening localhost tries
+    ::1 first, gets accepted, then reset.
+
+    The other direction is closed except for the listed host ports: -T/-U
+    mirror only those, --map-host-loopback/--map-guest-addr none remove the
+    addresses pasta would translate to the host, and the host's own
+    addresses get prohibit routes (a snapshot at start).
+    """
+    tools = config["tools"]
+    return [
+        tools["pasta"], "--config-net", "--host-lo-to-ns-lo",
+        "-t", "127.0.0.1/1-65535,auto",
+        "-T", ",".join(tcp) or "none",
+        "-U", ",".join(udp) or "none",
+        "--map-host-loopback", "none",
+        "--map-guest-addr", "none",
+        "--",
+        tools["bash"], "-c", PASTA_INNER, "bash",
+        tools["ip"], config["seccomp"], str(len(addrs)), *addrs,
+        tools["bwrap"], "--seccomp", "10", *bwrap_args,
+    ]  # fmt: skip
+
+
+def run(argv):
+    """Run argv in the foreground; return its exit status.
+
+    SIGINT reaches the whole foreground process group anyway, so it's only
+    kept from killing the launcher before cleanup. A handler rather than
+    SIG_IGN: an ignored signal stays ignored across exec.
+    """
+    proc = subprocess.Popen(argv)
+
+    def forward(signum, _frame):
+        if proc.poll() is None:
+            proc.send_signal(signum)
+
+    signal.signal(signal.SIGINT, lambda *_: None)
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGHUP, forward)
+    return proc.wait()
+
+
+# -- main -------------------------------------------------------------------
+
+
+def inside_env(config, profile, variables, environ):
+    """The environment inside: passed-through host vars, then the profile's
+    own (PATH included), with $HOME etc. expanded."""
+    env = {
+        "HOME": variables["HOME"],
+        "USER": variables["USER"],
+        "LOGNAME": variables["USER"],
+        "XDG_RUNTIME_DIR": variables["XDG_RUNTIME_DIR"],
+    }
+    for name in config["passEnv"]:
+        if name in environ:
+            env[name] = environ[name]
+    for name, value in profile["env"].items():
+        env[name] = expand(value, variables)
+    return env
+
+
+def main(argv):
+    config = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+    command = argv[2:]
+
+    # Physical, so a symlink to ~ can't slip past the checks, and the binds
+    # name the real path.
+    cwd = os.getcwd()
+    os.chdir(cwd)
+    home = os.path.realpath(os.environ["HOME"])
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(os.getuid())
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    variables = {"HOME": home, "USER": user, "XDG_RUNTIME_DIR": runtime_dir}
+
+    state_dir = os.environ.get("SANDBOX_STATE_DIR") or config["stateDir"]
+    if state_dir:
+        state_dir = expand(state_dir, {**os.environ, **variables})
+    else:
+        state_dir = os.path.join(os.environ.get("XDG_DATA_HOME") or f"{home}/.local/share", "sandbox")
+    state_dir = os.path.realpath(state_dir)
+    check_cwd(cwd, home)
+    check_outside(cwd, state_dir)
+
+    project = project_root(cwd)
+    volume_dir = os.path.join(state_dir, volume_name(project))
+    # Per-project persistent $HOME, nested at $HOME's own path inside the
+    # volume dir, so secrets.sqlite3 and exchange/ next to it stay out of
+    # reach. Only ever written from inside the sandbox (sandbox-init) - the
+    # sandbox can plant symlinks in it, which host-side writes would follow.
+    home_volume = volume_dir + home
+    os.makedirs(home_volume, exist_ok=True)
+
+    tcp, udp = parse_host_ports(host_port_specs(config["hostPorts"], os.environ))
+    profile = select_profile(config, cwd, project, variables)
+
+    if not os.access(config["seccomp"], os.R_OK):
+        raise SandboxError(f"missing seccomp filter {config['seccomp']}")
+
+    env = inside_env(config, profile, variables, os.environ)
+    args = base_args(config, env)
+    # Must precede every mount under $HOME - bwrap layers mounts in argv
+    # order, so those narrower binds shadow the volume, not the other way
+    # round.
+    args += ["--bind", home_volume, home]
+
+    guards_cfg = config["guards"]
+    with ExitStack() as stack:
+        guards = Guards(config)
+        stack.callback(guards.close)
+        # Cleanup on SIGTERM/SIGHUP arriving during startup too.
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, lambda signum, _f: sys.exit(128 + signum))
+
+        if guards_cfg["sshAgent"]["enable"]:
+            args += ssh_agent_args(guards, guards_cfg["sshAgent"], variables)
+            # The hosts the host already trusts, where ssh reads system-wide
+            # config; the volume's own ~/.ssh/known_hosts stays writable.
+            args += ["--ro-bind-try", f"{home}/.ssh/known_hosts", "/etc/ssh/ssh_known_hosts"]
+        if guards_cfg["secretService"]:
+            args += secret_service_args(guards, volume_dir, runtime_dir)
+        if guards_cfg["github"]:
+            args += github_args(guards, runtime_dir)
+        if guards_cfg["forgejo"]:
+            args += forgejo_args(guards, runtime_dir)
+        if guards_cfg["openUrl"]:
+            args += open_url_args(guards, runtime_dir)
+
+        # Claude Code's managed settings, memory and MCP servers: managed
+        # settings outrank user/project/local ones, so ~/.claude in the
+        # volume can't override them.
+        if profile["claudeDir"]:
+            args += ["--ro-bind", profile["claudeDir"], "/etc/claude-code"]
+
+        args += exchange_args(volume_dir)
+        binds, _ = bind_args(profile["binds"], variables, project, cwd)
+        args += binds
+
+        # sandbox-init links the nix profile and home-manager generation into
+        # the volume, then execs the login shell; --login reads
+        # .bash_profile/.profile, and the exec trick runs a given command
+        # after that same chain.
+        init = config["init"]
+        args += ["--chdir", cwd, config["python"], "-E", "-s", init["script"]]
+        args += [os.path.realpath(p) if os.path.lexists(p) else "" for p in (
+            f"{home}/.nix-profile" if init["nixProfile"] else "",
+            f"{home}/.local/state/nix/profiles/home-manager" if init["homeManager"] else "",
+        )]  # fmt: skip
+        shell = config["tools"]["shell"]
+        if command:
+            args += [shell, "--login", "-c", 'exec "$@"', "bash", *command]
+        else:
+            args += [shell, "--login"]
+
+        addrs = host_addresses(config["tools"]["ip"])
+        return run(pasta_argv(config, tcp, udp, addrs, args))
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except SandboxError as e:
+        print(f"sandbox: {e}", file=sys.stderr)
+        sys.exit(1)

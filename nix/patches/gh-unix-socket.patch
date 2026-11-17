@@ -1,0 +1,20 @@
+--- a/api/http_client.go
++++ b/api/http_client.go
+@@ -6,6 +6,7 @@
+ 	"io"
+ 	"net/http"
+ 	"net/url"
++	"os"
+ 	"strings"
+ 	"time"
+ 
+@@ -68,6 +69,9 @@
+ 		AuthToken:          "none",
+ 		LogIgnoreEnv:       true,
+ 		SkipDefaultHeaders: opts.SkipDefaultHeaders,
++		// Local patch (~/nix/gh-unix-socket.patch): route every request
++		// through this socket as plain HTTP, for bin/sandbox's API proxy.
++		UnixDomainSocket: os.Getenv("GH_HTTP_UNIX_SOCKET"),
+ 	}
+ 
+ 	debugEnabled, debugValue := utils.IsDebugEnabled()

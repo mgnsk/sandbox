@@ -1,0 +1,139 @@
+"""Run by the sandbox launcher inside the sandbox, before the login shell.
+
+    sandbox-init NIX_PROFILE HM_GENERATION COMMAND...
+
+Links the host's nix profile and current home-manager generation into the
+per-project home volume (either may be empty for none), then execs COMMAND.
+
+Each link points at the generation's store path, so a home-manager switch on
+the host takes effect at the next start of a sandbox of the project. Files
+added since the last start get linked here, and links into any other
+generation get removed - nothing to list by hand.
+
+Run in here rather than on the host, since the volume is the sandbox's to
+rearrange: a symlink planted in it would point host-side writes at real host
+paths, while in here it only reaches what the sandbox can already write.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+
+def warn(message):
+    print(f"sandbox-init: {message}", file=sys.stderr)
+
+
+def relink(path, target):
+    """Make path a symlink to target, replacing a file or link there."""
+    tmp = path.with_name(f".{path.name}.sandbox-init")
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    tmp.symlink_to(target)
+    os.replace(tmp, path)
+
+
+def mount_points(home):
+    """Mounts over the volume under home - not its own, and may be whole
+    repos."""
+    mounts = set()
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return mounts
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4:
+            # mountinfo escapes space, tab, newline and backslash as octal.
+            mount = fields[4].encode().decode("unicode_escape")
+            if mount.startswith(f"{home}/"):
+                mounts.add(mount)
+    return mounts
+
+
+def walk_links(home, skip):
+    """Every symlink under home, not descending into skip or through links."""
+    for root, dirs, files in os.walk(home):
+        dirs[:] = [d for d in dirs if os.path.join(root, d) not in skip]
+        for name in dirs + files:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                yield Path(path)
+
+
+def generation_files(home_files):
+    """Paths relative to home_files of every file or link in it, not
+    descending through links."""
+    out = []
+    for root, dirs, files in os.walk(home_files):
+        for name in list(dirs):
+            if os.path.islink(os.path.join(root, name)):
+                dirs.remove(name)
+                files.append(name)
+        for name in files:
+            out.append(os.path.relpath(os.path.join(root, name), home_files))
+    return sorted(out)
+
+
+def link_generation(home, generation):
+    """Link every file of generation's home-files into home."""
+    # For tools that diff a build against the current generation.
+    profiles = home / ".local/state/nix/profiles"
+    profiles.mkdir(parents=True, exist_ok=True)
+    relink(profiles / "home-manager", generation)
+
+    home_files = Path(os.path.realpath(generation / "home-files"))
+    store_dir = str(home_files.parent)
+
+    # Only a link this script made; anything else is the volume's own.
+    # Matched by name, since an old generation may be garbage-collected.
+    for link in walk_links(str(home), mount_points(str(home))):
+        target = os.readlink(link)
+        if (
+            target.startswith(f"{store_dir}/")
+            and target[len(store_dir) + 1 :].split("/", 1)[0].endswith("-home-manager-files")
+            and not target.startswith(f"{home_files}/")
+        ):
+            link.unlink()
+
+    for rel in generation_files(home_files):
+        dst = home / rel
+        src = home_files / rel
+        if dst.is_symlink() and os.readlink(dst) == str(src):
+            continue
+        if dst.is_dir() and not dst.is_symlink():
+            try:
+                dst.rmdir()
+            except OSError:
+                warn(f"not linking ~/{rel}, a non-empty directory is in the way")
+                continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            relink(dst, src)
+        except OSError as e:
+            warn(f"not linking ~/{rel}: {e.strerror}")
+
+
+def main(argv):
+    nix_profile, generation, command = argv[1], argv[2], argv[3:]
+    home = Path(os.environ["HOME"])
+
+    if nix_profile:
+        relink(home / ".nix-profile", nix_profile)
+    if generation and os.path.isdir(generation):
+        link_generation(home, Path(generation))
+
+    # `gh pr checkout` of a PR from a fork with no matching remote builds the
+    # fetch URL from git_protocol; https would only carry the placeholder
+    # token, ssh goes through ssh-agent-guard. Written only into a fresh
+    # volume - an existing gh config there is the sandbox's own.
+    gh_config = home / ".config/gh/config.yml"
+    if not gh_config.exists() and not gh_config.is_symlink():
+        gh_config.parent.mkdir(parents=True, exist_ok=True)
+        gh_config.write_text("git_protocol: ssh\n", encoding="utf-8")
+
+    os.execvp(command[0], command)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

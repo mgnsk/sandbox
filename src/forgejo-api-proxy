@@ -1,0 +1,92 @@
+#!/bin/env python3
+"""Forgejo API proxy for the sandbox.
+
+Runs outside the sandbox, listening on a private socket that the sandbox launcher
+binds in. The sandbox's fj (forgejo-cli, its forgejo-api crate patched to
+honour FJ_HTTP_UNIX_SOCKET, see nix/patches/forgejo-api-unix-socket.patch)
+sends every API request here as plain HTTP, without a token. This proxy adds
+the host fj's token, which never enters the sandbox, and per request (the
+mechanics are api_proxy.py's):
+
+  - GET/HEAD are forwarded as-is;
+  - everything else waits for the user's approval in a tmux popup.
+
+Only hosts the host's fj is logged in to are forwarded, over HTTPS. Their
+tokens are read from the host's keys.json for each request, so a login on the
+host (`fj auth add-token`) reaches running sandboxes without a restart.
+"""
+
+import json
+import os
+import re
+import signal
+import sys
+from pathlib import Path
+
+import api_proxy
+
+HOST_RE = re.compile(r"^[a-z0-9.-]+(:[0-9]+)?$")
+
+
+def keys_path():
+    """The host fj's keys.json (directories::ProjectDirs' data dir)."""
+    data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
+    return Path(data) / "forgejo-cli" / "keys.json"
+
+
+def host_tokens(path):
+    """{host[:port]: token} for every instance logged in to in keys.json at
+    path; empty if it's missing or unreadable. fj keys hosts by
+    host[:port][/subpath]; requests only carry host[:port]."""
+    try:
+        keys = json.loads(Path(path).read_text(encoding="utf-8"))
+        hosts = keys["hosts"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    tokens = {}
+    if not isinstance(hosts, dict):
+        return tokens
+    for name, login in hosts.items():
+        token = login.get("token") if isinstance(login, dict) else None
+        if isinstance(token, str) and token:
+            tokens[name.split("/", 1)[0].lower()] = token
+    return tokens
+
+
+class ProxyServer(api_proxy.ProxyServer):
+    """forgejo-api-proxy's policy over api_proxy's server; tokens (a callable
+    returning {host: token}), upstream and confirm are injectable for tests."""
+
+    name = "forgejo-api-proxy"
+    popup_title = "Allow sandboxed Forgejo API write?"
+
+    def __init__(self, path, tokens=None, upstream=api_proxy.open_upstream, confirm=None):
+        super().__init__(path, upstream=upstream, confirm=confirm)
+        self.tokens = tokens or (lambda: host_tokens(keys_path()))
+
+    def host_allowed(self, host):
+        return bool(HOST_RE.match(host)) and host in self.tokens()
+
+    def host_refusal(self, host):
+        return (
+            f"not logged in to {host} on the host - run `fj --host {host} auth add-token`"
+            " there, outside the sandbox"
+        )
+
+    def authorization(self, host):
+        token = self.tokens().get(host)
+        return f"token {token}" if token else None
+
+
+def main():
+    """Serve on argv[1] until killed."""
+    listen_path = sys.argv[1]
+    if os.path.exists(listen_path):
+        os.unlink(listen_path)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    with ProxyServer(listen_path) as server:
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
