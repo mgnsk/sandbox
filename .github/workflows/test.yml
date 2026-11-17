@@ -41,4 +41,8 @@ jobs:
       - name: Build sandbox
         run: echo "SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox" >> "$GITHUB_ENV"
       - name: pytest
+        # install-nix-action points TMPDIR at /home/runner/work/_temp, which
+        # makes the tests' unix socket paths exceed the 108-byte limit.
+        env:
+          TMPDIR: /tmp
         run: nix develop -c pytest -v -rs tests
