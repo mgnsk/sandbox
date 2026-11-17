@@ -168,3 +168,38 @@ def test_skips_mounts_over_the_volume(env, monkeypatch):
     init.link_generation(home, home.parent / "store" / "b-home-manager-generation")
     assert (mounted / "link").is_symlink()
     assert (home / ".bashrc").read_text() == "b\n"
+
+
+def test_links_known_marketplaces_to_the_managed_list(tmp_path):
+    init = load_module("sandbox-init")
+    home, managed = tmp_path / "home", tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    link = home / ".claude/plugins/known_marketplaces.json"
+    target = managed / "known_marketplaces.json"
+
+    # A fresh volume has no list yet; with no managed one, nothing is made.
+    init.link_known_marketplaces(home, managed)
+    assert not link.parent.exists()
+
+    # One Claude Code wrote itself is replaced.
+    link.parent.mkdir(parents=True)
+    link.write_text("{}")
+    target.write_text('{"sandbox": {}}')
+    init.link_known_marketplaces(home, managed)
+    assert link.readlink() == target
+    assert link.read_text() == '{"sandbox": {}}'
+
+    # Gone from the configuration, the link goes too.
+    target.unlink()
+    init.link_known_marketplaces(home, managed)
+    assert not link.is_symlink()
+
+
+def test_leaves_the_volumes_own_marketplace_list_without_a_managed_one(tmp_path):
+    init = load_module("sandbox-init")
+    link = tmp_path / ".claude/plugins/known_marketplaces.json"
+    link.parent.mkdir(parents=True)
+    link.write_text("{}")
+    init.link_known_marketplaces(tmp_path, tmp_path / "managed")
+    assert link.read_text() == "{}"

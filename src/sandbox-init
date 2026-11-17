@@ -3,7 +3,8 @@
     sandbox-init NIX_PROFILE HM_GENERATION COMMAND...
 
 Links the host's nix profile and current home-manager generation into the
-per-project home volume (either may be empty for none), then execs COMMAND.
+per-project home volume (either may be empty for none), and Claude Code's
+marketplace list to the managed one, then execs COMMAND.
 
 Each link points at the generation's store path, so a home-manager switch on
 the host takes effect at the next start of a sandbox of the project. Files
@@ -114,6 +115,23 @@ def link_generation(home, generation):
             warn(f"not linking ~/{rel}: {e.strerror}")
 
 
+def link_known_marketplaces(home, managed):
+    """Point Claude Code's marketplace list at the managed one, or drop a
+    link left from a configuration that had one."""
+    link = home / ".claude/plugins/known_marketplaces.json"
+    target = managed / "known_marketplaces.json"
+    if target.exists():
+        if link.is_symlink() and os.readlink(link) == str(target):
+            return
+        try:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            relink(link, target)
+        except OSError as e:
+            warn(f"not linking {link}: {e.strerror}")
+    elif link.is_symlink() and os.readlink(link) == str(target):
+        link.unlink()
+
+
 def main(argv):
     nix_profile, generation, command = argv[1], argv[2], argv[3:]
     home = Path(os.environ["HOME"])
@@ -122,6 +140,8 @@ def main(argv):
         relink(home / ".nix-profile", nix_profile)
     if generation and os.path.isdir(generation):
         link_generation(home, Path(generation))
+    # Where the launcher mounts the profile's managed Claude Code config.
+    link_known_marketplaces(home, Path("/etc/claude-code"))
 
     # `gh pr checkout` of a PR from a fork with no matching remote builds the
     # fetch URL from git_protocol; https would only carry the placeholder

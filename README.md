@@ -191,11 +191,38 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `claude.settings` | autoupdater off, GitHub hook | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
+| `claude.lspServers.<name>` | `{ }` | `{ package; command; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. |
+| `claude.marketplaces.<name>` | `{ }` | Plugin marketplace directories (store paths); enable their plugins in `claude.settings.enabledPlugins`. |
 | `profiles.<name>` | | Per-project additions, see below. |
+
+### Plugins and language servers
+
+Plugins come from marketplaces in the store, pinned by your flake.lock like
+everything else, not from git checkouts that update themselves in each
+volume:
+
+```nix
+claude.lspServers = {
+  gopls = { package = pkgs.gopls; extensionToLanguage.".go" = "go"; };
+  ty = {
+    package = pkgs.ty;
+    args = [ "server" ];
+    extensionToLanguage = { ".py" = "python"; ".pyi" = "python"; };
+  };
+};
+claude.marketplaces.mine = ./my-marketplace;   # .claude-plugin/marketplace.json
+claude.settings.enabledPlugins."some-plugin@mine" = true;
+```
+
+Once any is set, these are the only marketplaces Claude Code knows: they're
+registered in every volume before its first session (so enabled plugins work
+from the start), and the official marketplace and `/plugin marketplace add`
+are refused.
 
 ### Profiles
 
-A profile adds `packages`, `env`, `binds` and `claude.*` on top of the top
+A profile adds `packages`, `env`, `binds` and `claude.*` (language servers and
+marketplaces included) on top of the top
 level when the sandbox starts under one of its `paths` or in a project whose
 root has one of its `projectFiles`; the highest `priority` wins.
 

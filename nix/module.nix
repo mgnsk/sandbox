@@ -44,6 +44,39 @@ let
     };
   };
 
+  lspServerType = types.submodule (
+    { config, ... }:
+    {
+      options = {
+        package = mkOption {
+          type = types.package;
+          description = "The language server; its version is the plugin's, so a new one refreshes Claude Code's cached copy.";
+        };
+        command = mkOption {
+          type = types.str;
+          default = lib.getExe config.package;
+          defaultText = lib.literalExpression "lib.getExe package";
+        };
+        args = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+        };
+        extensionToLanguage = mkOption {
+          type = types.attrsOf types.str;
+          example = {
+            ".go" = "go";
+          };
+          description = "File extensions the server handles, with their LSP language ids.";
+        };
+        settings = mkOption {
+          type = types.nullOr json.type;
+          default = null;
+          description = "Server settings (workspace/configuration).";
+        };
+      };
+    }
+  );
+
   # What both the top level and each profile can set; a profile's values are
   # added to the top level's.
   layerOptions = {
@@ -79,6 +112,25 @@ let
         description = ''
           Managed MCP servers. Managed MCP config is exclusive: once any is
           set, a project's own .mcp.json is ignored.
+        '';
+      };
+      lspServers = mkOption {
+        type = types.attrsOf lspServerType;
+        default = { };
+        description = ''
+          Language servers, each an enabled plugin of the generated `sandbox`
+          marketplace in the store, so plugin and server are pinned together.
+        '';
+      };
+      marketplaces = mkOption {
+        type = types.attrsOf types.path;
+        default = { };
+        description = ''
+          Plugin marketplaces: directories with a .claude-plugin/marketplace.json,
+          e.g. store paths. Enable their plugins in `settings.enabledPlugins`.
+          With any marketplace (or LSP server), Claude Code knows only these:
+          it is registered before the first session, and other marketplaces
+          (the official one, `/plugin marketplace add`) are refused.
         '';
       };
     };
@@ -140,6 +192,52 @@ let
       ]
       ++ lib.optional cfg.nixProfile.enable "$HOME/.nix-profile/bin";
       mcp = cfg.claude.mcpServers // layer.claude.mcpServers;
+
+      lsp = cfg.claude.lspServers // layer.claude.lspServers;
+      lspPlugins = lib.mapAttrsToList (n: s: {
+        name = n;
+        inherit (s.package) version;
+        source = "./plugins/${n}";
+        # No plugin.json: the marketplace entry is the whole manifest.
+        strict = false;
+        lspServers.${n} = {
+          inherit (s) command extensionToLanguage;
+        }
+        // lib.optionalAttrs (s.args != [ ]) { inherit (s) args; }
+        // lib.optionalAttrs (s.settings != null) { inherit (s) settings; };
+      }) lsp;
+      lspMarketplace = pkgs.runCommand "sandbox-claude-lsp" { } ''
+        mkdir -p $out/.claude-plugin
+        cp ${
+          json.generate "marketplace.json" {
+            name = "sandbox";
+            description = "Language servers pinned by the sandbox configuration";
+            owner.name = "sandbox";
+            plugins = lspPlugins;
+          }
+        } $out/.claude-plugin/marketplace.json
+        ${lib.concatMapStrings (p: "mkdir -p $out/plugins/${p.name}\n") lspPlugins}
+      '';
+      marketplaces =
+        lib.mapAttrs (_: p: {
+          source = "directory";
+          path = "${p}";
+        }) (cfg.claude.marketplaces // layer.claude.marketplaces)
+        // lib.optionalAttrs (lsp != { }) {
+          sandbox = {
+            source = "directory";
+            path = "${lspMarketplace}";
+          };
+        };
+      marketplaceSettings = lib.optionalAttrs (marketplaces != { }) {
+        env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = 1;
+        strictKnownMarketplaces = lib.attrValues marketplaces;
+        extraKnownMarketplaces = lib.mapAttrs (_: source: {
+          inherit source;
+          autoUpdate = false;
+        }) marketplaces;
+        enabledPlugins = lib.genAttrs (map (n: "${n}@sandbox") (lib.attrNames lsp)) (_: true);
+      };
       memory = lib.concatStringsSep "\n" (
         lib.filter (s: s != "") [
           cfg.claude.memory
@@ -151,7 +249,10 @@ let
           {
             name = "managed-settings.json";
             path = json.generate "managed-settings.json" (
-              lib.recursiveUpdate cfg.claude.settings layer.claude.settings
+              lib.foldl' lib.recursiveUpdate marketplaceSettings [
+                cfg.claude.settings
+                layer.claude.settings
+              ]
             );
           }
           {
@@ -162,6 +263,21 @@ let
         ++ lib.optional (mcp != { }) {
           name = "managed-mcp.json";
           path = json.generate "managed-mcp.json" { mcpServers = mcp; };
+        }
+        # Claude Code registers a managed marketplace only partway through a
+        # fresh volume's first session and installs nothing from it in that
+        # one; listed already, every enabled plugin is installed at the first
+        # start. sandbox-init links ~/.claude/plugins/known_marketplaces.json
+        # here, read-only, so nothing Claude Code would add sticks.
+        ++ lib.optional (marketplaces != { }) {
+          name = "known_marketplaces.json";
+          path = json.generate "known_marketplaces.json" (
+            lib.mapAttrs (_: source: {
+              inherit source;
+              installLocation = source.path;
+              lastUpdated = "1970-01-01T00:00:00.000Z";
+            }) marketplaces
+          );
         }
       );
     in
@@ -258,6 +374,8 @@ let
         settings = { };
         memory = "";
         mcpServers = { };
+        lspServers = { };
+        marketplaces = { };
       };
     };
     profiles = lib.mapAttrsToList (
