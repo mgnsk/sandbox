@@ -18,11 +18,13 @@ themselves there. Each gets its own $SANDBOX_STATE_DIR.
 """
 
 import contextlib
+import io
 import json
 import os
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -249,13 +251,14 @@ def _manifest(**kw):
 
 def test_options_before_the_command():
     assert sandbox.parse_options(["--reload", "ls", "--reload"]) == (
-        {"reload": True, "projectConfig": True},
+        {"reload": True, "projectConfig": True, "claudeApiKey": False},
         ["ls", "--reload"],
     )
     assert sandbox.parse_options(["--no-project-config", "--", "--weird"]) == (
-        {"reload": False, "projectConfig": False},
+        {"reload": False, "projectConfig": False, "claudeApiKey": False},
         ["--weird"],
     )
+    assert sandbox.parse_options(["--claude-api-key"])[0]["claudeApiKey"] is True
     with pytest.raises(sandbox.SandboxError, match="unknown option"):
         sandbox.parse_options(["--nope"])
 
@@ -378,6 +381,9 @@ class _Tty:
     def readline(self):
         return self.answer
 
+    def fileno(self):
+        raise io.UnsupportedOperation("not a terminal")
+
 
 ACCESS = _manifest(
     hostPorts=["5432"],
@@ -422,6 +428,52 @@ def test_host_access_without_a_terminal_is_refused(tmp_path):
 
     with pytest.raises(sandbox.SandboxError, match="from a terminal"):
         sandbox.approve_project(ACCESS, str(tmp_path), "p/sandbox.nix", no_tty)
+
+
+KEY = "sk-ant-api03-" + "k" * 40
+
+
+def test_claude_api_key_is_asked_once_and_kept_out_of_the_home(tmp_path):
+    tty = _Tty(KEY + "\n")
+    key_file = sandbox.claude_api_key(str(tmp_path), False, lambda: tty)
+
+    assert key_file == str(tmp_path / "claude-api-key")
+    assert Path(key_file).read_text() == KEY + "\n"
+    assert stat.S_IMODE(os.stat(key_file).st_mode) == 0o600
+    assert "API key" in tty.written and KEY not in tty.written
+
+    def no_tty():
+        raise AssertionError("asked again")
+
+    assert sandbox.claude_api_key(str(tmp_path), False, no_tty) == key_file
+
+
+def test_claude_api_key_can_be_replaced_or_kept(tmp_path):
+    key_file = sandbox.claude_api_key(str(tmp_path), False, lambda: _Tty(KEY + "\n"))
+    sandbox.claude_api_key(str(tmp_path), True, lambda: _Tty("\n"))
+    assert Path(key_file).read_text() == KEY + "\n"
+
+    other = "sk-ant-api03-" + "o" * 40
+    sandbox.claude_api_key(str(tmp_path), True, lambda: _Tty(other + "\n"))
+    assert Path(key_file).read_text() == other + "\n"
+
+
+@pytest.mark.parametrize("answer", ["\n", "not a key\n"])
+def test_claude_api_key_skipped_or_malformed_is_not_saved(tmp_path, answer):
+    tty = _Tty(answer)
+    key_file = sandbox.claude_api_key(str(tmp_path), False, lambda: tty)
+
+    assert not os.path.exists(key_file)
+    assert "sandbox --claude-api-key" in tty.written
+
+
+def test_claude_api_key_without_a_terminal_starts_anyway(tmp_path, capsys):
+    def no_tty():
+        raise OSError("no tty")
+
+    key_file = sandbox.claude_api_key(str(tmp_path), False, no_tty)
+    assert not os.path.exists(key_file)
+    assert "sandbox --claude-api-key" in capsys.readouterr().err
 
 
 def test_project_adds_to_the_profile():
@@ -1391,7 +1443,7 @@ def _guard_pids():
         [
             "pgrep",
             "-f",
-            "ssh-agent-guard|gh-api-proxy|forgejo-api-proxy|secret-service-guard|open-url-guard",
+            "ssh-agent-guard|gh-api-proxy|forgejo-api-proxy|claude-api-proxy|secret-service-guard|open-url-guard",
         ],
         capture_output=True,
         text=True,

@@ -1,16 +1,17 @@
 """The HTTP-over-unix-socket proxy behind the sandbox's API guards
-(gh-api-proxy, forgejo-api-proxy).
+(gh-api-proxy, forgejo-api-proxy, claude-api-proxy).
 
 Each guard runs on the host, listening on a private socket that the sandbox launcher
 binds in. A patched client inside sends its API requests there as plain HTTP,
 with the real host in Host. The proxy holds the real token, which never enters
 the sandbox, and per request:
 
-  - refuses malformed requests and hosts the guard doesn't allow;
+  - refuses malformed requests, and hosts and paths the guard doesn't allow;
   - forwards reads as-is, and holds writes for the user's approval in a tmux
     popup (the guard decides what counts as a write);
-  - drops the client's Authorization and adds the guard's own, then relays
-    the request to the real host over HTTPS.
+  - drops the client's Authorization (and any other credential header the
+    guard names) and adds the guard's own, then relays the request to the
+    real host over HTTPS.
 
 ProxyServer's policy methods are what a guard overrides.
 """
@@ -133,6 +134,8 @@ class Handler(BaseHTTPRequestHandler):
             self.refuse(400, "expected an origin-form request target")
         elif not self.server.host_allowed(host):
             self.refuse(403, self.server.host_refusal(clean(host)))
+        elif not self.server.path_allowed(host, self.path):
+            self.refuse(403, f"path not allowed: {clean(self.path)}")
         elif "Transfer-Encoding" in self.headers:
             self.refuse(411, "chunked request bodies are not supported")
         elif len(lengths) != 1 or not lengths[0].isdigit():
@@ -167,6 +170,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def forward(self, host, length, body):
         """Send the request upstream and stream the response back."""
+        host = self.server.upstream_host(host)
         conn = self.server.open_upstream(host)
         try:
             try:
@@ -181,18 +185,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_upstream(self, conn, host, length, body):
         """Request line, the client's headers minus DROP_REQUEST_HEADERS, the
-        guard's Authorization if any, then the body - already read, or
+        guard's credentials, then the body - already read, or
         streamed from the client."""
         conn.putrequest(
             self.command, self.path, skip_host=True, skip_accept_encoding=True
         )
         conn.putheader("Host", host)
+        drop = DROP_REQUEST_HEADERS | self.server.credential_headers
         for name, value in self.headers.items():
-            if name.lower() not in DROP_REQUEST_HEADERS:
+            if name.lower() not in drop:
                 conn.putheader(name, value)
-        authorization = self.server.authorization(host)
-        if authorization is not None:
-            conn.putheader("Authorization", authorization)
+        for name, value in self.server.credentials(host):
+            conn.putheader(name, value)
         conn.endheaders()
         if body is not None:
             conn.send(body)
@@ -216,7 +220,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             if self.command != "HEAD":
-                while chunk := response.read(CHUNK):
+                # read1: whatever has arrived, so event streams aren't held
+                # back until CHUNK bytes pile up.
+                while chunk := response.read1(CHUNK):
                     self.wfile.write(chunk)
         except (OSError, http.client.HTTPException):
             pass  # Client or upstream went away mid-response.
@@ -243,6 +249,14 @@ class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         """Whether requests to host are forwarded at all."""
         raise NotImplementedError
 
+    def path_allowed(self, host, path):
+        """Whether requests for path (with its query) on host are forwarded."""
+        return True
+
+    def upstream_host(self, host):
+        """The host to forward an allowed request for host to."""
+        return host
+
     def host_refusal(self, host):
         """The message refusing a host that isn't allowed."""
         return f"host not allowed: {host}"
@@ -258,9 +272,18 @@ class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         target = f"{method} {host}{path}"
         return None if method in ("GET", "HEAD") else target
 
+    # Client headers dropped besides Authorization (lower case): ones that
+    # carry credentials the guard replaces.
+    credential_headers = frozenset()
+
     def authorization(self, host):
         """The Authorization header to send to host, or None for none."""
         raise NotImplementedError
+
+    def credentials(self, host):
+        """[(name, value)] credential headers to send to host."""
+        authorization = self.authorization(host)
+        return [] if authorization is None else [("Authorization", authorization)]
 
     # -- approval -------------------------------------------------------------
 

@@ -165,6 +165,7 @@ let
       secretService = cfg.guards.secretService.enable;
       github = cfg.guards.github.enable;
       forgejo = cfg.guards.forgejo.enable;
+      claudeApiKey = cfg.guards.claudeApiKey.enable;
       openUrl = cfg.guards.openUrl.enable;
     };
     # A project's sandbox.nix, evaluated inside a sandbox by project.nix
@@ -363,6 +364,16 @@ in
         default = false;
         description = "fj (forgejo-cli) inside, through a host proxy holding the host fj's tokens.";
       };
+      claudeApiKey.enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Claude Code inside on a per-project API key that stays outside, added
+          by a host proxy. The key is asked for on the terminal at a project's
+          first start (or with `sandbox --claude-api-key`). Replaces logging in
+          inside, so not for Claude subscriptions.
+        '';
+      };
       openUrl.enable = mkOption {
         type = types.bool;
         default = true;
@@ -422,6 +433,11 @@ in
         # A store path can't update itself.
         env.DISABLE_AUTOUPDATER = 1;
       }
+      (lib.mkIf cfg.guards.claudeApiKey.enable {
+        # A placeholder, so Claude Code neither asks to log in nor to approve
+        # an environment key; claude-api-proxy swaps in the real one.
+        apiKeyHelper = "echo sandbox-placeholder";
+      })
       (lib.mkIf cfg.guards.github.enable {
         hooks.PreToolUse = [
           {

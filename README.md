@@ -27,6 +27,7 @@ What you get, per project:
   - your ssh agent (commit signing passes without a popup);
   - GitHub through `gh`, with the host's token kept outside;
   - Forgejo through `fj` (opt-in);
+  - the Claude API on a per-project API key (opt-in);
   - opening http(s) URLs in the host's browser.
 - **A Secret Service** per project, so tools storing credentials via libsecret
   work without a desktop keyring.
@@ -110,7 +111,9 @@ starts, so after logging in again on the host (or switching accounts) restart
 the sandbox; fj's proxy reads it per request.
 
 **Claude Code** is logged in per project, inside the sandbox, since its
-credentials live in the project's `~/.claude`:
+credentials live in the project's `~/.claude`. Code running in that sandbox
+can read them (see [SECURITY.md](SECURITY.md)); with an API key, the guard
+below keeps the key outside instead.
 
 1. Start it in the project: `sandbox claude`.
 2. Pick the login method; Claude Code shows a login URL and tries to open it.
@@ -120,6 +123,23 @@ credentials live in the project's `~/.claude`:
 
 Every new project needs this once; the login then persists in that project's
 volume. Other projects, and Claude Code on the host, keep their own logins.
+
+**Claude Code on an API key** (`guards.claudeApiKey.enable = true`): the key
+stays on the host, and a proxy adds it to Claude Code's requests.
+
+1. Create a key for the project at
+   [platform.claude.com](https://platform.claude.com/settings/keys), ideally
+   in a workspace with a spend limit.
+2. Start the sandbox in the project; at the first start it asks for the key
+   on the terminal (hidden input) and keeps it in the project's volume dir,
+   outside the sandbox.
+3. Run `claude` inside as usual - no login.
+
+`sandbox --claude-api-key` replaces the key (running sandboxes pick it up);
+deleting it in the Console cuts off just that project. A subscription login
+can't go through the proxy: Anthropic doesn't allow tools to hold claude.ai
+credentials. If the project was logged in inside before, run `/logout` there
+so that login doesn't stay in the volume.
 
 ### The project's own sandbox config: sandbox.nix
 
@@ -403,6 +423,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). |
 | `guards.github.enable` | on | Needs `gh auth login` on the host. |
 | `guards.forgejo.enable` | off | Needs `fj auth login` on the host. |
+| `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; see [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | |
 | `guards.secretService.enable` | on | |
 | `claude.enable` / `.package` | on / `pkgs.claude-code` | |
