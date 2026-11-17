@@ -92,6 +92,35 @@ The project's `$HOME` (`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ...)
 persists between runs in its volume; nothing in it is shared with your real
 home or with other projects.
 
+### Authentication
+
+**gh and fj** are logged in on the host, once, outside any sandbox:
+
+```sh
+gh auth login    # on the host
+fj auth login    # on the host, only with guards.forgejo.enable
+```
+
+Inside, `gh` and `fj` talk to their APIs through host proxies that add the
+host's token to each request (writes behind a popup); the token itself never
+enters the sandbox. Don't run `gh auth login` or `fj auth login` inside: there
+is nothing to log in to there, and a token stored inside would bypass the
+proxy and its popups. The gh proxy reads the host's token when the sandbox
+starts, so after logging in again on the host (or switching accounts) restart
+the sandbox; fj's proxy reads it per request.
+
+**Claude Code** is logged in per project, inside the sandbox, since its
+credentials live in the project's `~/.claude`:
+
+1. Start it in the project: `sandbox claude`.
+2. Pick the login method; Claude Code shows a login URL and tries to open it.
+   Allow the popup to open it in the host's browser, or copy the link and open
+   it yourself.
+3. Confirm in the browser (paste the code back into Claude Code if it asks).
+
+Every new project needs this once; the login then persists in that project's
+volume. Other projects, and Claude Code on the host, keep their own logins.
+
 ### The project's own sandbox config: sandbox.nix
 
 A `sandbox.nix` in the project root configures that project's sandbox, on
