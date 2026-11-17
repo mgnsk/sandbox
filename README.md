@@ -119,6 +119,75 @@ It can set `packages` (first on `PATH`), `env`, `command`, `claude.*`
 one, import it yourself, e.g.
 `(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}`.
 
+A full example, with every option it can set:
+
+```nix
+{ pkgs, lib, ... }:
+{
+  # First on PATH inside, ahead of the sandbox's base set.
+  packages = [
+    pkgs.go
+    pkgs.golangci-lint
+    pkgs.postgresql # psql, for the host database below
+  ];
+
+  # Variables inside; ~, $HOME, $USER and $XDG_RUNTIME_DIR are expanded at start.
+  env = {
+    GOFLAGS = "-mod=mod";
+    PGHOST = "127.0.0.1";
+    DATASETS = "~/datasets";
+  };
+
+  # What a bare `sandbox` runs, in place of a login shell.
+  command = [ "nix" "develop" ];
+
+  # Host ports reachable at 127.0.0.1 inside (port, port/udp or a range).
+  # Needs your approval on the terminal.
+  hostPorts = [ "5432" "9000-9010" ];
+
+  # Host paths bound in, shadowing the project's home volume.
+  # Needs your approval on the terminal.
+  binds = [
+    { src = "~/datasets"; }                                  # read-only, same path
+    { src = "~/src/shared-lib"; hideGit = true; }            # for reference, without its history
+    { src = "~/notes/myproject"; dst = "~/notes"; mode = "rw"; optional = true; }
+  ];
+
+  claude = {
+    # Over your managed settings: objects merge, lists add up, the rest is replaced.
+    settings = {
+      permissions.allow = [ "Bash(go test:*)" "Bash(golangci-lint run:*)" ];
+      permissions.deny = [ "Read(./secrets/**)" ];
+      env.GOTOOLCHAIN = "local";
+      enabledPlugins."some-plugin@local" = true;
+    };
+
+    # Appended to the managed CLAUDE.md.
+    memory = ''
+      # This project
+      Run `go test ./...` and `golangci-lint run` before calling a change done.
+    '';
+
+    # Managed MCP servers: once any is set, the project's .mcp.json is ignored.
+    mcpServers.mcp-nixos = {
+      type = "stdio";
+      command = lib.getExe pkgs.mcp-nixos;
+    };
+
+    # Each an enabled plugin of a generated `project` marketplace in the store.
+    lspServers.gopls = {
+      package = pkgs.gopls;
+      extensionToLanguage.".go" = "go";
+      settings.gopls.staticcheck = true;
+    };
+
+    # A plugin marketplace in the project (.claude-plugin/marketplace.json);
+    # enable its plugins in settings.enabledPlugins (above).
+    marketplaces.local = ./claude-plugins;
+  };
+}
+```
+
 How it stays a sandbox, though the sandbox can edit the file:
 
 - **It's evaluated inside the sandbox** (a nested one, without the project's
