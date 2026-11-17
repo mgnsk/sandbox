@@ -19,6 +19,7 @@ Options:
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -658,6 +659,54 @@ def exchange_args(volume_dir):
 # -- network ----------------------------------------------------------------
 
 
+def read_resolv_conf():
+    try:
+        return Path("/etc/resolv.conf").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+# Where the sandbox sends DNS queries when the host's resolver is on loopback.
+# Link-local, so it can't shadow a server the sandbox could otherwise reach.
+DNS_FORWARD_ADDR = "169.254.1.53"
+
+
+def dns_forward(resolv_conf):
+    """A host resolver on loopback (systemd-resolved's 127.0.0.53, a local
+    dnsmasq or unbound) is out of reach inside: the netns has its own
+    loopback, and --map-host-loopback none removes the way to the host's.
+
+    Returns (resolver, text) when the first nameserver is an IPv4 loopback
+    one: pasta forwards DNS_FORWARD_ADDR, ports 53 and 853 only, to that
+    resolver, and text is resolv.conf for inside with it replaced by
+    DNS_FORWARD_ADDR. Other loopback nameservers are dropped, unreachable
+    either way. (None, None) when the nameservers work inside as they are.
+    """
+    resolver = None
+    seen_nameserver = False
+    lines = []
+    for line in resolv_conf.splitlines():
+        fields = line.split()
+        if len(fields) < 2 or fields[0] != "nameserver":
+            lines.append(line)
+            continue
+        first = not seen_nameserver
+        seen_nameserver = True
+        try:
+            addr = ipaddress.ip_address(fields[1])
+        except ValueError:
+            lines.append(line)
+            continue
+        if not addr.is_loopback:
+            lines.append(line)
+        elif first and addr.version == 4:
+            resolver = fields[1]
+            lines.append(f"nameserver {DNS_FORWARD_ADDR}")
+    if resolver is None:
+        return None, None
+    return resolver, "\n".join(lines) + "\n"
+
+
 def host_addresses(ip):
     """The host's global addresses, which get prohibit routes inside."""
     out = subprocess.run(
@@ -690,7 +739,7 @@ exec "$@"
 """
 
 
-def pasta_argv(config, tcp, udp, addrs, bwrap_args):
+def pasta_argv(config, tcp, udp, addrs, bwrap_args, dns_resolver=None):
     """pasta creates a fresh net namespace with a userspace TAP and runs
     bwrap inside it; --config-net has pasta assign address/route/DNS.
 
@@ -705,8 +754,14 @@ def pasta_argv(config, tcp, udp, addrs, bwrap_args):
     mirror only those, --map-host-loopback/--map-guest-addr none remove the
     addresses pasta would translate to the host, and the host's own
     addresses get prohibit routes (a snapshot at start).
+
+    The one exception is dns_resolver, a host resolver on loopback (see
+    dns_forward), reachable at DNS_FORWARD_ADDR on ports 53 and 853.
     """
     tools = config["tools"]
+    dns = []
+    if dns_resolver:
+        dns = ["--dns-forward", DNS_FORWARD_ADDR, "--dns-host", dns_resolver]
     return [
         tools["pasta"], "--config-net", "--host-lo-to-ns-lo",
         "-t", "127.0.0.1/1-65535,auto",
@@ -714,6 +769,7 @@ def pasta_argv(config, tcp, udp, addrs, bwrap_args):
         "-U", ",".join(udp) or "none",
         "--map-host-loopback", "none",
         "--map-guest-addr", "none",
+        *dns,
         "--",
         tools["bash"], "-c", PASTA_INNER, "bash",
         tools["ip"], config["seccomp"], str(len(addrs)), *addrs,
@@ -866,6 +922,13 @@ def main(argv):
         if profile["claudeDir"]:
             args += ["--ro-bind", profile["claudeDir"], "/etc/claude-code"]
 
+        dns_resolver, resolv_conf = dns_forward(read_resolv_conf())
+        if dns_resolver:
+            path = os.path.join(guards.tempdir(), "resolv.conf")
+            Path(path).write_text(resolv_conf, encoding="utf-8")
+            # Mounted over the host's, bound in base_args.
+            args += ["--ro-bind", path, "/etc/resolv.conf"]
+
         args += exchange_args(volume_dir)
         binds = bind_args(profile["binds"], variables, project)
         args += binds
@@ -887,7 +950,7 @@ def main(argv):
             args += [shell, "--login"]
 
         addrs = host_addresses(config["tools"]["ip"])
-        return run(pasta_argv(config, tcp, udp, addrs, args))
+        return run(pasta_argv(config, tcp, udp, addrs, args, dns_resolver))
 
 
 if __name__ == "__main__":

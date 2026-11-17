@@ -493,6 +493,51 @@ def _pasta(tcp=(), udp=(), addrs=()):
     return sandbox.pasta_argv(config, list(tcp), list(udp), list(addrs), ["--x"])
 
 
+def test_dns_forward_replaces_a_loopback_resolver():
+    """systemd-resolved's stub: unreachable inside, so forwarded."""
+    resolver, text = sandbox.dns_forward(
+        "# generated\nnameserver 127.0.0.53\nnameserver ::1\n"
+        "nameserver 127.0.0.1\noptions edns0\nsearch lan\n"
+    )
+    assert resolver == "127.0.0.53"
+    assert text == (
+        f"# generated\nnameserver {sandbox.DNS_FORWARD_ADDR}\n"
+        "options edns0\nsearch lan\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "conf",
+    [
+        "nameserver 100.100.100.100\nnameserver fd7a:115c:a1e0::53\n",
+        # glibc tries the first one first; leave a working one in front.
+        "nameserver 192.168.1.1\nnameserver 127.0.0.53\n",
+        # IPv6 loopback isn't forwarded.
+        "nameserver ::1\n",
+        "",
+    ],
+)
+def test_dns_forward_leaves_reachable_or_unsupported_resolvers(conf):
+    assert sandbox.dns_forward(conf) == (None, None)
+
+
+def test_dns_forward_only_with_a_loopback_resolver_in_pasta_args():
+    assert "--dns-forward" not in _pasta()
+    config = {
+        "tools": {"pasta": "PASTA", "bash": "BASH", "ip": "IP", "bwrap": "BWRAP"},
+        "seccomp": "BPF",
+    }
+    argv = sandbox.pasta_argv(config, [], [], [], ["--x"], "127.0.0.53")
+    i = argv.index("--dns-forward")
+    assert argv[i : i + 4] == [
+        "--dns-forward",
+        sandbox.DNS_FORWARD_ADDR,
+        "--dns-host",
+        "127.0.0.53",
+    ]
+    assert i < argv.index("--")
+
+
 def test_host_access_is_restricted_in_pasta_args():
     """No pasta defaults that reach host services: -T/-U auto, the gateway and
     guest-address mappings."""
