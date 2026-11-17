@@ -36,12 +36,17 @@ let
         python3 ${./seccomp.py} > $out
       '';
 
+  # Both clients are patched, so they miss the binary cache and build from
+  # source. Their upstream test suites are skipped: nixpkgs already runs
+  # them on the unpatched sources, and the patches have their own tests.
+
   # Sends its API requests over GH_HTTP_UNIX_SOCKET when set, to the host
   # proxy holding the real token. Recheck on gh bumps:
   # tests/test_gh_unix_socket_patch.py fails if the patch stops applying or
   # stops having an effect.
   ghPatched = gh.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [ ./patches/gh-unix-socket.patch ];
+    doCheck = false;
   });
 
   # The same for fj, via FJ_HTTP_UNIX_SOCKET. The client is built in the
@@ -55,6 +60,7 @@ let
       patch -p1 -d "$cargoDepsCopy/source-registry-0/forgejo-api-0.12.0" \
         < ${./patches/forgejo-api-unix-socket.patch}
     '';
+    doCheck = false;
   });
 
   # xdg-open inside: hands the URL to open-url-guard on the host.
