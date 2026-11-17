@@ -83,6 +83,14 @@ sandbox.lib.mkSandbox {
 
 `pkgs` must allow the unfree `claude-code`, or set `claude.enable = false`.
 
+`gh` and `fj` inside must be the patched builds (`packages.<system>.gh` and
+`.forgejo-cli`): unpatched, they send their placeholder credentials straight
+to the API and fail with 401. The sandbox's own come first on `PATH`, but a
+login shell that prepends `~/.nix-profile/bin` brings the profile's copy
+first. The home-manager module installs the patched ones at high priority
+for that; with `nix profile`, install those two from this flake in place of
+nixpkgs' `gh`/`forgejo-cli`.
+
 ## Configuration
 
 All options are in [nix/module.nix](nix/module.nix). The main ones:

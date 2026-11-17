@@ -24,7 +24,7 @@
       # A `sandbox` package from configuration modules (see nix/module.nix
       # for the options), e.g.
       #   sandbox.lib.mkSandbox { inherit pkgs; modules = [ { guards.forgejo.enable = true; } ]; }
-      mkSandbox =
+      evalSandbox =
         {
           pkgs,
           modules ? [ ],
@@ -35,13 +35,14 @@
             { _module.args.pkgs = pkgs; }
           ]
           ++ modules;
-        }).config.package;
+        }).config;
+      mkSandbox = args: (evalSandbox args).package;
     in
     {
-      lib = { inherit mkSandbox; };
+      lib = { inherit mkSandbox evalSandbox; };
 
       # programs.sandbox for home-manager.
-      homeManagerModules.default = import ./nix/hm-module.nix { inherit mkSandbox; };
+      homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
 
       packages = forAllSystems (pkgs: {
         default = mkSandbox { inherit pkgs; };

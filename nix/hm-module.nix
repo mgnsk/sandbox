@@ -1,6 +1,6 @@
 # programs.sandbox: the `sandbox` command in home.packages, configured from
 # any number of home-manager modules through programs.sandbox.settings.
-{ mkSandbox }:
+{ evalSandbox }:
 {
   config,
   lib,
@@ -9,6 +9,13 @@
 }:
 let
   cfg = config.programs.sandbox;
+  sandbox = evalSandbox {
+    inherit pkgs;
+    modules = [
+      cfg.settings
+      { homeManager.enable = lib.mkDefault true; }
+    ];
+  };
 in
 {
   options.programs.sandbox = {
@@ -32,13 +39,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    programs.sandbox.package = mkSandbox {
-      inherit pkgs;
-      modules = [
-        cfg.settings
-        { homeManager.enable = lib.mkDefault true; }
-      ];
-    };
-    home.packages = [ cfg.package ];
+    programs.sandbox.package = sandbox.package;
+    # The linked profile's bin/ can end up before the sandbox's own on PATH
+    # inside (e.g. targets.genericLinux sources nix.sh, which prepends it);
+    # an unpatched gh or fj there would send the placeholder token straight
+    # to the API. High priority, so these win over the profile's own.
+    home.packages = [ cfg.package ] ++ map lib.hiPrio sandbox.clientPackages;
   };
 }

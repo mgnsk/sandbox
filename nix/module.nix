@@ -457,6 +457,16 @@ in
       description = "The `sandbox` command.";
     };
 
+    clientPackages = mkOption {
+      type = types.listOf types.package;
+      readOnly = true;
+      description = ''
+        The patched clients the guards rely on (gh, fj), for putting first in
+        a profile whose PATH entry can come before the sandbox's own inside.
+        Patched, they behave as usual without the sandbox's socket variables.
+      '';
+    };
+
     configFile = mkOption {
       type = types.package;
       readOnly = true;
@@ -466,6 +476,10 @@ in
 
   config = {
     inherit configFile;
+
+    clientPackages =
+      lib.optional cfg.guards.github.enable sandboxPkgs.gh
+      ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli;
 
     package = pkgs.writeShellScriptBin "sandbox" ''
       exec ${sandboxPkgs.python.interpreter} -E -s ${sandboxPkgs.src}/sandbox ${configFile} "$@"
