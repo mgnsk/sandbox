@@ -35,10 +35,6 @@ jobs:
           purge-last-accessed: P7D
           purge-primary-key: never
 
-      # Unit tests, the project.nix check and the package build, as nix
-      # builds. The real-sandbox tests skip here: the nix build sandbox has no
-      # user namespaces.
-      - run: nix flake check -L
       # GC roots for what the cache should keep: cache-nix-action collects
       # garbage down to gc-max-store-size before saving, which otherwise
       # deletes the patched gh and fj (the slow builds) along with their
@@ -48,21 +44,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gcroots"
           nix build .#gh .#forgejo-cli .#default --out-link "$RUNNER_TEMP/gcroots/out"
           nix develop --profile "$RUNNER_TEMP/gcroots/dev" -c true
-      - name: nixfmt
-        run: nix fmt -- --check flake.nix nix/*.nix tests/fixtures/*.nix
-      - name: ruff
-        run: nix develop -c sh -c 'ruff check . && ruff format --check .'
 
-      # The full suite against the built sandbox, so the real-sandbox tests
-      # run too. Ubuntu 24.04's AppArmor denies unprivileged user namespaces
-      # to unconfined programs, which bwrap needs.
+      # Ubuntu 24.04's AppArmor denies unprivileged user namespaces to
+      # unconfined programs, which bwrap needs for the real-sandbox tests.
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Build sandbox
-        run: echo "SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox" >> "$GITHUB_ENV"
-      - name: pytest
+      - name: make test
         # install-nix-action points TMPDIR at /home/runner/work/_temp, which
         # makes the tests' unix socket paths exceed the 108-byte limit.
         env:
           TMPDIR: /tmp
-        run: nix develop -c pytest -v -rs tests
+        run: make test
