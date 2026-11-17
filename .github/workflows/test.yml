@@ -1,0 +1,68 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # cache-nix-action purges superseded caches.
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One job, so everything is built once into the same store; the store is
+  # cached across runs, so the patched gh and fj (not in cache.nixos.org)
+  # only rebuild when the nix files or the lock change.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', '**/*.nix', 'nix/patches/**', '.github/workflows/test.yml') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 3G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P7D
+          purge-primary-key: never
+
+      # Unit tests, the project.nix check and the package build, as nix
+      # builds. The real-sandbox tests skip here: the nix build sandbox has no
+      # user namespaces.
+      - run: nix flake check -L
+      # GC roots for what the cache should keep: cache-nix-action collects
+      # garbage down to gc-max-store-size before saving, which otherwise
+      # deletes the patched gh and fj (the slow builds) along with their
+      # toolchains.
+      - name: Root cached outputs
+        run: |
+          mkdir -p "$RUNNER_TEMP/gcroots"
+          nix build .#gh .#forgejo-cli .#default --out-link "$RUNNER_TEMP/gcroots/out"
+          nix develop --profile "$RUNNER_TEMP/gcroots/dev" -c true
+      - name: nixfmt
+        run: nix fmt -- --check flake.nix nix/*.nix tests/fixtures/*.nix
+      - name: ruff
+        run: nix develop -c sh -c 'ruff check . && ruff format --check .'
+
+      # The full suite against the built sandbox, so the real-sandbox tests
+      # run too. Ubuntu 24.04's AppArmor denies unprivileged user namespaces
+      # to unconfined programs, which bwrap needs.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build sandbox
+        run: echo "SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox" >> "$GITHUB_ENV"
+      - name: pytest
+        # install-nix-action points TMPDIR at /home/runner/work/_temp, which
+        # makes the tests' unix socket paths exceed the 108-byte limit.
+        env:
+          TMPDIR: /tmp
+        run: nix develop -c pytest -v -rs tests

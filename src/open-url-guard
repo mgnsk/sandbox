@@ -61,7 +61,9 @@ def validate_url(url):
 
 def peer_pid(sock):
     """PID of the process on the other end of a connected AF_UNIX socket."""
-    creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    creds = sock.getsockopt(
+        socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+    )
     pid, _uid, _gid = struct.unpack("3i", creds)
     return pid
 
@@ -95,7 +97,9 @@ def confirm_via_tmux(url, cwd, cmdline):
         f"  command:  {clean(cmdline)}\n\n"
         f"{url}\n\n"
     )
-    return guard_popup.ask("open-url-guard", text, "fold -w 80 {} | less -FRX", 90, "60%")
+    return guard_popup.ask(
+        "open-url-guard", text, "fold -w 80 {} | less -FRX", 90, "60%"
+    )
 
 
 def open_url(url):

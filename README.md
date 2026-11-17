@@ -336,6 +336,7 @@ nix develop
 pytest tests                                  # unit tests; real-sandbox ones skip
 SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox pytest tests   # on a real host
 nix flake check                               # the unit tests, as a nix build
+ruff check . && ruff format --check .         # lint and formatting
 ```
 
 The real-sandbox tests need unprivileged user namespaces, so they skip inside

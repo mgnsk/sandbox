@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Bumps the SHA-pinned actions and their version comments.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # Skip releases younger than two weeks.
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]

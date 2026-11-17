@@ -52,7 +52,9 @@ def host_allowed(host):
     """Whether requests to host are forwarded at all."""
     if not HOST_RE.match(host):
         return False
-    return host in TOKEN_HOSTS or host in OTHER_HOSTS or host.endswith(OTHER_HOST_SUFFIXES)
+    return (
+        host in TOKEN_HOSTS or host in OTHER_HOSTS or host.endswith(OTHER_HOST_SUFFIXES)
+    )
 
 
 def graphql_operations(body):
@@ -148,7 +150,9 @@ def main():
     listen_path = sys.argv[1]
     token = host_token()
     if not token:
-        sys.exit("gh-api-proxy: `gh auth token` gave no token - run `gh auth login` on the host")
+        sys.exit(
+            "gh-api-proxy: `gh auth token` gave no token - run `gh auth login` on the host"
+        )
     if os.path.exists(listen_path):
         os.unlink(listen_path)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

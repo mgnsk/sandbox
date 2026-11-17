@@ -11,10 +11,9 @@ dbus_fast.service.method/ServiceInterface).
 import os
 import stat
 
-from dbus_fast import Variant
-
 import pytest
 from conftest import load_module
+from dbus_fast import Variant
 
 ss = load_module("secret-service-guard")
 
@@ -45,7 +44,9 @@ def store(tmp_path):
 
 
 def test_store_upsert_and_get(store):
-    row_id = store.upsert("label", {"service": "gh"}, "text/plain", b"secret1", replace=False)
+    row_id = store.upsert(
+        "label", {"service": "gh"}, "text/plain", b"secret1", replace=False
+    )
     content_type, secret = store.get(row_id)
     assert content_type == "text/plain"
     assert secret == b"secret1"
@@ -57,7 +58,9 @@ def test_store_find_by_attributes_requires_exact_match(store):
     )
     assert store.find_by_attributes({"service": "gh", "account": "me"}) == row_id
     assert store.find_by_attributes({"service": "gh"}) is None
-    assert store.find_by_attributes({"service": "gh", "account": "someone-else"}) is None
+    assert (
+        store.find_by_attributes({"service": "gh", "account": "someone-else"}) is None
+    )
 
 
 def test_store_upsert_replace_updates_in_place(store):
@@ -93,7 +96,9 @@ def test_store_delete(store):
 
 
 def test_store_all_rows_round_trips_attributes_and_secret_bytes(store):
-    row_id = store.upsert("mylabel", {"a": "1", "b": "2"}, "text/plain", b"payload", replace=False)
+    row_id = store.upsert(
+        "mylabel", {"a": "1", "b": "2"}, "text/plain", b"payload", replace=False
+    )
     [(rid, label, attrs, content_type, secret)] = store.all_rows()
     assert rid == row_id
     assert label == "mylabel"
@@ -165,7 +170,9 @@ def test_service_iface_collections_always_empty():
 
 
 def test_item_iface_get_secret(store):
-    row_id = store.upsert("label", {"service": "gh"}, "text/plain", b"topsecret", replace=False)
+    row_id = store.upsert(
+        "label", {"service": "gh"}, "text/plain", b"topsecret", replace=False
+    )
     item = ss.ItemIface(store, row_id)
 
     result = _raw(ss.ItemIface.get_secret)(item, "/session/s1")
@@ -232,7 +239,9 @@ def test_collection_iface_create_item_new(store):
     }
     secret = ["/session/s1", b"", b"topsecret", "text/plain"]
 
-    item_path, prompt = _raw(ss.CollectionIface.create_item)(collection, properties, secret, False)
+    item_path, prompt = _raw(ss.CollectionIface.create_item)(
+        collection, properties, secret, False
+    )
 
     assert prompt == ss.NULL_PATH
     row_id = store.find_by_attributes({"service": "gh"})
@@ -243,7 +252,9 @@ def test_collection_iface_create_item_new(store):
 
 
 def test_collection_iface_create_item_replace_updates_existing(store):
-    existing_id = store.upsert("old", {"service": "gh"}, "text/plain", b"old-secret", replace=True)
+    existing_id = store.upsert(
+        "old", {"service": "gh"}, "text/plain", b"old-secret", replace=True
+    )
     bus = FakeBus()
     collection = ss.CollectionIface(bus, store)
     properties = {
@@ -252,7 +263,9 @@ def test_collection_iface_create_item_replace_updates_existing(store):
     }
     secret = ["/session/s1", b"", b"new-secret", "text/plain"]
 
-    item_path, _prompt = _raw(ss.CollectionIface.create_item)(collection, properties, secret, True)
+    item_path, _prompt = _raw(ss.CollectionIface.create_item)(
+        collection, properties, secret, True
+    )
 
     assert item_path == ss.item_path(existing_id)
     _content_type, stored_secret = store.get(existing_id)

@@ -11,7 +11,18 @@ import socket
 import sys
 import termios
 
-from seccomp import ALLOW, EQ, ERRNO, GE, GT, KILL_PROCESS, MASKED_EQ, Arg, Attr, SyscallFilter
+from seccomp import (
+    ALLOW,
+    EQ,
+    ERRNO,
+    GE,
+    GT,
+    KILL_PROCESS,
+    MASKED_EQ,
+    Arg,
+    Attr,
+    SyscallFilter,
+)
 
 f = SyscallFilter(defaction=ALLOW)
 
@@ -31,12 +42,12 @@ for name in ("io_uring_setup", "io_uring_enter", "io_uring_register"):
 # socket() triggers for it. The kernel takes the family as an int but seccomp
 # sees the full register, so anything with high bits set lands in the final
 # >= rule and is denied too.
-family = 0
+low = 0
 for allowed in (socket.AF_UNIX, socket.AF_INET, socket.AF_INET6, socket.AF_NETLINK):
-    for family in range(family, allowed):
+    for family in range(low, allowed):
         f.add_rule(ERRNO(errno.EAFNOSUPPORT), "socket", Arg(0, EQ, family))
-    family = allowed + 1
-f.add_rule(ERRNO(errno.EAFNOSUPPORT), "socket", Arg(0, GE, family))
+    low = allowed + 1
+f.add_rule(ERRNO(errno.EAFNOSUPPORT), "socket", Arg(0, GE, low))
 
 # Kernel keyrings aren't fully namespaced; the inherited session keyring can
 # hold host credentials.
@@ -63,7 +74,11 @@ for name in ("perf_event_open", "userfaultfd", "bpf"):
 # too rather than trusting the kernel's truncation to 32 bits.
 for bit in range(32):
     set_bit, clear_bit = 1 << bit, 1 << ((bit + 1) % 32)
-    f.add_rule(ERRNO(errno.EINVAL), "personality", Arg(0, MASKED_EQ, set_bit | clear_bit, set_bit))
+    f.add_rule(
+        ERRNO(errno.EINVAL),
+        "personality",
+        Arg(0, MASKED_EQ, set_bit | clear_bit, set_bit),
+    )
 f.add_rule(ERRNO(errno.EINVAL), "personality", Arg(0, GT, 0xFFFFFFFF))
 
 f.export_bpf(sys.stdout)

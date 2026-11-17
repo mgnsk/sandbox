@@ -27,7 +27,9 @@ def reset_identity_comments(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fresh_approvals(monkeypatch):
-    monkeypatch.setattr(ssh_agent_guard, "APPROVALS", ssh_agent_guard.guard_popup.Approvals())
+    monkeypatch.setattr(
+        ssh_agent_guard, "APPROVALS", ssh_agent_guard.guard_popup.Approvals()
+    )
 
 
 # -- framing helpers --------------------------------------------------------
@@ -114,13 +116,21 @@ def test_cache_identities_populates_by_fingerprint():
 
     ssh_agent_guard.cache_identities(payload)
 
-    assert ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key1")] == "comment1"
-    assert ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key2")] == "comment2"
+    assert (
+        ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key1")]
+        == "comment1"
+    )
+    assert (
+        ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key2")]
+        == "comment2"
+    )
 
 
 def test_cache_identities_malformed_payload_is_swallowed():
     # Claims 5 keys but has no key/comment data to back that up.
-    ssh_agent_guard.cache_identities(bytes([ssh_agent_guard.SSH_AGENT_IDENTITIES_ANSWER]) + struct.pack(">I", 5))
+    ssh_agent_guard.cache_identities(
+        bytes([ssh_agent_guard.SSH_AGENT_IDENTITIES_ANSWER]) + struct.pack(">I", 5)
+    )
 
     assert ssh_agent_guard.IDENTITY_COMMENTS == {}
 
@@ -143,7 +153,9 @@ def test_peer_pid_returns_own_pid_over_same_process_socketpair(sock_pair):
 
 
 def test_peer_cwd_returns_real_cwd():
-    assert ssh_agent_guard.peer_cwd(os.getpid()) == os.readlink(f"/proc/{os.getpid()}/cwd")
+    assert ssh_agent_guard.peer_cwd(os.getpid()) == os.readlink(
+        f"/proc/{os.getpid()}/cwd"
+    )
 
 
 def test_peer_cwd_returns_unknown_for_dead_pid():
@@ -200,7 +212,6 @@ def test_clean_no_truncation_at_exact_limit():
     assert ssh_agent_guard.clean(s) == s
 
 
-
 # -- handle_client() --------------------------------------------------------
 
 
@@ -246,7 +257,9 @@ def _exchange(tmp_path, requests, upstream_replies=()):
     client, guard_side = socket.socketpair()
     upstream_thread = threading.Thread(target=fake_upstream, daemon=True)
     handler_thread = threading.Thread(
-        target=ssh_agent_guard.handle_client, args=(guard_side, upstream_path), daemon=True
+        target=ssh_agent_guard.handle_client,
+        args=(guard_side, upstream_path),
+        daemon=True,
     )
     upstream_thread.start()
     handler_thread.start()
@@ -273,10 +286,15 @@ def test_handle_client_forwards_identities_request_and_caches_response(tmp_path)
 
     assert upstream_seen == [request, None]
     assert responses == [answer]
-    assert ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key1")] == "comment1"
+    assert (
+        ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key1")]
+        == "comment1"
+    )
 
 
-def test_handle_client_sign_request_approved_forwards_to_upstream(tmp_path, monkeypatch):
+def test_handle_client_sign_request_approved_forwards_to_upstream(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(ssh_agent_guard, "confirm_via_tmux", lambda *a, **k: "once")
     signature = bytes([14]) + b"signature-bytes"
 
@@ -288,7 +306,9 @@ def test_handle_client_sign_request_approved_forwards_to_upstream(tmp_path, monk
     assert responses == [signature]
 
 
-def test_handle_client_sign_request_denied_never_reaches_upstream(tmp_path, monkeypatch):
+def test_handle_client_sign_request_denied_never_reaches_upstream(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(ssh_agent_guard, "confirm_via_tmux", lambda *a, **k: None)
 
     responses, upstream_seen = _exchange(tmp_path, [_sign_request()])
@@ -308,7 +328,9 @@ def test_handle_client_commit_signature_skips_popup(tmp_path, monkeypatch):
     request = _sign_request(data=_sshsig_blob(b"git"))
     signature = bytes([14]) + b"signature-bytes"
 
-    responses, upstream_seen = _exchange(tmp_path, [request], upstream_replies=[signature])
+    responses, upstream_seen = _exchange(
+        tmp_path, [request], upstream_replies=[signature]
+    )
 
     assert upstream_seen == [request, None]
     assert responses == [signature]
@@ -320,7 +342,13 @@ def _sshsig_blob(namespace):
     def string(b):
         return struct.pack(">I", len(b)) + b
 
-    return b"SSHSIG" + string(namespace) + string(b"") + string(b"sha512") + string(b"h" * 64)
+    return (
+        b"SSHSIG"
+        + string(namespace)
+        + string(b"")
+        + string(b"sha512")
+        + string(b"h" * 64)
+    )
 
 
 @pytest.mark.parametrize(
@@ -358,7 +386,9 @@ def test_read_frame_rejects_oversized_length_without_reading_payload(sock_pair):
 def test_read_frame_accepts_message_at_the_size_limit(sock_pair):
     a, b = sock_pair
     payload = b"x" * ssh_agent_guard.MAX_MESSAGE_SIZE
-    threading.Thread(target=ssh_agent_guard.write_frame, args=(a, payload), daemon=True).start()
+    threading.Thread(
+        target=ssh_agent_guard.write_frame, args=(a, payload), daemon=True
+    ).start()
     assert ssh_agent_guard.read_frame(b) == payload
 
 
@@ -374,7 +404,9 @@ def test_handle_client_non_sshsig_sign_request_still_prompts(tmp_path, monkeypat
     request = _sign_request(data=b"session-id-and-packet-bytes")
     signature = bytes([14]) + b"signature-bytes"
 
-    responses, upstream_seen = _exchange(tmp_path, [request], upstream_replies=[signature])
+    responses, upstream_seen = _exchange(
+        tmp_path, [request], upstream_replies=[signature]
+    )
 
     assert prompted == [True]
     assert upstream_seen == [request, None]
@@ -396,7 +428,9 @@ def test_handle_client_non_sshsig_sign_request_still_prompts(tmp_path, monkeypat
         27,  # EXTENSION
     ],
 )
-def test_handle_client_refuses_message_types_outside_the_allowlist(tmp_path, msg_type, monkeypatch):
+def test_handle_client_refuses_message_types_outside_the_allowlist(
+    tmp_path, msg_type, monkeypatch
+):
     """Only identity listing and (gated) signing may reach the real agent.
 
     Everything else mutates agent state the sandbox has no business touching -
@@ -436,7 +470,9 @@ def test_handle_client_samples_peer_once_at_connect(tmp_path, monkeypatch):
     signature = bytes([14]) + b"signature-bytes"
 
     responses, _upstream_seen = _exchange(
-        tmp_path, [_sign_request(), _sign_request()], upstream_replies=[signature, signature]
+        tmp_path,
+        [_sign_request(), _sign_request()],
+        upstream_replies=[signature, signature],
     )
 
     assert responses == [signature, signature]

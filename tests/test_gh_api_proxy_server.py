@@ -32,7 +32,12 @@ class FakeUpstream(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
         self.seen.append(
-            {"method": self.command, "path": self.path, "headers": dict(self.headers), "body": body}
+            {
+                "method": self.command,
+                "path": self.path,
+                "headers": dict(self.headers),
+                "body": body,
+            }
         )
         if self.path == "/big":
             # Chunked, so the proxy has to relay it close-delimited.
@@ -125,7 +130,11 @@ def send(sock_path, raw):
 
 
 def request(sock_path, method, host, path, body=b"", headers=()):
-    lines = [f"{method} {path} HTTP/1.1", f"Host: {host}", "Authorization: token placeholder"]
+    lines = [
+        f"{method} {path} HTTP/1.1",
+        f"Host: {host}",
+        "Authorization: token placeholder",
+    ]
     lines += list(headers)
     if body or method not in ("GET", "HEAD"):
         lines.append(f"Content-Length: {len(body)}")
@@ -158,7 +167,13 @@ def test_non_api_host_gets_no_token(make_proxy):
 
 def test_hop_by_hop_and_expect_headers_are_not_forwarded(make_proxy):
     path, _ = make_proxy()
-    request(path, "GET", "api.github.com", "/user", headers=["Connection: keep-alive", "X-Custom: kept"])
+    request(
+        path,
+        "GET",
+        "api.github.com",
+        "/user",
+        headers=["Connection: keep-alive", "X-Custom: kept"],
+    )
 
     [seen] = FakeUpstream.seen
     assert seen["headers"]["X-Custom"] == "kept"
@@ -183,7 +198,11 @@ def test_unknown_host_is_refused(make_proxy):
 def test_two_host_headers_are_refused(make_proxy):
     path, _ = make_proxy()
     assert_refused(
-        send(path, b"GET /user HTTP/1.1\r\nHost: api.github.com\r\nHost: example.com\r\n\r\n"), 403
+        send(
+            path,
+            b"GET /user HTTP/1.1\r\nHost: api.github.com\r\nHost: example.com\r\n\r\n",
+        ),
+        403,
     )
 
 
@@ -213,7 +232,13 @@ def test_chunked_request_body_is_refused(make_proxy):
 
 def test_absolute_form_target_is_refused(make_proxy):
     path, _ = make_proxy()
-    assert_refused(send(path, b"GET http://api.github.com/user HTTP/1.1\r\nHost: api.github.com\r\n\r\n"), 400)
+    assert_refused(
+        send(
+            path,
+            b"GET http://api.github.com/user HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
+        ),
+        400,
+    )
 
 
 def test_oversized_graphql_body_is_refused(make_proxy, monkeypatch):
@@ -244,14 +269,19 @@ def test_unreachable_upstream_is_a_502(tmp_path_factory):
 
 def test_declined_write_never_reaches_upstream(make_proxy):
     path, confirm = make_proxy(answer=None)
-    assert_refused(request(path, "POST", "api.github.com", "/repos/o/r/labels", b'{"name":"x"}'), 403)
+    assert_refused(
+        request(path, "POST", "api.github.com", "/repos/o/r/labels", b'{"name":"x"}'),
+        403,
+    )
     assert confirm.prompts == ["POST api.github.com/repos/o/r/labels"]
 
 
 def test_write_approved_once_is_forwarded_and_the_next_one_asks_again(make_proxy):
     path, confirm = make_proxy(answer="once")
     for _ in range(2):
-        status, _, _ = request(path, "POST", "api.github.com", "/repos/o/r/labels", b'{"name":"x"}')
+        status, _, _ = request(
+            path, "POST", "api.github.com", "/repos/o/r/labels", b'{"name":"x"}'
+        )
         assert status == 200
 
     assert [s["body"] for s in FakeUpstream.seen] == [b'{"name":"x"}'] * 2
@@ -272,7 +302,11 @@ def test_approve_always_covers_later_writes_from_other_processes(make_proxy):
         "print(s.recv(64).decode())\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", script, str(path)], capture_output=True, text=True, timeout=10, check=True
+        [sys.executable, "-c", script, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
     )
     assert " 200 " in result.stdout
 
@@ -301,7 +335,9 @@ def test_graphql_query_is_forwarded_without_a_prompt(make_proxy):
 
 def test_graphql_mutation_prompts(make_proxy):
     path, confirm = make_proxy(answer=None)
-    body = json.dumps({"query": "mutation { addStar(input: {}) { clientMutationId } }"}).encode()
+    body = json.dumps(
+        {"query": "mutation { addStar(input: {}) { clientMutationId } }"}
+    ).encode()
     assert_refused(request(path, "POST", "api.github.com", "/graphql", body), 403)
     assert "mutation (anonymous): addStar" in confirm.prompts[0]
 
@@ -334,7 +370,9 @@ def test_head_has_headers_but_no_body(make_proxy):
 def test_request_body_is_streamed_upstream(make_proxy):
     path, _ = make_proxy(answer="once")
     payload = bytes(range(256)) * 4096
-    status, _, _ = request(path, "POST", "uploads.github.com", "/repos/o/r/releases/1/assets", payload)
+    status, _, _ = request(
+        path, "POST", "uploads.github.com", "/repos/o/r/releases/1/assets", payload
+    )
     assert status == 200
     [seen] = FakeUpstream.seen
     assert seen["body"] == payload

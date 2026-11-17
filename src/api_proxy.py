@@ -31,14 +31,32 @@ CHUNK = 64 * 1024
 
 # Hop-by-hop headers (RFC 9110 7.6.1) plus the ones this proxy sets itself.
 # Expect is answered locally by http.server before the request reaches us.
-DROP_REQUEST_HEADERS = frozenset({
-    "host", "authorization", "connection", "keep-alive", "proxy-authorization",
-    "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "expect",
-})
-DROP_RESPONSE_HEADERS = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-connection",
-    "trailer", "transfer-encoding", "upgrade",
-})
+DROP_REQUEST_HEADERS = frozenset(
+    {
+        "host",
+        "authorization",
+        "connection",
+        "keep-alive",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "expect",
+    }
+)
+DROP_RESPONSE_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-connection",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
 
 
 def clean(s):
@@ -52,7 +70,9 @@ def clean(s):
 
 def peer_pid(sock):
     """PID of the process on the other end of a connected AF_UNIX socket."""
-    creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    creds = sock.getsockopt(
+        socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")
+    )
     pid, _uid, _gid = struct.unpack("3i", creds)
     return pid
 
@@ -69,7 +89,9 @@ def peer_cmdline(pid):
 
 def open_upstream(host):
     """A TLS connection to the real host ("name" or "name:port")."""
-    return http.client.HTTPSConnection(host, timeout=300, context=ssl.create_default_context())
+    return http.client.HTTPSConnection(
+        host, timeout=300, context=ssl.create_default_context()
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -137,7 +159,9 @@ class Handler(BaseHTTPRequestHandler):
                 return None
 
         description = self.server.describe_write(self.command, host, self.path, body)
-        if description is not None and not self.server.approve(self.connection, description):
+        if description is not None and not self.server.approve(
+            self.connection, description
+        ):
             return self.refuse(403, "declined by user")
         return self.forward(host, length, body)
 
@@ -159,7 +183,9 @@ class Handler(BaseHTTPRequestHandler):
         """Request line, the client's headers minus DROP_REQUEST_HEADERS, the
         guard's Authorization if any, then the body - already read, or
         streamed from the client."""
-        conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
+        conn.putrequest(
+            self.command, self.path, skip_host=True, skip_accept_encoding=True
+        )
         conn.putheader("Host", host)
         for name, value in self.headers.items():
             if name.lower() not in DROP_REQUEST_HEADERS:

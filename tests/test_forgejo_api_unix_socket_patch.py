@@ -62,7 +62,9 @@ def short_tmp(tmp_path_factory):
 def test_request_arrives_as_plain_http_with_the_real_host(short_tmp):
     proxy = FakeProxy(short_tmp / "s", {"login": "via-socket"})
     try:
-        result = run_fj(short_tmp, "whoami", env={"FJ_HTTP_UNIX_SOCKET": str(short_tmp / "s")})
+        result = run_fj(
+            short_tmp, "whoami", env={"FJ_HTTP_UNIX_SOCKET": str(short_tmp / "s")}
+        )
     finally:
         proxy.close()
 
@@ -93,7 +95,9 @@ def test_without_the_variable_fj_connects_directly(short_tmp):
     thread.start()
     try:
         result = run_fj(
-            short_tmp, "whoami", env={"HTTPS_PROXY": f"http://127.0.0.1:{listener.getsockname()[1]}"}
+            short_tmp,
+            "whoami",
+            env={"HTTPS_PROXY": f"http://127.0.0.1:{listener.getsockname()[1]}"},
         )
         thread.join(timeout=10)
     finally:
@@ -161,7 +165,9 @@ def test_read_gets_the_real_token(fj_via_proxy):
 
     assert result.returncode == 0, result.stderr
     assert "someone" in result.stdout
-    assert {r["headers"]["authorization"] for r in upstream.requests} == {"token real-token"}
+    assert {r["headers"]["authorization"] for r in upstream.requests} == {
+        "token real-token"
+    }
     assert confirm.prompts == []
 
 
@@ -171,7 +177,9 @@ def test_declined_write_fails_in_fj_and_never_reaches_forgejo(fj_via_proxy):
 
     assert result.returncode != 0
     assert "declined by user" in result.stderr
-    assert not [r for r in upstream.requests if not r["line"].startswith(("GET ", "HEAD "))]
+    assert not [
+        r for r in upstream.requests if not r["line"].startswith(("GET ", "HEAD "))
+    ]
     assert confirm.prompts == [f"POST {HOST}/api/v1/repos/o/r/issues/1/comments?"]
 
 

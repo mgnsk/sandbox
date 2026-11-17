@@ -20,7 +20,6 @@ themselves there. Each gets its own $SANDBOX_STATE_DIR.
 import contextlib
 import json
 import os
-import re
 import shutil
 import signal
 import socket
@@ -46,7 +45,9 @@ def test_refuses_home_and_above(cwd):
         sandbox.check_cwd(cwd, "/home/u")
 
 
-@pytest.mark.parametrize("cwd", ["/home/u/.config", "/home/u/.ssh/x", "/home/u/.local/share/sandbox"])
+@pytest.mark.parametrize(
+    "cwd", ["/home/u/.config", "/home/u/.ssh/x", "/home/u/.local/share/sandbox"]
+)
 def test_refuses_home_dot_directories(cwd):
     """The dot directories hold host state: ssh keys, the gh token, every
     sandbox's volume and secrets, ..."""
@@ -95,7 +96,10 @@ def test_refuses_a_work_tree_that_contains_home(tmp_path, monkeypatch):
 
 def test_volume_name_is_unchanged_from_the_bash_launcher():
     """Existing volumes stay in use."""
-    assert sandbox.volume_name("/home/u/p") == "_home_u_p-" + __import__("hashlib").sha256(b"/home/u/p").hexdigest()[:8]
+    assert (
+        sandbox.volume_name("/home/u/p")
+        == "_home_u_p-" + __import__("hashlib").sha256(b"/home/u/p").hexdigest()[:8]
+    )
 
 
 def test_expand():
@@ -123,7 +127,11 @@ def test_bad_host_ports_are_refused(bad):
 
 
 def test_host_ports_combine_config_and_environment():
-    assert sandbox.host_port_specs(["1"], {"SANDBOX_HOST_PORTS": "2, 3/udp"}) == ["1", "2", "3/udp"]
+    assert sandbox.host_port_specs(["1"], {"SANDBOX_HOST_PORTS": "2, 3/udp"}) == [
+        "1",
+        "2",
+        "3/udp",
+    ]
     assert sandbox.host_port_specs([], {}) == []
 
 
@@ -131,7 +139,12 @@ def test_host_ports_combine_config_and_environment():
 
 
 def _profile(name, paths=(), files=(), priority=0):
-    return {"name": name, "paths": list(paths), "projectFiles": list(files), "priority": priority}
+    return {
+        "name": name,
+        "paths": list(paths),
+        "projectFiles": list(files),
+        "priority": priority,
+    }
 
 
 def test_profile_selection(tmp_path):
@@ -157,7 +170,14 @@ def test_profile_selection(tmp_path):
 
 
 def _bind(src, **kw):
-    return {"src": src, "dst": None, "mode": "ro", "optional": False, "hideGit": False, **kw}
+    return {
+        "src": src,
+        "dst": None,
+        "mode": "ro",
+        "optional": False,
+        "hideGit": False,
+        **kw,
+    }
 
 
 def test_binds_end_with_the_whole_project(tmp_path):
@@ -170,7 +190,16 @@ def test_hide_git_outside_its_own_project(tmp_path):
     (tmp_path / ".git").mkdir()
     b = _bind(str(tmp_path), hideGit=True)
     args = sandbox.bind_args([b], {}, "/p")
-    assert args == ["--ro-bind", str(tmp_path), str(tmp_path), "--tmpfs", f"{tmp_path}/.git", "--bind", "/p", "/p"]
+    assert args == [
+        "--ro-bind",
+        str(tmp_path),
+        str(tmp_path),
+        "--tmpfs",
+        f"{tmp_path}/.git",
+        "--bind",
+        "/p",
+        "/p",
+    ]
 
 
 def test_bind_of_the_project_gives_way_to_it(tmp_path):
@@ -184,11 +213,20 @@ def test_bind_of_the_project_gives_way_to_it(tmp_path):
 def test_bind_of_the_project_elsewhere_is_kept(tmp_path):
     b = _bind(str(tmp_path), dst="/elsewhere")
     args = sandbox.bind_args([b], {}, str(tmp_path))
-    assert args == ["--ro-bind", str(tmp_path), "/elsewhere", "--bind", str(tmp_path), str(tmp_path)]
+    assert args == [
+        "--ro-bind",
+        str(tmp_path),
+        "/elsewhere",
+        "--bind",
+        str(tmp_path),
+        str(tmp_path),
+    ]
 
 
 def test_bind_paths_are_expanded(tmp_path):
-    args = sandbox.bind_args([_bind("~/x", dst="$HOME/y", mode="rw")], {"HOME": str(tmp_path)}, "/p")
+    args = sandbox.bind_args(
+        [_bind("~/x", dst="$HOME/y", mode="rw")], {"HOME": str(tmp_path)}, "/p"
+    )
     assert args[:3] == ["--bind", str(tmp_path / "x"), str(tmp_path / "y")]
 
 
@@ -198,7 +236,15 @@ STORE = "/nix/store/" + "a" * 32
 
 
 def _manifest(**kw):
-    return {"path": None, "claudeDir": None, "env": {}, "binds": [], "hostPorts": [], "command": None, **kw}
+    return {
+        "path": None,
+        "claudeDir": None,
+        "env": {},
+        "binds": [],
+        "hostPorts": [],
+        "command": None,
+        **kw,
+    }
 
 
 def test_options_before_the_command():
@@ -216,7 +262,13 @@ def test_options_before_the_command():
 
 def test_store_paths():
     assert sandbox.is_store_path(f"{STORE}-env/bin")
-    for bad in ["/etc/passwd", f"{STORE}-env/../../etc", "/nix/store/short-x", f"{STORE}-env/", 3]:
+    for bad in [
+        "/etc/passwd",
+        f"{STORE}-env/../../etc",
+        "/nix/store/short-x",
+        f"{STORE}-env/",
+        3,
+    ]:
         assert not sandbox.is_store_path(bad)
 
 
@@ -233,7 +285,17 @@ def test_reads_a_manifest(tmp_path):
         {"path": "/home/u/bin"},
         {"claudeDir": "/etc/claude-code"},
         {"env": {"A": 1}},
-        {"binds": [{"src": "~/x", "dst": None, "mode": "rwx", "optional": False, "hideGit": False}]},
+        {
+            "binds": [
+                {
+                    "src": "~/x",
+                    "dst": None,
+                    "mode": "rwx",
+                    "optional": False,
+                    "hideGit": False,
+                }
+            ]
+        },
         {"binds": [{"src": "~/x"}]},
         {"hostPorts": [5432]},
         {"command": []},
@@ -263,7 +325,9 @@ def _project(tmp_path, content="{ ... }: { }\n"):
         return str(out)
 
     def manifest(reload=False, base=None):
-        return sandbox.project_manifest({}, str(config), str(project), str(volume), base, reload, evaluate)
+        return sandbox.project_manifest(
+            {}, str(config), str(project), str(volume), base, reload, evaluate
+        )
 
     return project, out, calls, manifest
 
@@ -276,7 +340,7 @@ def test_project_manifest_is_cached(tmp_path, monkeypatch):
     assert manifest()["env"] == {"N": "1"}
     assert len(calls) == 1
     # Changed, reloaded or with another profile Claude config, it's evaluated again.
-    (project / "sandbox.nix").write_text("{ ... }: { env.N = \"2\"; }\n")
+    (project / "sandbox.nix").write_text('{ ... }: { env.N = "2"; }\n')
     manifest()
     manifest(reload=True)
     manifest(base=f"{STORE}-claude")
@@ -315,14 +379,24 @@ class _Tty:
         return self.answer
 
 
-ACCESS = _manifest(hostPorts=["5432"], binds=[{"src": "~/d", "dst": None, "mode": "rw", "optional": False, "hideGit": False}])
+ACCESS = _manifest(
+    hostPorts=["5432"],
+    binds=[
+        {"src": "~/d", "dst": None, "mode": "rw", "optional": False, "hideGit": False}
+    ],
+)
 
 
 def test_project_without_host_access_needs_no_approval(tmp_path):
     def no_tty():
         raise AssertionError("asked")
 
-    sandbox.approve_project(_manifest(env={"A": "b"}, path=f"{STORE}-env/bin"), str(tmp_path), "p/sandbox.nix", no_tty)
+    sandbox.approve_project(
+        _manifest(env={"A": "b"}, path=f"{STORE}-env/bin"),
+        str(tmp_path),
+        "p/sandbox.nix",
+        no_tty,
+    )
 
 
 def test_host_access_is_asked_once_until_it_changes(tmp_path):
@@ -351,8 +425,17 @@ def test_host_access_without_a_terminal_is_refused(tmp_path):
 
 
 def test_project_adds_to_the_profile():
-    profile = {"env": {"PATH": "/env/bin", "A": "1"}, "binds": [{"src": "~/x"}], "claudeDir": f"{STORE}-claude-default"}
-    m = _manifest(path=f"{STORE}-env/bin", env={"A": "2", "B": "3"}, binds=[{"src": "~/y"}], claudeDir=f"{STORE}-claude-project")
+    profile = {
+        "env": {"PATH": "/env/bin", "A": "1"},
+        "binds": [{"src": "~/x"}],
+        "claudeDir": f"{STORE}-claude-default",
+    }
+    m = _manifest(
+        path=f"{STORE}-env/bin",
+        env={"A": "2", "B": "3"},
+        binds=[{"src": "~/y"}],
+        claudeDir=f"{STORE}-claude-project",
+    )
     p = sandbox.apply_project(profile, m)
     assert p["env"] == {"PATH": f"{STORE}-env/bin:/env/bin", "A": "2", "B": "3"}
     assert p["binds"] == [{"src": "~/x"}, {"src": "~/y"}]
@@ -390,7 +473,10 @@ def test_exchange_links_are_dropped(tmp_path):
     (volume / "exchange/kept.txt").write_text("host output")
     args = sandbox.exchange_args(str(volume))
     assert args[:3] == ["--ro-bind", str(volume / "exchange"), str(volume / "exchange")]
-    assert sorted(p.name for p in (volume / "exchange").rglob("*")) == ["kept.txt", "sub"]
+    assert sorted(p.name for p in (volume / "exchange").rglob("*")) == [
+        "kept.txt",
+        "sub",
+    ]
     assert target.read_text() == "untouched"
     assert (volume / "exchange").stat().st_mode & 0o777 == 0o700
 
@@ -404,6 +490,51 @@ def _pasta(tcp=(), udp=(), addrs=()):
         "seccomp": "BPF",
     }
     return sandbox.pasta_argv(config, list(tcp), list(udp), list(addrs), ["--x"])
+
+
+def test_dns_forward_replaces_a_loopback_resolver():
+    """systemd-resolved's stub: unreachable inside, so forwarded."""
+    resolver, text = sandbox.dns_forward(
+        "# generated\nnameserver 127.0.0.53\nnameserver ::1\n"
+        "nameserver 127.0.0.1\noptions edns0\nsearch lan\n"
+    )
+    assert resolver == "127.0.0.53"
+    assert text == (
+        f"# generated\nnameserver {sandbox.DNS_FORWARD_ADDR}\n"
+        "options edns0\nsearch lan\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "conf",
+    [
+        "nameserver 100.100.100.100\nnameserver fd7a:115c:a1e0::53\n",
+        # glibc tries the first one first; leave a working one in front.
+        "nameserver 192.168.1.1\nnameserver 127.0.0.53\n",
+        # IPv6 loopback isn't forwarded.
+        "nameserver ::1\n",
+        "",
+    ],
+)
+def test_dns_forward_leaves_reachable_or_unsupported_resolvers(conf):
+    assert sandbox.dns_forward(conf) == (None, None)
+
+
+def test_dns_forward_only_with_a_loopback_resolver_in_pasta_args():
+    assert "--dns-forward" not in _pasta()
+    config = {
+        "tools": {"pasta": "PASTA", "bash": "BASH", "ip": "IP", "bwrap": "BWRAP"},
+        "seccomp": "BPF",
+    }
+    argv = sandbox.pasta_argv(config, [], [], [], ["--x"], "127.0.0.53")
+    i = argv.index("--dns-forward")
+    assert argv[i : i + 4] == [
+        "--dns-forward",
+        sandbox.DNS_FORWARD_ADDR,
+        "--dns-host",
+        "127.0.0.53",
+    ]
+    assert i < argv.index("--")
 
 
 def test_host_access_is_restricted_in_pasta_args():
@@ -425,7 +556,18 @@ def test_seccomp_fd_is_opened_inside_pasta():
     sep = argv.index("--")
     assert argv[sep + 1 : sep + 3] == ["BASH", "-c"]
     assert 'exec 10<"$seccomp"' in argv[sep + 3]
-    assert argv[sep + 4 :] == ["bash", "IP", "BPF", "2", "10.0.0.1", "100.1.2.3", "BWRAP", "--seccomp", "10", "--x"]
+    assert argv[sep + 4 :] == [
+        "bash",
+        "IP",
+        "BPF",
+        "2",
+        "10.0.0.1",
+        "100.1.2.3",
+        "BWRAP",
+        "--seccomp",
+        "10",
+        "--x",
+    ]
 
 
 def test_pasta_inner_script_adds_prohibit_routes(tmp_path):
@@ -438,8 +580,20 @@ def test_pasta_inner_script_adds_prohibit_routes(tmp_path):
     bpf.write_text("")
     subprocess.run(
         [
-            "bash", "-c", sandbox.PASTA_INNER, "bash", str(ip), str(bpf), "2", "1.2.3.4", "5.6.7.8",
-            "sh", "-c", f'echo "run $*" >> {log}; test -e /proc/self/fd/10', "sh", "a",
+            "bash",
+            "-c",
+            sandbox.PASTA_INNER,
+            "bash",
+            str(ip),
+            str(bpf),
+            "2",
+            "1.2.3.4",
+            "5.6.7.8",
+            "sh",
+            "-c",
+            f'echo "run $*" >> {log}; test -e /proc/self/fd/10',
+            "sh",
+            "a",
         ],
         check=True,
     )
@@ -454,7 +608,9 @@ def test_pasta_inner_script_adds_prohibit_routes(tmp_path):
 
 
 def test_guards_are_stopped_and_their_dirs_removed(tmp_path):
-    guards = sandbox.Guards({"hostPath": "/x", "python": "python3", "src": str(BIN_DIR)})
+    guards = sandbox.Guards(
+        {"hostPath": "/x", "python": "python3", "src": str(BIN_DIR)}
+    )
     proc = guards.start(["sleep", "60"])
     d = guards.tempdir()
     guards.close()
@@ -463,7 +619,9 @@ def test_guards_are_stopped_and_their_dirs_removed(tmp_path):
 
 
 def test_wait_for_names_a_guard_that_exited():
-    guards = sandbox.Guards({"hostPath": "/x", "python": "python3", "src": str(BIN_DIR)})
+    guards = sandbox.Guards(
+        {"hostPath": "/x", "python": "python3", "src": str(BIN_DIR)}
+    )
     proc = guards.start(["false"])
     with pytest.raises(sandbox.SandboxError, match="g exited"):
         guards.wait_for("/nonexistent", proc, "g")
@@ -473,7 +631,9 @@ def test_wait_for_names_a_guard_that_exited():
 def test_guards_get_store_tools_first_on_path(monkeypatch):
     monkeypatch.setenv("PATH", "/host/bin")
     monkeypatch.setenv("PYTHONPATH", "/project")
-    guards = sandbox.Guards({"hostPath": "/store/bin", "python": "python3", "src": str(BIN_DIR)})
+    guards = sandbox.Guards(
+        {"hostPath": "/store/bin", "python": "python3", "src": str(BIN_DIR)}
+    )
     assert guards.env["PATH"] == "/store/bin:/host/bin"
     assert "PYTHONPATH" not in guards.env
 
@@ -487,7 +647,16 @@ def _userns_usable():
         return False
     try:
         probe = subprocess.run(
-            [bwrap, "--unshare-all", "--unshare-user", "--disable-userns", "--ro-bind", "/", "/", "true"],
+            [
+                bwrap,
+                "--unshare-all",
+                "--unshare-user",
+                "--disable-userns",
+                "--ro-bind",
+                "/",
+                "/",
+                "true",
+            ],
             capture_output=True,
             timeout=10,
             check=False,
@@ -516,7 +685,14 @@ def run_sandbox(script, *, cwd, state_dir=None, extra_env=None, timeout=60, args
     env["SANDBOX_STATE_DIR"] = str(state_dir or Path(cwd).parent / "state")
     env.update(extra_env or {})
     return subprocess.run(
-        [SANDBOX, *args], input=script, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False
+        [SANDBOX, *args],
+        input=script,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
 
 
@@ -548,7 +724,10 @@ def test_refuses_to_run_in_home_through_a_symlink(tmp_path):
     link = tmp_path / "home-link"
     link.symlink_to(Path.home())
     result = subprocess.run(
-        ["bash", "-c", f'cd "{link}" && exec "{SANDBOX}" true'], capture_output=True, text=True, check=False
+        ["bash", "-c", f'cd "{link}" && exec "{SANDBOX}" true'],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 1
     assert "refusing" in result.stderr
@@ -564,7 +743,9 @@ def test_sandboxed_process_is_not_root(run_in):
 
 
 def test_args_are_run_as_the_command(project_dir, state_dir):
-    result = run_sandbox("", cwd=project_dir, state_dir=state_dir, args=["echo", "hello there"])
+    result = run_sandbox(
+        "", cwd=project_dir, state_dir=state_dir, args=["echo", "hello there"]
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "hello there"
 
@@ -573,7 +754,9 @@ def test_subdirectory_gets_the_whole_work_tree(project_dir, state_dir):
     """Started in a subdirectory, the repo root and .git are there, read-write."""
     sub = project_dir / "sub"
     sub.mkdir()
-    result = run_sandbox("test -d ../.git && touch ../top && echo ok\n", cwd=sub, state_dir=state_dir)
+    result = run_sandbox(
+        "test -d ../.git && touch ../top && echo ok\n", cwd=sub, state_dir=state_dir
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
     assert (project_dir / "top").exists()
@@ -593,10 +776,16 @@ def test_environment_is_cleared_and_reallowlisted(run_in):
     result = run_in(
         'echo "GH_TOKEN=[$GH_TOKEN]"; echo "SOME_HOST_VAR=[$SOME_HOST_VAR]"\n'
         'echo "HOME=[$HOME]"; echo "TERM=[$TERM]"\n',
-        extra_env={"GH_TOKEN": "leaked-token", "SOME_HOST_VAR": "should-not-cross", "TERM": "xterm-256color"},
+        extra_env={
+            "GH_TOKEN": "leaked-token",
+            "SOME_HOST_VAR": "should-not-cross",
+            "TERM": "xterm-256color",
+        },
     )
     assert result.returncode == 0, result.stderr
-    assert "leaked-token" not in result.stdout, "a host GH_TOKEN must never reach the sandbox"
+    assert "leaked-token" not in result.stdout, (
+        "a host GH_TOKEN must never reach the sandbox"
+    )
     assert "SOME_HOST_VAR=[]" in result.stdout
     assert f"HOME=[{os.environ['HOME']}]" in result.stdout
     assert "TERM=[xterm-256color]" in result.stdout
@@ -621,7 +810,9 @@ def test_store_and_claude_config_are_read_only(run_in):
     assert result.returncode != 0
     assert "Read-only file system" in result.stderr
 
-    result = run_in("cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n")
+    result = run_in(
+        "cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n"
+    )
     assert json.loads(result.stdout)["env"]["DISABLE_AUTOUPDATER"] == 1
     assert "Read-only file system" in result.stderr
 
@@ -631,7 +822,10 @@ def test_volume_is_per_project(run_in, state_dir, project_dir):
     assert result.returncode == 0, result.stderr
     volume = state_dir / sandbox.volume_name(str(project_dir.resolve()))
     assert (volume / str(Path.home()).lstrip("/") / "kept").read_text() == "kept\n"
-    assert not (Path.home() / "kept").exists() or (Path.home() / "kept").read_text() != "kept\n"
+    assert (
+        not (Path.home() / "kept").exists()
+        or (Path.home() / "kept").read_text() != "kept\n"
+    )
 
 
 def test_exchange_dir_is_read_only(run_in):
@@ -706,20 +900,23 @@ def test_go_is_a_per_project_volume_not_the_host_dir(run_in):
         (bin_dir / bin_host_marker).unlink(missing_ok=True)
 
 
-
 # -- networking --------------------------------------------------------
 
 
 def test_network_is_reachable_through_pasta(project_dir):
     result = run_sandbox("getent hosts github.com\n", cwd=project_dir, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip(), "pasta should still provide working DNS/outbound connectivity"
+    assert result.stdout.strip(), (
+        "pasta should still provide working DNS/outbound connectivity"
+    )
 
 
 def _free_non_ephemeral_port(family, addr):
     """Where real dev servers sit (3000, 5173, 8000, ...), below the kernel's
     ephemeral range."""
-    ephemeral_low = int(Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()[0])
+    ephemeral_low = int(
+        Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()[0]
+    )
     for port in range(18000, min(ephemeral_low, 19000)):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as probe:
@@ -746,7 +943,9 @@ def _http_get(addr, port):
 
 
 @pytest.mark.parametrize("free_port", [_free_non_ephemeral_port, _free_ephemeral_port])
-def test_loopback_server_in_sandbox_is_reachable_from_host(project_dir, tmp_path, free_port):
+def test_loopback_server_in_sandbox_is_reachable_from_host(
+    project_dir, tmp_path, free_port
+):
     """A server bound to 127.0.0.1 inside the sandbox (vite, an OAuth login's
     callback listener) must answer a host browser opening http://localhost:port.
 
@@ -885,12 +1084,17 @@ def _probe_from_sandbox(project_dir, targets, extra_env=None):
     script = f"python3 -c \"$(cat <<'EOF'\n{code}EOF\n)\" {args}\n"
     result = run_sandbox(script, cwd=project_dir, extra_env=extra_env, timeout=60)
     assert result.returncode == 0, result.stderr
-    return dict(line.split(" ", 1) for line in result.stdout.splitlines() if " " in line)
+    return dict(
+        line.split(" ", 1) for line in result.stdout.splitlines() if " " in line
+    )
 
 
 def _host_global_addrs():
     out = subprocess.run(
-        ["ip", "-o", "addr", "show", "scope", "global"], capture_output=True, text=True, check=True
+        ["ip", "-o", "addr", "show", "scope", "global"],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     return [line.split()[3].split("/")[0] for line in out.splitlines()]
 
@@ -899,8 +1103,12 @@ def test_host_loopback_port_is_not_reachable_by_default(project_dir):
     """pasta's default -T auto mirrored every host loopback listener into the
     netns - a host adb server on 127.0.0.1:5037 was usable from inside."""
     with _host_server("127.0.0.1") as port:
-        got = _probe_from_sandbox(project_dir, [("127.0.0.1", port)], {"SANDBOX_HOST_PORTS": ""})
-    assert got["127.0.0.1"] != HOST_REPLY.decode(), "host loopback port reachable without SANDBOX_HOST_PORTS"
+        got = _probe_from_sandbox(
+            project_dir, [("127.0.0.1", port)], {"SANDBOX_HOST_PORTS": ""}
+        )
+    assert got["127.0.0.1"] != HOST_REPLY.decode(), (
+        "host loopback port reachable without SANDBOX_HOST_PORTS"
+    )
 
 
 def test_listed_host_port_is_reachable(project_dir):
@@ -908,13 +1116,17 @@ def test_listed_host_port_is_reachable(project_dir):
         got = _probe_from_sandbox(
             project_dir, [("127.0.0.1", port)], {"SANDBOX_HOST_PORTS": f"1, {port}/tcp"}
         )
-    assert got["127.0.0.1"] == HOST_REPLY.decode(), f"listed port {port} not forwarded: {got}"
+    assert got["127.0.0.1"] == HOST_REPLY.decode(), (
+        f"listed port {port} not forwarded: {got}"
+    )
 
 
 def test_host_loopback_is_not_reachable_via_gateway(project_dir):
     """pasta's default --map-host-loopback translated the gateway address to
     the host's loopback, any port."""
-    gateway = run_sandbox("ip -4 route show default | awk '{print $3; exit}'\n", cwd=project_dir)
+    gateway = run_sandbox(
+        "ip -4 route show default | awk '{print $3; exit}'\n", cwd=project_dir
+    )
     assert gateway.returncode == 0, gateway.stderr
     gw = gateway.stdout.strip()
     if not gw:
@@ -931,51 +1143,60 @@ def test_host_addresses_are_not_reachable(project_dir):
     if not addrs:
         pytest.skip("no global IPv4 address on this host")
     with _host_server("0.0.0.0") as port:
-        got = _probe_from_sandbox(project_dir, [(a, port) for a in addrs], {"SANDBOX_HOST_PORTS": ""})
+        got = _probe_from_sandbox(
+            project_dir, [(a, port) for a in addrs], {"SANDBOX_HOST_PORTS": ""}
+        )
     reached = [a for a in addrs if got.get(a) == HOST_REPLY.decode()]
     assert not reached, f"host service reachable via host address(es) {reached}: {got}"
 
 
 @pytest.mark.parametrize("bad", ["0", "70000", "10-5", "abc", "22/sctp"])
 def test_bad_host_ports_stop_the_sandbox(project_dir, bad):
-    result = run_sandbox("echo started\n", cwd=project_dir, extra_env={"SANDBOX_HOST_PORTS": bad})
+    result = run_sandbox(
+        "echo started\n", cwd=project_dir, extra_env={"SANDBOX_HOST_PORTS": bad}
+    )
     assert result.returncode != 0
     assert "started" not in result.stdout
     assert "SANDBOX_HOST_PORTS" in result.stderr
 
 
-def test_abstract_x11_socket_is_not_reachable(project_dir):
+def test_host_abstract_sockets_are_not_reachable(project_dir):
     """The old --share-net exposed the host's abstract @/tmp/.X11-unix/X<n>
     socket to anything in the sandbox - Xwayland accepts unauthenticated local
     connections on it, so that was enough to drive XTEST against every X
-    client on the desktop. pasta's own netns must not have that socket.
+    client on the desktop. The abstract namespace belongs to the netns, and
+    pasta's own must not have the host's sockets: one bound here, standing in
+    for X11's, must be out of reach inside.
     """
-    match = re.match(r":(\d+)", os.environ.get("DISPLAY", ""))
-    if match is None:
-        pytest.skip("no $DISPLAY on this host to check against")
     if shutil.which("python3") is None:
         pytest.skip("no python3 on this host to run the probe with")
 
-    display_num = match.group(1)
-    probe = (
-        "python3 - <<'PYEOF'\n"
-        "import socket\n"
-        "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
-        "s.settimeout(2)\n"
-        "try:\n"
-        f"    s.connect('\\0/tmp/.X11-unix/X{display_num}')\n"
-        "    print('CONNECTED')\n"
-        "except OSError as e:\n"
-        "    print('REFUSED', e)\n"
-        "PYEOF\n"
-    )
-    result = run_sandbox(probe, cwd=project_dir)
+    name = f"\0/tmp/.X11-unix/sandbox-test-{os.getpid()}"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(name)
+        listener.listen(1)
+        # Reachable outside, so the check inside means something.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(name)
+
+        probe = (
+            "python3 - <<'PYEOF'\n"
+            "import socket\n"
+            "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+            "s.settimeout(2)\n"
+            "try:\n"
+            f"    s.connect({name!r})\n"
+            "    print('CONNECTED')\n"
+            "except OSError as e:\n"
+            "    print('REFUSED', e)\n"
+            "PYEOF\n"
+        )
+        result = run_sandbox(probe, cwd=project_dir)
     assert result.returncode == 0, result.stderr
     assert "CONNECTED" not in result.stdout, (
-        "the sandbox can still reach the host's abstract X11 socket - "
+        "the sandbox can still reach the host's abstract sockets - "
         "--share-net is retaining the host's netns instead of pasta's"
     )
-
 
 
 # -- seccomp --------------------------------------------------------
@@ -1030,10 +1251,11 @@ def test_seccomp_filter_is_applied(project_dir):
     assert mode == "2", "no seccomp filter is installed in the sandbox"
     assert inet == "ok", "the filter must not break ordinary networking"
     assert alg == "EAFNOSUPPORT"
-    assert io_uring == "ENOSYS", "io_uring should look absent so runtimes fall back to epoll"
+    assert io_uring == "ENOSYS", (
+        "io_uring should look absent so runtimes fall back to epoll"
+    )
     assert keyctl == "EPERM"
     assert tiocsti == "EPERM"
-
 
 
 # -- cleanup --------------------------------------------------------
@@ -1041,7 +1263,11 @@ def test_seccomp_filter_is_applied(project_dir):
 
 def _guard_pids():
     out = subprocess.run(
-        ["pgrep", "-f", "ssh-agent-guard|gh-api-proxy|forgejo-api-proxy|secret-service-guard|open-url-guard"],
+        [
+            "pgrep",
+            "-f",
+            "ssh-agent-guard|gh-api-proxy|forgejo-api-proxy|secret-service-guard|open-url-guard",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -1062,5 +1288,3 @@ def test_guards_do_not_survive_the_sandbox_exiting(project_dir):
         time.sleep(0.1)
         leaked = _guard_pids() - before
     assert not leaked, f"guard process(es) survived sandbox exit: {leaked}"
-
-

@@ -72,6 +72,18 @@ A listed port hands the sandbox whatever that service allows to any local
 client - an adb server gives a shell on every attached device - so list it
 only for the sandbox that needs it.
 
+One host service is reachable without listing: a DNS resolver on the host's
+loopback (systemd-resolved's `127.0.0.53`, a local dnsmasq or unbound), when
+it is the first `nameserver` in the host's `/etc/resolv.conf`. pasta's
+`--dns-forward` maps `169.254.1.53` inside to that one resolver, ports 53 and
+853 only, and the sandbox's `resolv.conf` points there. Without it the
+sandbox has no DNS on such hosts. What it exposes is the resolver itself:
+its parser as attack surface, the names it knows that public DNS doesn't
+(LAN, VPN and mDNS names; the addresses themselves were reachable anyway),
+and its cache, which shows by timing what the host resolved recently. DNS as
+an exfiltration channel adds nothing to the ordinary outbound internet the
+sandbox has.
+
 ## GitHub: gh and git run inside, the token stays outside
 
 `gh` and `git` run only inside the sandbox, so hooks, filters and anything

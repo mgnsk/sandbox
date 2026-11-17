@@ -37,7 +37,13 @@ def env(tmp_path):
 
     def run(*cmd):
         return subprocess.run(
-            [sys.executable, str(SANDBOX_INIT), "/nix/profile", str(current[0]), *(cmd or ["true"])],
+            [
+                sys.executable,
+                str(SANDBOX_INIT),
+                "/nix/profile",
+                str(current[0]),
+                *(cmd or ["true"]),
+            ],
             env={"HOME": str(home), "PATH": os.environ["PATH"]},
             capture_output=True,
             text=True,
