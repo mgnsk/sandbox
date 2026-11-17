@@ -141,6 +141,19 @@ can't go through the proxy: Anthropic doesn't allow tools to hold claude.ai
 credentials. If the project was logged in inside before, run `/logout` there
 so that login doesn't stay in the volume.
 
+The option is per profile, so some projects can use a key while others log in
+with a subscription:
+
+```nix
+guards.claudeApiKey.enable = true;                  # API keys by default
+profiles.personal = {
+  paths = [ "~/personal" ];
+  guards.claudeApiKey.enable = false;               # subscription login here
+};
+```
+
+or the other way round, `true` only in the profiles that should use a key.
+
 ### The project's own sandbox config: sandbox.nix
 
 A `sandbox.nix` in the project root configures that project's sandbox, on
@@ -423,7 +436,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). |
 | `guards.github.enable` | on | Needs `gh auth login` on the host. |
 | `guards.forgejo.enable` | off | Needs `fj auth login` on the host. |
-| `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; see [Authentication](#authentication). |
+| `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | |
 | `guards.secretService.enable` | on | |
 | `claude.enable` / `.package` | on / `pkgs.claude-code` | |
@@ -461,8 +474,8 @@ are refused.
 ### Profiles
 
 A profile adds `packages`, `env`, `binds` and `claude.*` (language servers and
-marketplaces included) on top of the top
-level when the sandbox starts under one of its `paths` or in a project whose
+marketplaces included) on top of the top level, and can turn
+`guards.claudeApiKey.enable` on or off, when the sandbox starts under one of its `paths` or in a project whose
 root has one of its `projectFiles`; the highest `priority` wins.
 
 ```nix

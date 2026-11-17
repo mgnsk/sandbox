@@ -16,9 +16,9 @@ ports) is shown on the terminal for approval first.
 Options:
   --reload             evaluate sandbox.nix again, even if it is unchanged
   --no-project-config  ignore sandbox.nix
-  --claude-api-key     set this project's Claude API key and exit (with
-                       guards.claudeApiKey.enable); running sandboxes
-                       pick it up
+  --claude-api-key     set this project's Claude API key and exit (when
+                       guards.claudeApiKey.enable is on for its profile);
+                       running sandboxes pick it up
 """
 
 import hashlib
@@ -394,7 +394,7 @@ def read_secret(tty, prompt):
 CLAUDE_API_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
 
 
-def claude_api_key(volume_dir, ask_again, open_tty=open_tty):
+def claude_api_key(volume_dir, ask_again, open_tty=None):
     """The file for the project's Claude API key, asking for the key on the
     terminal when there's none yet (or ask_again). It's in the volume dir,
     out of the sandbox's reach; claude-api-proxy reads it per request, so a
@@ -403,7 +403,7 @@ def claude_api_key(volume_dir, ask_again, open_tty=open_tty):
     if os.path.exists(key_file) and not ask_again:
         return key_file
     try:
-        tty = open_tty()
+        tty = (open_tty or globals()["open_tty"])()
     except OSError:
         print(
             "sandbox: no Claude API key for this project yet - run `sandbox --claude-api-key` from a terminal",
@@ -950,14 +950,16 @@ def main(argv):
     home_volume = volume_dir + home
     os.makedirs(home_volume, exist_ok=True)
 
-    guards_cfg = config["guards"]
+    profile = select_profile(config, cwd, project, variables)
+    # Per profile: Claude Code on an API key here, or logged in inside.
+    claude_api = profile.get("claudeApiKey", False)
     if options["claudeApiKey"]:
-        if not guards_cfg["claudeApiKey"]:
-            raise SandboxError("--claude-api-key needs guards.claudeApiKey.enable")
+        if not claude_api:
+            raise SandboxError(
+                f"--claude-api-key needs guards.claudeApiKey.enable for this project's profile ({profile.get('name', 'default')})"
+            )
         claude_api_key(volume_dir, True)
         return 0
-
-    profile = select_profile(config, cwd, project, variables)
     host_ports = config["hostPorts"]
     if options["projectConfig"] and os.path.lexists(
         os.path.join(project, PROJECT_FILE)
@@ -976,7 +978,7 @@ def main(argv):
         if not command and manifest["command"]:
             command = manifest["command"]
     tcp, udp = parse_host_ports(host_port_specs(host_ports, os.environ))
-    if guards_cfg["claudeApiKey"]:
+    if claude_api:
         claude_key_file = claude_api_key(volume_dir, False)
 
     if not os.access(config["seccomp"], os.R_OK):
@@ -989,6 +991,7 @@ def main(argv):
     # round.
     args += ["--bind", home_volume, home]
 
+    guards_cfg = config["guards"]
     with ExitStack() as stack:
         guards = Guards(config)
         stack.callback(guards.close)
@@ -1011,7 +1014,7 @@ def main(argv):
             args += github_args(guards, runtime_dir)
         if guards_cfg["forgejo"]:
             args += forgejo_args(guards, runtime_dir)
-        if guards_cfg["claudeApiKey"]:
+        if claude_api:
             args += claude_api_args(guards, claude_key_file, runtime_dir)
         if guards_cfg["openUrl"]:
             args += open_url_args(guards, runtime_dir)

@@ -476,6 +476,46 @@ def test_claude_api_key_without_a_terminal_starts_anyway(tmp_path, capsys):
     assert "sandbox --claude-api-key" in capsys.readouterr().err
 
 
+def _api_key_config(tmp_path, project):
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "stateDir": str(tmp_path / "state"),
+                "default": {"name": "default", "claudeApiKey": False},
+                "profiles": [
+                    {
+                        "name": "api",
+                        "paths": [str(project)],
+                        "projectFiles": [],
+                        "priority": 0,
+                        "claudeApiKey": True,
+                    }
+                ],
+            }
+        )
+    )
+    return config
+
+
+def test_claude_api_key_option_follows_the_profile(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "api").mkdir(parents=True)
+    (home / "sub").mkdir()
+    config = _api_key_config(tmp_path, home / "api")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(sandbox, "open_tty", lambda: _Tty(KEY + "\n"))
+
+    monkeypatch.chdir(home / "sub")
+    with pytest.raises(sandbox.SandboxError, match="profile \\(default\\)"):
+        sandbox.main(["sandbox", str(config), "--claude-api-key"])
+
+    monkeypatch.chdir(home / "api")
+    assert sandbox.main(["sandbox", str(config), "--claude-api-key"]) == 0
+    [key_file] = (tmp_path / "state").glob("*/claude-api-key")
+    assert key_file.read_text() == KEY + "\n"
+
+
 def test_project_adds_to_the_profile():
     profile = {
         "env": {"PATH": "/env/bin", "A": "1"},

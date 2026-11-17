@@ -18,6 +18,11 @@ let
 
   profileType = types.submodule {
     options = layerOptions // {
+      guards.claudeApiKey.enable = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = "The top-level guards.claudeApiKey.enable for projects of this profile; null keeps it.";
+      };
       paths = mkOption {
         type = types.listOf types.str;
         default = [ ];
@@ -71,10 +76,22 @@ let
         "${env}/bin"
       ]
       ++ lib.optional cfg.nixProfile.enable "$HOME/.nix-profile/bin";
+      claudeApiKey =
+        let
+          own = l.guards.claudeApiKey.enable or null;
+        in
+        cfg.claude.enable && (if own == null then cfg.guards.claudeApiKey.enable else own);
       claudeDir = layer'.claudeDir name (layer'.claudeValues {
         lspMarketplace = "sandbox";
         claude = {
-          settings = lib.recursiveUpdate cfg.claude.settings l.claude.settings;
+          settings = lib.recursiveUpdate (lib.recursiveUpdate cfg.claude.settings l.claude.settings) (
+            lib.optionalAttrs claudeApiKey {
+              # A placeholder, so Claude Code neither asks to log in nor to
+              # approve an environment key; claude-api-proxy swaps in the
+              # real one.
+              apiKeyHelper = "echo sandbox-placeholder";
+            }
+          );
           memory = lib.concatStringsSep "\n" (
             lib.filter (s: s != "") [
               cfg.claude.memory
@@ -105,6 +122,7 @@ let
       // l.env;
       binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
+      inherit claudeApiKey;
     };
 
   runtimeConfig = {
@@ -165,7 +183,6 @@ let
       secretService = cfg.guards.secretService.enable;
       github = cfg.guards.github.enable;
       forgejo = cfg.guards.forgejo.enable;
-      claudeApiKey = cfg.guards.claudeApiKey.enable;
       openUrl = cfg.guards.openUrl.enable;
     };
     # A project's sandbox.nix, evaluated inside a sandbox by project.nix
@@ -371,7 +388,8 @@ in
           Claude Code inside on a per-project API key that stays outside, added
           by a host proxy. The key is asked for on the terminal at a project's
           first start (or with `sandbox --claude-api-key`). Replaces logging in
-          inside, so not for Claude subscriptions.
+          inside, so not for Claude subscriptions. A profile can override it
+          (`profiles.<name>.guards.claudeApiKey.enable`).
         '';
       };
       openUrl.enable = mkOption {
@@ -433,11 +451,6 @@ in
         # A store path can't update itself.
         env.DISABLE_AUTOUPDATER = 1;
       }
-      (lib.mkIf cfg.guards.claudeApiKey.enable {
-        # A placeholder, so Claude Code neither asks to log in nor to approve
-        # an environment key; claude-api-proxy swaps in the real one.
-        apiKeyHelper = "echo sandbox-placeholder";
-      })
       (lib.mkIf cfg.guards.github.enable {
         hooks.PreToolUse = [
           {

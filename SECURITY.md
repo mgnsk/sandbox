@@ -133,7 +133,8 @@ host's are out of its reach. There is no way around this for a Claude
 subscription: Anthropic doesn't allow a tool to store or intermediate
 claude.ai credentials, so the login can't be held outside.
 
-`guards.claudeApiKey.enable` keeps an API key outside instead. The launcher
+`guards.claudeApiKey.enable` (on the top level or per profile) keeps an API
+key outside instead. The launcher
 asks for the project's key on the terminal and stores it in the volume dir
 (`claude-api-key`, mode 0600), out of the sandbox's reach. Claude Code inside
 gets a placeholder from the managed `apiKeyHelper`, and `ANTHROPIC_UNIX_SOCKET`
