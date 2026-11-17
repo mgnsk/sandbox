@@ -23,7 +23,7 @@ What you get, per project:
   `SANDBOX_HOST_PORTS` (`5037 8080/udp 9000-9010`). Ports bound inside are
   reachable from the host's `127.0.0.1` (dev servers, OAuth callbacks).
 - **Guarded host access**, each request (or "always, for this sandbox") behind
-  a tmux popup on the host:
+  a popup on the terminal the sandbox runs in:
   - your ssh agent (commit signing passes without a popup);
   - GitHub through `gh`, with the host's token kept outside;
   - Forgejo through `fj` (opt-in);
@@ -39,8 +39,8 @@ What you get, per project:
 See [SECURITY.md](SECURITY.md) for the threat model.
 
 Requirements: Linux with unprivileged user namespaces, nix with a daemon
-(multi-user install). Popups need the sandbox started inside tmux; without
-it every guarded request is refused.
+(multi-user install). Popups need the sandbox started from a terminal (local
+or over ssh); without one every guarded request is refused.
 
 ## Install
 

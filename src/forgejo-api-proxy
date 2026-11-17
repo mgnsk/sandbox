@@ -9,7 +9,7 @@ the host fj's token, which never enters the sandbox, and per request (the
 mechanics are api_proxy.py's):
 
   - GET/HEAD are forwarded as-is;
-  - everything else waits for the user's approval in a tmux popup.
+  - everything else waits for the user's approval in a popup.
 
 Only hosts the host's fj is logged in to are forwarded, over HTTPS. Their
 tokens are read from the host's keys.json for each request, so a login on the

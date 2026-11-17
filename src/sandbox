@@ -38,6 +38,9 @@ from contextlib import ExitStack
 from pathlib import Path
 from string import Template
 
+import popup_relay
+from guard_popup import ENV as POPUP_ENV
+
 
 class SandboxError(Exception):
     """A reason not to start, printed as `sandbox: <message>`."""
@@ -547,7 +550,7 @@ class Guards:
         self.procs = []
         self.dirs = []
         self.env = dict(os.environ)
-        # tmux, gh, xdg-open, ... from the store first; the host's PATH after,
+        # gh, xdg-open, ... from the store first; the host's PATH after,
         # for what xdg-open hands URLs to (the browser).
         self.env["PATH"] = config["hostPath"] + ":" + os.environ.get("PATH", "")
         self.env.pop("PYTHONPATH", None)
@@ -867,13 +870,19 @@ def pasta_argv(config, tcp, udp, addrs, bwrap_args, dns_resolver=None):
     ]  # fmt: skip
 
 
-def run(argv):
+def run(argv, popups=None):
     """Run argv in the foreground; return its exit status.
+
+    With popups (the guards' socket, see popup_relay), argv runs on a pty
+    of the launcher's, which shows the guards' popups. Without, it runs on
+    the launcher's own terminal (or none), and the guards ask no one.
 
     SIGINT reaches the whole foreground process group anyway, so it's only
     kept from killing the launcher before cleanup. A handler rather than
     SIG_IGN: an ignored signal stays ignored across exec.
     """
+    if popups:
+        return popup_relay.Relay(popups).run(argv)
     proc = subprocess.Popen(argv)
 
     def forward(signum, _frame):
@@ -999,6 +1008,13 @@ def main(argv):
         for signum in (signal.SIGTERM, signal.SIGHUP):
             signal.signal(signum, lambda signum, _f: sys.exit(128 + signum))
 
+        # Before the guards start, so they get its path.
+        popups = None
+        if popup_relay.usable():
+            path = os.path.join(guards.tempdir(), "popup.sock")
+            popups = stack.enter_context(popup_relay.listen(path))
+            guards.env[POPUP_ENV] = path
+
         if guards_cfg["sshAgent"]["enable"]:
             args += ssh_agent_args(guards, guards_cfg["sshAgent"], variables)
             # The hosts the host already trusts, where ssh reads system-wide
@@ -1053,7 +1069,7 @@ def main(argv):
             args += [shell, "--login"]
 
         addrs = host_addresses(config["tools"]["ip"])
-        return run(pasta_argv(config, tcp, udp, addrs, args, dns_resolver))
+        return run(pasta_argv(config, tcp, udp, addrs, args, dns_resolver), popups)
 
 
 if __name__ == "__main__":

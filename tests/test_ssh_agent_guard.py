@@ -295,7 +295,7 @@ def test_handle_client_forwards_identities_request_and_caches_response(tmp_path)
 def test_handle_client_sign_request_approved_forwards_to_upstream(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(ssh_agent_guard, "confirm_via_tmux", lambda *a, **k: "once")
+    monkeypatch.setattr(ssh_agent_guard, "confirm_via_popup", lambda *a, **k: "once")
     signature = bytes([14]) + b"signature-bytes"
 
     responses, upstream_seen = _exchange(
@@ -309,7 +309,7 @@ def test_handle_client_sign_request_approved_forwards_to_upstream(
 def test_handle_client_sign_request_denied_never_reaches_upstream(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(ssh_agent_guard, "confirm_via_tmux", lambda *a, **k: None)
+    monkeypatch.setattr(ssh_agent_guard, "confirm_via_popup", lambda *a, **k: None)
 
     responses, upstream_seen = _exchange(tmp_path, [_sign_request()])
 
@@ -322,7 +322,7 @@ def test_handle_client_commit_signature_skips_popup(tmp_path, monkeypatch):
     signing via `ssh-keygen -Y sign`) is forwarded without confirmation."""
     monkeypatch.setattr(
         ssh_agent_guard,
-        "confirm_via_tmux",
+        "confirm_via_popup",
         lambda *a, **k: pytest.fail("commit signature reached the popup"),
     )
     request = _sign_request(data=_sshsig_blob(b"git"))
@@ -367,7 +367,7 @@ def test_handle_client_non_git_sshsig_still_prompts(tmp_path, monkeypatch, data)
     prompted = []
     monkeypatch.setattr(
         ssh_agent_guard,
-        "confirm_via_tmux",
+        "confirm_via_popup",
         lambda *a, **k: (prompted.append(True), None)[1],
     )
     responses, upstream_seen = _exchange(tmp_path, [_sign_request(data=data)])
@@ -398,7 +398,7 @@ def test_handle_client_non_sshsig_sign_request_still_prompts(tmp_path, monkeypat
     prompted = []
     monkeypatch.setattr(
         ssh_agent_guard,
-        "confirm_via_tmux",
+        "confirm_via_popup",
         lambda *a, **k: (prompted.append(True), "once")[1],
     )
     request = _sign_request(data=b"session-id-and-packet-bytes")
@@ -438,7 +438,7 @@ def test_handle_client_refuses_message_types_outside_the_allowlist(
     """
     monkeypatch.setattr(
         ssh_agent_guard,
-        "confirm_via_tmux",
+        "confirm_via_popup",
         lambda *a, **k: pytest.fail("non-sign request reached the popup"),
     )
 
@@ -464,7 +464,7 @@ def test_handle_client_samples_peer_once_at_connect(tmp_path, monkeypatch):
     prompts = []
     monkeypatch.setattr(
         ssh_agent_guard,
-        "confirm_via_tmux",
+        "confirm_via_popup",
         lambda cwd, cmdline, _comment: (prompts.append((cwd, cmdline)), "once")[1],
     )
     signature = bytes([14]) + b"signature-bytes"
@@ -485,7 +485,7 @@ def test_handle_client_always_stops_asking_for_this_guard(tmp_path, monkeypatch)
     prompted = []
     monkeypatch.setattr(
         ssh_agent_guard,
-        "confirm_via_tmux",
+        "confirm_via_popup",
         lambda *a, **k: (prompted.append(True), "always")[1],
     )
     signature = bytes([14]) + b"signature-bytes"

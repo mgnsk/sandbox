@@ -1,146 +1,79 @@
-import os
-import subprocess
-import tempfile
+import json
+import socket
 import threading
 
 import pytest
 
 import guard_popup
 
-REAL_POPEN = subprocess.Popen
-
-
-class FakePopup:
-    def __init__(self, returncode=0):
-        self.returncode = returncode
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def wait(self):
-        return self.returncode
-
 
 @pytest.fixture
-def created(monkeypatch, tmp_path):
-    """The temp files ask() makes: the marker, then the text."""
-    real_mkstemp = tempfile.mkstemp
-    paths = []
+def launcher(monkeypatch, tmp_path):
+    """A socket standing in for the launcher: records each request and
+    answers with what's in .answer."""
+    path = str(tmp_path / "popup.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(4)
+    monkeypatch.setenv(guard_popup.ENV, path)
 
-    def fake_mkstemp(prefix):
-        fd, path = real_mkstemp(prefix=prefix, dir=str(tmp_path))
-        paths.append(path)
-        return fd, path
+    class Launcher:
+        answer = b"no"
+        requests = []
 
-    monkeypatch.setattr(guard_popup.tempfile, "mkstemp", fake_mkstemp)
-    return paths
+    def serve():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                data = b""
+                while chunk := conn.recv(4096):
+                    data += chunk
+                Launcher.requests.append(json.loads(data))
+                conn.sendall(Launcher.answer)
 
-
-@pytest.fixture
-def tmux(monkeypatch):
-    monkeypatch.setenv("TMUX", "session")
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    threading.Thread(target=serve, daemon=True).start()
+    yield Launcher
+    server.close()
 
 
 # -- ask --------------------------------------------------------
 
 
-def test_no_tmux_skips_the_popup(monkeypatch):
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("popup shown"))
-    assert guard_popup.ask("guard", "text", "cat {}", 76) is None
+def test_no_socket_means_no(monkeypatch):
+    monkeypatch.delenv(guard_popup.ENV, raising=False)
+    assert guard_popup.ask("guard", "text") is None
+
+
+def test_socket_gone_means_no(monkeypatch, tmp_path):
+    monkeypatch.setenv(guard_popup.ENV, str(tmp_path / "missing.sock"))
+    assert guard_popup.ask("guard", "text") is None
 
 
 @pytest.mark.parametrize(
-    "written, answer",
-    [("once\n", "once"), ("always\n", "always"), ("", None), ("garbage\n", None)],
-)
-def test_marker_decides_the_answer_and_temp_files_go(
-    monkeypatch, created, tmux, written, answer
-):
-    def fake_popen(_cmd):
-        with open(created[0], "w", encoding="utf-8") as f:
-            f.write(written)
-        return FakePopup()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    assert guard_popup.ask("guard", "text", "cat {}", 76) == answer
-    assert not os.path.exists(created[0])
-    assert not os.path.exists(created[1])
-
-
-def test_popup_failing_to_launch_is_no(monkeypatch, created, tmux):
-    monkeypatch.setattr(subprocess, "Popen", lambda _cmd: FakePopup(returncode=1))
-    assert guard_popup.ask("guard", "text", "cat {}", 76) is None
-
-
-def test_text_stays_out_of_the_popup_command(monkeypatch, created, tmux):
-    """That command runs in a shell on the host."""
-    commands = []
-    seen_text = []
-
-    def fake_popen(argv):
-        commands.append(argv)
-        with open(created[1], encoding="utf-8") as f:
-            seen_text.append(f.read())
-        return FakePopup()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    guard_popup.ask("guard", "$(touch pwned)", "cat {}", 76)
-
-    assert seen_text == ["$(touch pwned)"]
-    assert "pwned" not in commands[0][-1]
-
-
-def test_popup_size_and_prompt(monkeypatch, created, tmux):
-    commands = []
-
-    def fake_popen(argv):
-        commands.append(argv)
-        return FakePopup()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    guard_popup.ask("guard", "text", "less {}", "90%", "80%")
-
-    assert commands[0][:7] == ["tmux", "display-popup", "-E", "-w", "90%", "-h", "80%"]
-    assert "A = always in this sandbox" in commands[0][-1]
-
-
-@pytest.mark.parametrize(
-    "typed, answer",
+    "sent, answer",
     [
-        ("y", "once"),
-        ("Y", "once"),
-        ("a", "always"),
-        ("A", "always"),
-        ("", None),
-        ("n", None),
-        ("yes", None),
+        (b"once", "once"),
+        (b"always", "always"),
+        (b"no", None),
+        (b"", None),
+        (b"garbage", None),
+        (b"once" * 100, None),
     ],
 )
-def test_typed_answer_through_a_real_shell(monkeypatch, created, tmux, typed, answer):
-    """Runs the popup's command for real, with `tmux` shadowed by a no-op."""
+def test_launcher_decides_the_answer(launcher, sent, answer):
+    launcher.answer = sent
+    assert guard_popup.ask("guard", "text") == answer
 
-    def fake_popen(argv):
-        popup_cmd = "tmux() { :; }; " + argv[-1]
-        with REAL_POPEN(
-            ["bash", "-c", popup_cmd],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            text=True,
-        ) as shell:
-            shell.communicate(typed + "\n")
-        return FakePopup(shell.returncode)
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    assert guard_popup.ask("guard", "text", "cat {}", 76) == answer
+def test_request_carries_name_and_text(launcher):
+    guard_popup.ask("gh-api-proxy", "$(touch pwned)\n\x1b[2J")
+    assert launcher.requests[-1] == {
+        "name": "gh-api-proxy",
+        "text": "$(touch pwned)\n\x1b[2J",
+    }
 
 
 # -- Approvals --------------------------------------------------------

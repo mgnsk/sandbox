@@ -1,9 +1,9 @@
 #!/bin/env python3
-"""SSH agent proxy that gates every sign request behind a tmux popup.
+"""SSH agent proxy that gates every sign request behind a popup.
 
 Sits between a sandboxed client and the real SSH agent socket. Identity
 listing is forwarded untouched; sign requests reach the real agent after the
-user approves a tmux popup prompt, except commit/tag signatures (identified
+user approves a popup prompt, except commit/tag signatures (identified
 by the SSHSIG magic preamble - see SSHSIG_MAGIC), which are forwarded
 without a prompt. Every other request type is refused outright - see
 FORWARDABLE.
@@ -211,8 +211,8 @@ def clean(s, limit=200):
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def confirm_via_tmux(cwd, cmdline, key_comment):
-    """Ask in a tmux popup whether to approve a sign request - see
+def confirm_via_popup(cwd, cmdline, key_comment):
+    """Ask in a popup whether to approve a sign request - see
     guard_popup.ask for the answers."""
     text = (
         "Allow SSH agent to sign?\n\n"
@@ -220,7 +220,7 @@ def confirm_via_tmux(cwd, cmdline, key_comment):
         f"  command:  {clean(cmdline)}\n"
         f"  comment:  {clean(key_comment or 'unknown')}\n"
     )
-    return guard_popup.ask("ssh-agent-guard", text, "cat {}", 76)
+    return guard_popup.ask("ssh-agent-guard", text)
 
 
 def handle_client(client, upstream_path):
@@ -265,7 +265,7 @@ def handle_client(client, upstream_path):
                 with IDENTITY_LOCK:
                     key_comment = IDENTITY_COMMENTS.get(key_fp)
                 if not is_commit_signature and not APPROVALS.approve(
-                    lambda key_comment=key_comment: confirm_via_tmux(
+                    lambda key_comment=key_comment: confirm_via_popup(
                         cwd, cmdline, key_comment
                     )
                 ):

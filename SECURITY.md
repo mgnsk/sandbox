@@ -99,7 +99,7 @@ holds the host's real token, and per request:
   API hosts (`TOKEN_HOSTS`) only;
 - forwards REST `GET`/`HEAD` and GraphQL documents containing only queries;
 - holds everything else - REST writes, GraphQL mutations and subscriptions,
-  anything it can't parse - for a tmux popup (see "Popup answers");
+  anything it can't parse - for a popup (see "Popup answers");
 - refuses hosts outside a short allowlist (the API hosts plus the download
   hosts gh gets redirected to), chunked request bodies, and requests with
   more than one `Host` or `Content-Length`.
@@ -121,7 +121,7 @@ gh-api-proxy) runs on the host and per request:
   dropping the client's `Authorization` and adding that instance's token from
   the host's `keys.json` - re-read every request, so a login on the host
   reaches running sandboxes;
-- forwards `GET`/`HEAD`, and holds everything else for a tmux popup.
+- forwards `GET`/`HEAD`, and holds everything else for a popup.
 
 ## Claude Code: a login inside, or an API key outside
 
@@ -161,8 +161,8 @@ the sandbox can talk to the socket.
 The host's `xdg-open` chooses an application from the scheme or file type, so
 on sandbox-chosen input it could start any host handler. The guard only passes
 it printable-ASCII `http`/`https` URLs with a host and no user info, never
-through a shell, and only after a tmux popup (default no) showing the host, the
-whole URL and the requesting process. No tmux means no opening.
+through a shell, and only after a popup (default no) showing the host, the
+whole URL and the requesting process. No terminal means no opening.
 
 An approved URL still loads in the real browser with the user's logins, so it
 can send a GET to a site they're signed in to or reach a browser exploit, and
@@ -171,8 +171,20 @@ what stands between sandboxed code and that session, so read the host.
 
 ## Popup answers
 
-Every popup (`src/guard_popup.py`) takes `y` (this request), `A` (always in this
-sandbox) or `N`, the default. No tmux, or a popup that fails, means no.
+Every popup takes `y` (this request), `A` (always in this sandbox) or `N`, the
+default, followed by Enter. No terminal, or a popup that fails, means no.
+
+The launcher draws the popups itself (`src/popup_relay.py`). It runs the
+sandbox on a pty of its own and is the only process holding the real
+terminal, so while a popup is up the sandbox's output is held back and every
+key goes to the popup: sandboxed code can't type an answer, draw over the
+popup or read what's typed. Keys typed in the first half second of a popup
+are dropped, as they were meant for whatever was on screen before it - a
+request timed to catch a `y` typed into the sandbox's own prompt gets
+nothing. The text is drawn with anything non-printable replaced, and
+wrapped rather than cut, with the line count shown when it needs scrolling.
+Guards reach the launcher over a socket in its private temp dir, never bound
+in.
 
 `A` lasts as long as the guard that was asked: it is only held in that guard's
 memory, and each `sandbox` run starts its own guards and kills them on exit.
@@ -201,7 +213,7 @@ CA certificates come from the store too.
 
 The launcher itself runs nothing from the host's `PATH` either: bwrap, pasta,
 dbus-daemon, ip and the guards' python are store paths in its generated
-config. The guards get tmux, gh and xdg-utils from the store first on `PATH`,
+config. The guards get gh and xdg-utils from the store first on `PATH`,
 the host's after - xdg-open hands approved URLs to the host's browser. The
 project root is found by looking for `.git`, not by running git, which would
 read a sandbox-writable repo config on the host.

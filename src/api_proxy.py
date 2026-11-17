@@ -7,8 +7,8 @@ with the real host in Host. The proxy holds the real token, which never enters
 the sandbox, and per request:
 
   - refuses malformed requests, and hosts and paths the guard doesn't allow;
-  - forwards reads as-is, and holds writes for the user's approval in a tmux
-    popup (the guard decides what counts as a write);
+  - forwards reads as-is, and holds writes for the user's approval in a popup
+    (the guard decides what counts as a write);
   - drops the client's Authorization (and any other credential header the
     guard names) and adds the guard's own, then relays the request to the
     real host over HTTPS.
@@ -240,7 +240,7 @@ class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     def __init__(self, path, upstream=open_upstream, confirm=None):
         super().__init__(path, Handler)
         self.open_upstream = upstream
-        self.confirm = confirm or self.confirm_via_tmux
+        self.confirm = confirm or self.confirm_via_popup
         self._approvals = guard_popup.Approvals()
 
     # -- policy ---------------------------------------------------------------
@@ -287,11 +287,11 @@ class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
     # -- approval -------------------------------------------------------------
 
-    def confirm_via_tmux(self, description, cmdline):
-        """Ask in a tmux popup whether to allow a write - see guard_popup.ask
+    def confirm_via_popup(self, description, cmdline):
+        """Ask in a popup whether to allow a write - see guard_popup.ask
         for the answers."""
         text = f"{self.popup_title}\n\n  process:  {clean(cmdline)}\n\n{clean(description)}\n"
-        return guard_popup.ask(self.name, text, "less -FRX {}", "90%", "80%")
+        return guard_popup.ask(self.name, text)
 
     def approve(self, sock, description):
         """Whether to let a write through, per the popup or an earlier

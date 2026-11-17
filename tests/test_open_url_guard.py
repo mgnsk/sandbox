@@ -152,40 +152,24 @@ def test_failing_to_start_xdg_open_is_reported():
     client.close()
 
 
-# -- confirm_via_tmux --------------------------------------------------------
+# -- confirm_via_popup --------------------------------------------------------
 
 
-def test_no_tmux_means_no(monkeypatch):
-    monkeypatch.delenv("TMUX", raising=False)
-    assert open_url_guard.confirm_via_tmux("https://example.com", "/", "x") is None
+def test_no_popup_socket_means_no(monkeypatch):
+    monkeypatch.delenv("SANDBOX_POPUP_SOCKET", raising=False)
+    assert open_url_guard.confirm_via_popup("https://example.com", "/", "x") is None
 
 
-def test_request_text_stays_out_of_the_popup_command(monkeypatch):
-    """That command runs in a shell on the host."""
-    monkeypatch.setenv("TMUX", "fake")
-    commands = []
-
-    class FakePopup:
-        def __init__(self, argv):
-            commands.append(argv)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-        def wait(self):
-            return 1
-
-    monkeypatch.setattr(open_url_guard.subprocess, "Popen", FakePopup)
-    monkeypatch.setattr(open_url_guard.subprocess, "run", lambda *_, **__: None)
-
-    url = "https://example.com/$(touch${IFS}pwned);'`id`"
-    assert open_url_guard.confirm_via_tmux(url, "/$(cwd)", "$(cmdline)") is None
-    popup_cmd = commands[0][-1]
-    for text in ("touch", "$(cwd)", "$(cmdline)"):
-        assert text not in popup_cmd
+def test_popup_shows_host_url_and_requester(monkeypatch):
+    shown = []
+    monkeypatch.setattr(
+        open_url_guard.guard_popup, "ask", lambda name, text: shown.append(text)
+    )
+    open_url_guard.confirm_via_popup("https://example.com/x", "/cwd", "cmd\x1b[2J")
+    assert "example.com" in shown[0]
+    assert "https://example.com/x" in shown[0]
+    assert "/cwd" in shown[0]
+    assert "\x1b" not in shown[0]
 
 
 # -- main + sandbox-xdg-open --------------------------------------------------------
