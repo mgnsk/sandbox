@@ -192,6 +192,175 @@ def test_bind_paths_are_expanded(tmp_path):
     assert args[:3] == ["--bind", str(tmp_path / "x"), str(tmp_path / "y")]
 
 
+# -- unit: sandbox.nix ----------------------------------------------------------
+
+STORE = "/nix/store/" + "a" * 32
+
+
+def _manifest(**kw):
+    return {"path": None, "claudeDir": None, "env": {}, "binds": [], "hostPorts": [], "command": None, **kw}
+
+
+def test_options_before_the_command():
+    assert sandbox.parse_options(["--reload", "ls", "--reload"]) == (
+        {"reload": True, "projectConfig": True},
+        ["ls", "--reload"],
+    )
+    assert sandbox.parse_options(["--no-project-config", "--", "--weird"]) == (
+        {"reload": False, "projectConfig": False},
+        ["--weird"],
+    )
+    with pytest.raises(sandbox.SandboxError, match="unknown option"):
+        sandbox.parse_options(["--nope"])
+
+
+def test_store_paths():
+    assert sandbox.is_store_path(f"{STORE}-env/bin")
+    for bad in ["/etc/passwd", f"{STORE}-env/../../etc", "/nix/store/short-x", f"{STORE}-env/", 3]:
+        assert not sandbox.is_store_path(bad)
+
+
+def test_reads_a_manifest(tmp_path):
+    m = _manifest(path=f"{STORE}-env/bin", env={"A": "b"}, hostPorts=["5432"], command=["nix", "develop"],
+                  binds=[{"src": "~/x", "dst": None, "mode": "rw", "optional": False, "hideGit": False}])  # fmt: skip
+    (tmp_path / "m.json").write_text(json.dumps(m))
+    assert sandbox.read_manifest(tmp_path / "m.json") == m
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"path": "/home/u/bin"},
+        {"claudeDir": "/etc/claude-code"},
+        {"env": {"A": 1}},
+        {"binds": [{"src": "~/x", "dst": None, "mode": "rwx", "optional": False, "hideGit": False}]},
+        {"binds": [{"src": "~/x"}]},
+        {"hostPorts": [5432]},
+        {"command": []},
+        {"extra": True},
+    ],
+)
+def test_refuses_a_bad_manifest(tmp_path, bad):
+    """It comes out of a sandbox; nothing in it is taken on trust."""
+    (tmp_path / "m.json").write_text(json.dumps(_manifest(**bad)))
+    with pytest.raises(sandbox.SandboxError, match="bad sandbox.nix result"):
+        sandbox.read_manifest(tmp_path / "m.json")
+
+
+def _project(tmp_path, content="{ ... }: { }\n"):
+    project, volume = tmp_path / "p", tmp_path / "vol"
+    project.mkdir()
+    volume.mkdir()
+    (project / "sandbox.nix").write_text(content)
+    config = tmp_path / "config.json"
+    config.write_text("{}")
+    out = tmp_path / "manifest.json"
+    out.write_text(json.dumps(_manifest(env={"N": "1"})))
+    calls = []
+
+    def evaluate(_config, config_path, project_file, base):
+        calls.append((config_path, project_file, base))
+        return str(out)
+
+    def manifest(reload=False, base=None):
+        return sandbox.project_manifest({}, str(config), str(project), str(volume), base, reload, evaluate)
+
+    return project, out, calls, manifest
+
+
+def test_project_manifest_is_cached(tmp_path, monkeypatch):
+    project, out, calls, manifest = _project(tmp_path)
+    # The cache only takes store paths.
+    monkeypatch.setattr(sandbox, "is_store_path", lambda v: v == str(out))
+    assert manifest()["env"] == {"N": "1"}
+    assert manifest()["env"] == {"N": "1"}
+    assert len(calls) == 1
+    # Changed, reloaded or with another profile Claude config, it's evaluated again.
+    (project / "sandbox.nix").write_text("{ ... }: { env.N = \"2\"; }\n")
+    manifest()
+    manifest(reload=True)
+    manifest(base=f"{STORE}-claude")
+    assert len(calls) == 4
+    assert calls[-1][1:] == (str(project / "sandbox.nix"), f"{STORE}-claude")
+
+
+def test_project_file_must_not_be_a_symlink(tmp_path):
+    """The launcher reads it on the host; a link would let the sandbox pick
+    which host file."""
+    project, _, calls, manifest = _project(tmp_path)
+    (project / "sandbox.nix").unlink()
+    (project / "sandbox.nix").symlink_to(tmp_path / "config.json")
+    with pytest.raises(sandbox.SandboxError, match="regular file"):
+        manifest()
+    assert not calls
+
+
+class _Tty:
+    def __init__(self, answer):
+        self.answer, self.written = answer, ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def write(self, s):
+        self.written += s
+
+    def flush(self):
+        pass
+
+    def readline(self):
+        return self.answer
+
+
+ACCESS = _manifest(hostPorts=["5432"], binds=[{"src": "~/d", "dst": None, "mode": "rw", "optional": False, "hideGit": False}])
+
+
+def test_project_without_host_access_needs_no_approval(tmp_path):
+    def no_tty():
+        raise AssertionError("asked")
+
+    sandbox.approve_project(_manifest(env={"A": "b"}, path=f"{STORE}-env/bin"), str(tmp_path), "p/sandbox.nix", no_tty)
+
+
+def test_host_access_is_asked_once_until_it_changes(tmp_path):
+    tty = _Tty("y\n")
+    sandbox.approve_project(ACCESS, str(tmp_path), "p/sandbox.nix", lambda: tty)
+    assert "bind ~/d (read-write)" in tty.written and "host port 5432" in tty.written
+
+    def no_tty():
+        raise AssertionError("asked again")
+
+    sandbox.approve_project(ACCESS, str(tmp_path), "p/sandbox.nix", no_tty)
+
+    widened = {**ACCESS, "hostPorts": ["5432", "22"]}
+    tty = _Tty("n\n")
+    with pytest.raises(sandbox.SandboxError, match="not approved"):
+        sandbox.approve_project(widened, str(tmp_path), "p/sandbox.nix", lambda: tty)
+    assert "host port 22" in tty.written
+
+
+def test_host_access_without_a_terminal_is_refused(tmp_path):
+    def no_tty():
+        raise OSError("no tty")
+
+    with pytest.raises(sandbox.SandboxError, match="from a terminal"):
+        sandbox.approve_project(ACCESS, str(tmp_path), "p/sandbox.nix", no_tty)
+
+
+def test_project_adds_to_the_profile():
+    profile = {"env": {"PATH": "/env/bin", "A": "1"}, "binds": [{"src": "~/x"}], "claudeDir": f"{STORE}-claude-default"}
+    m = _manifest(path=f"{STORE}-env/bin", env={"A": "2", "B": "3"}, binds=[{"src": "~/y"}], claudeDir=f"{STORE}-claude-project")
+    p = sandbox.apply_project(profile, m)
+    assert p["env"] == {"PATH": f"{STORE}-env/bin:/env/bin", "A": "2", "B": "3"}
+    assert p["binds"] == [{"src": "~/x"}, {"src": "~/y"}]
+    assert p["claudeDir"] == f"{STORE}-claude-project"
+    # Without Claude Code in the profile, none comes in through the project.
+    assert sandbox.apply_project({**profile, "claudeDir": None}, m)["claudeDir"] is None
+
+
 def test_inside_env_is_an_allowlist():
     """A host GH_TOKEN would let gh inside reach the API directly, around the
     write popups; only passEnv and the profile's own variables get in."""
@@ -408,6 +577,16 @@ def test_subdirectory_gets_the_whole_work_tree(project_dir, state_dir):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
     assert (project_dir / "top").exists()
+
+
+def test_project_sandbox_nix_is_applied(project_dir, state_dir):
+    """Evaluated in a nested sandbox, its env and default command apply."""
+    (project_dir / "sandbox.nix").write_text(
+        '{ ... }: { env.FROM_PROJECT = "yes"; command = [ "sh" "-c" "echo $FROM_PROJECT" ]; }\n'
+    )
+    result = run_sandbox("", cwd=project_dir, state_dir=state_dir, timeout=600)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "yes"
 
 
 def test_environment_is_cleared_and_reallowlisted(run_in):

@@ -165,6 +165,36 @@ the host's after - xdg-open hands approved URLs to the host's browser. The
 project root is found by looking for `.git`, not by running git, which would
 read a sandbox-writable repo config on the host.
 
+## Nix daemon
+
+Builds go through the host's nix-daemon, as the invoking user. If that user
+is in the daemon's `trusted-users`, so is everything in the sandbox, and a
+trusted user can have the daemon run arbitrary code as root (unsigned store
+paths, its own substituters and build settings). Keep the user untrusted;
+extra binary caches belong in the daemon's own configuration
+(`extra-substituters`, `extra-trusted-public-keys`).
+
+## Project config (sandbox.nix)
+
+A project's `sandbox.nix` is in the sandbox-writable project, so it is
+treated as untrusted input:
+
+- It's evaluated by nix inside a nested sandbox of the project, never on the
+  host: host evaluation could read any host file into the world-readable
+  store. The host only reads the resulting manifest, a JSON file in the
+  store, and checks every field (store paths, string maps, bind shapes)
+  before use. sandbox.nix itself is read on the host only for the cache key,
+  and never through a symlink.
+- It can't change anything that runs on the host: the launcher, bwrap, pasta,
+  seccomp, the guards and their settings come from the installed
+  configuration. What it sets otherwise (packages, env, command, Claude
+  config) runs inside.
+- What reaches beyond the inside - `binds` and `hostPorts` - needs a yes on
+  the controlling terminal, again whenever it changes. The approval and the
+  evaluation cache live in the project's volume dir, outside the home volume,
+  where the sandbox can't write; without a terminal the sandbox doesn't
+  start.
+
 ## Projects the host runs
 
 A bind whose src is the project gives way to the project bind, so a repo bound

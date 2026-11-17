@@ -13,128 +13,8 @@ let
 
   sandboxPkgs = pkgs.callPackage ./packages.nix { };
 
-  bindType = types.submodule {
-    options = {
-      src = mkOption {
-        type = types.str;
-        description = "Host path. `~` and `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` are expanded at start.";
-      };
-      dst = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Path inside; the same as src when null.";
-      };
-      mode = mkOption {
-        type = types.enum [
-          "ro"
-          "rw"
-        ];
-        default = "ro";
-      };
-      optional = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Skip silently when src doesn't exist.";
-      };
-      hideGit = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Put an empty tmpfs over src/.git, so a repo bound for reference doesn't show its history. A bind of the project itself is skipped in favour of the project bind, read-write with .git.";
-      };
-    };
-  };
-
-  lspServerType = types.submodule (
-    { config, ... }:
-    {
-      options = {
-        package = mkOption {
-          type = types.package;
-          description = "The language server; its version is the plugin's, so a new one refreshes Claude Code's cached copy.";
-        };
-        command = mkOption {
-          type = types.str;
-          default = lib.getExe config.package;
-          defaultText = lib.literalExpression "lib.getExe package";
-        };
-        args = mkOption {
-          type = types.listOf types.str;
-          default = [ ];
-        };
-        extensionToLanguage = mkOption {
-          type = types.attrsOf types.str;
-          example = {
-            ".go" = "go";
-          };
-          description = "File extensions the server handles, with their LSP language ids.";
-        };
-        settings = mkOption {
-          type = types.nullOr json.type;
-          default = null;
-          description = "Server settings (workspace/configuration).";
-        };
-      };
-    }
-  );
-
-  # What both the top level and each profile can set; a profile's values are
-  # added to the top level's.
-  layerOptions = {
-    packages = mkOption {
-      type = types.listOf types.package;
-      default = [ ];
-      description = "Packages on PATH inside, after the base set.";
-    };
-    env = mkOption {
-      type = types.attrsOf types.str;
-      default = { };
-      description = "Environment variables inside, with `~`/`$HOME`/`$USER`/`$XDG_RUNTIME_DIR` expanded at start.";
-    };
-    binds = mkOption {
-      type = types.listOf bindType;
-      default = [ ];
-      description = "Host paths bound in, after the per-project home volume (so they shadow it).";
-    };
-    claude = {
-      settings = mkOption {
-        inherit (json) type;
-        default = { };
-        description = "Claude Code managed-settings.json (merged across modules; outranks every other settings file).";
-      };
-      memory = mkOption {
-        type = types.lines;
-        default = "";
-        description = "Managed CLAUDE.md every session loads.";
-      };
-      mcpServers = mkOption {
-        type = types.attrsOf json.type;
-        default = { };
-        description = ''
-          Managed MCP servers. Managed MCP config is exclusive: once any is
-          set, a project's own .mcp.json is ignored.
-        '';
-      };
-      lspServers = mkOption {
-        type = types.attrsOf lspServerType;
-        default = { };
-        description = ''
-          Language servers, each an enabled plugin of the generated `sandbox`
-          marketplace in the store, so plugin and server are pinned together.
-        '';
-      };
-      marketplaces = mkOption {
-        type = types.attrsOf types.path;
-        default = { };
-        description = ''
-          Plugin marketplaces: directories with a .claude-plugin/marketplace.json,
-          e.g. store paths. Enable their plugins in `settings.enabledPlugins`.
-          With any marketplace (or LSP server), Claude Code knows only these:
-          it is registered before the first session, and other marketplaces
-          (the official one, `/plugin marketplace add`) are refused.
-        '';
-      };
-    };
-  };
+  layer' = import ./layer.nix { inherit lib pkgs; };
+  layerOptions = layer'.options;
 
   profileType = types.submodule {
     options = layerOptions // {
@@ -176,11 +56,11 @@ let
   # One resolved layer (the top level, or it plus a profile) as the launcher
   # reads it.
   resolve =
-    name: layer:
+    name: l:
     let
       env = pkgs.buildEnv {
         name = "sandbox-env-${name}";
-        paths = basePackages ++ cfg.packages ++ layer.packages;
+        paths = basePackages ++ cfg.packages ++ l.packages;
         pathsToLink = [
           "/bin"
           "/share"
@@ -191,95 +71,21 @@ let
         "${env}/bin"
       ]
       ++ lib.optional cfg.nixProfile.enable "$HOME/.nix-profile/bin";
-      mcp = cfg.claude.mcpServers // layer.claude.mcpServers;
-
-      lsp = cfg.claude.lspServers // layer.claude.lspServers;
-      lspPlugins = lib.mapAttrsToList (n: s: {
-        name = n;
-        inherit (s.package) version;
-        source = "./plugins/${n}";
-        # No plugin.json: the marketplace entry is the whole manifest.
-        strict = false;
-        lspServers.${n} = {
-          inherit (s) command extensionToLanguage;
-        }
-        // lib.optionalAttrs (s.args != [ ]) { inherit (s) args; }
-        // lib.optionalAttrs (s.settings != null) { inherit (s) settings; };
-      }) lsp;
-      lspMarketplace = pkgs.runCommand "sandbox-claude-lsp" { } ''
-        mkdir -p $out/.claude-plugin
-        cp ${
-          json.generate "marketplace.json" {
-            name = "sandbox";
-            description = "Language servers pinned by the sandbox configuration";
-            owner.name = "sandbox";
-            plugins = lspPlugins;
-          }
-        } $out/.claude-plugin/marketplace.json
-        ${lib.concatMapStrings (p: "mkdir -p $out/plugins/${p.name}\n") lspPlugins}
-      '';
-      marketplaces =
-        lib.mapAttrs (_: p: {
-          source = "directory";
-          path = "${p}";
-        }) (cfg.claude.marketplaces // layer.claude.marketplaces)
-        // lib.optionalAttrs (lsp != { }) {
-          sandbox = {
-            source = "directory";
-            path = "${lspMarketplace}";
-          };
-        };
-      marketplaceSettings = lib.optionalAttrs (marketplaces != { }) {
-        env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = 1;
-        strictKnownMarketplaces = lib.attrValues marketplaces;
-        extraKnownMarketplaces = lib.mapAttrs (_: source: {
-          inherit source;
-          autoUpdate = false;
-        }) marketplaces;
-        enabledPlugins = lib.genAttrs (map (n: "${n}@sandbox") (lib.attrNames lsp)) (_: true);
-      };
-      memory = lib.concatStringsSep "\n" (
-        lib.filter (s: s != "") [
-          cfg.claude.memory
-          layer.claude.memory
-        ]
-      );
-      claudeDir = pkgs.linkFarm "sandbox-claude-${name}" (
-        [
-          {
-            name = "managed-settings.json";
-            path = json.generate "managed-settings.json" (
-              lib.foldl' lib.recursiveUpdate marketplaceSettings [
-                cfg.claude.settings
-                layer.claude.settings
-              ]
-            );
-          }
-          {
-            name = "CLAUDE.md";
-            path = pkgs.writeText "CLAUDE.md" memory;
-          }
-        ]
-        ++ lib.optional (mcp != { }) {
-          name = "managed-mcp.json";
-          path = json.generate "managed-mcp.json" { mcpServers = mcp; };
-        }
-        # Claude Code registers a managed marketplace only partway through a
-        # fresh volume's first session and installs nothing from it in that
-        # one; listed already, every enabled plugin is installed at the first
-        # start. sandbox-init links ~/.claude/plugins/known_marketplaces.json
-        # here, read-only, so nothing Claude Code would add sticks.
-        ++ lib.optional (marketplaces != { }) {
-          name = "known_marketplaces.json";
-          path = json.generate "known_marketplaces.json" (
-            lib.mapAttrs (_: source: {
-              inherit source;
-              installLocation = source.path;
-              lastUpdated = "1970-01-01T00:00:00.000Z";
-            }) marketplaces
+      claudeDir = layer'.claudeDir name (layer'.claudeValues {
+        lspMarketplace = "sandbox";
+        claude = {
+          settings = lib.recursiveUpdate cfg.claude.settings l.claude.settings;
+          memory = lib.concatStringsSep "\n" (
+            lib.filter (s: s != "") [
+              cfg.claude.memory
+              l.claude.memory
+            ]
           );
-        }
-      );
+          mcpServers = cfg.claude.mcpServers // l.claude.mcpServers;
+          lspServers = cfg.claude.lspServers // l.claude.lspServers;
+          marketplaces = cfg.claude.marketplaces // l.claude.marketplaces;
+        };
+      }) { };
     in
     {
       env = {
@@ -296,8 +102,8 @@ let
         NIX_CONFIG = cfg.nixConfig;
       }
       // cfg.env
-      // layer.env;
-      binds = cfg.binds ++ layer.binds;
+      // l.env;
+      binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
     };
 
@@ -360,6 +166,13 @@ let
       github = cfg.guards.github.enable;
       forgejo = cfg.guards.forgejo.enable;
       openUrl = cfg.guards.openUrl.enable;
+    };
+    # A project's sandbox.nix, evaluated inside a sandbox by project.nix
+    # against this nixpkgs.
+    project = {
+      eval = "${./.}/project.nix";
+      nixpkgs = "${pkgs.path}";
+      system = pkgs.stdenv.hostPlatform.system;
     };
     init = {
       script = "${sandboxPkgs.src}/sandbox-init";

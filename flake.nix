@@ -51,6 +51,7 @@
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
+        project = pkgs.callPackage ./nix/project-check.nix { };
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       });
 

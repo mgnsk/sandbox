@@ -48,7 +48,7 @@ nix profile add github:mgnsk/sandbox
 ```
 
 That's all a project needs: `sandbox` is one command for every project, and a
-project brings its own tools through its flake (below). For home-manager and
+project brings its own tools through its flake or a `sandbox.nix` (below). For home-manager and
 custom builds, see [Configuring the sandbox](#configuring-the-sandbox).
 
 ## Using it in a project
@@ -92,15 +92,105 @@ The project's `$HOME` (`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ...)
 persists between runs in its volume; nothing in it is shared with your real
 home or with other projects.
 
-### Don't define the sandbox in the project's flake
+### The project's own sandbox config: sandbox.nix
 
-It's tempting to add a `packages.sandbox = sandbox.lib.mkSandbox { ... }`
-output to the project and `nix run .#sandbox`. Don't: the project directory is
-writable from inside, so anything running in the sandbox can edit
-`flake.nix` and widen the next sandbox you start from it (bind your real
-`~`, drop the guards). Keep the sandbox's own configuration outside the
-projects it runs, as below, and let projects contribute only a dev shell,
-which runs inside.
+A `sandbox.nix` in the project root configures that project's sandbox, on
+top of yours - like `devenv.nix`, a module that gets `pkgs`:
+
+```nix
+{ pkgs, ... }:
+{
+  packages = [ pkgs.go pkgs.golangci-lint ];
+  env.GOFLAGS = "-mod=mod";
+  command = [ "nix" "develop" ];          # what a bare `sandbox` runs
+  claude.lspServers.gopls = {
+    package = pkgs.gopls;
+    extensionToLanguage.".go" = "go";
+  };
+  claude.settings.permissions.allow = [ "Bash(go test:*)" ];
+  hostPorts = [ "5432" ];                 # needs your approval, see below
+  binds = [ { src = "~/datasets"; } ];    # likewise
+}
+```
+
+It can set `packages` (first on `PATH`), `env`, `command`, `claude.*`
+(settings, memory, MCP and language servers, marketplaces), `hostPorts` and
+`binds`. `pkgs` is the sandbox's own nixpkgs; to use the project's pinned
+one, import it yourself, e.g.
+`(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}`.
+
+How it stays a sandbox, though the sandbox can edit the file:
+
+- **It's evaluated inside the sandbox** (a nested one, without the project's
+  config), never on the host, which would let it read host files into the
+  store. The result is cached until `sandbox.nix`, your sandbox config or the
+  profile changes; `sandbox --reload` picks up changes in files it imports,
+  and `sandbox --no-project-config` ignores it.
+- **The `sandbox` command and everything that runs on the host stay yours**:
+  bwrap, pasta, seccomp, the guards and their settings come from your
+  installed configuration, never from the project.
+- **Binds and host ports need a yes on the terminal**, the first time and
+  whenever they change. Everything else only affects the inside and applies
+  without asking.
+
+Its Claude settings go over yours: objects merge, lists (permission rules,
+hooks) add up, other values are replaced. A language server it defines
+replaces one of yours with the same name.
+
+Don't define the sandbox itself in the project's flake (a
+`packages.sandbox = sandbox.lib.mkSandbox { ... }` run with `nix run
+.#sandbox`): the sandbox can edit `flake.nix`, and the next `nix run` runs
+whatever it put there on the host. `sandbox.nix` is the safe way.
+
+### Using devenv
+
+[devenv](https://devenv.sh) runs inside the sandbox like any other tool:
+`devenv.nix` and `devenv.yaml` stay as they are, and the sandbox only needs
+devenv on `PATH`. Its shell, scripts, tasks, processes and services all run
+sandboxed.
+
+```nix
+# sandbox.nix, next to devenv.nix
+{ pkgs, ... }:
+{
+  packages = [ pkgs.devenv ];
+  command = [ "devenv" "shell" ];   # a bare `sandbox` enters the devenv shell
+}
+```
+
+```sh
+sandbox                                  # devenv shell
+sandbox devenv up                        # processes and services
+sandbox devenv shell -- claude           # Claude Code with devenv's tools on PATH
+sandbox devenv shell -- go test ./...    # a one-off command
+```
+
+What to know:
+
+- **Who configures what.** devenv.nix describes the dev environment
+  (languages, packages, services); sandbox.nix describes the sandbox around
+  it (host ports, binds, Claude config). Tools only devenv's shell needs
+  belong in devenv.nix; put something in sandbox.nix `packages` only if it
+  should be on `PATH` outside the devenv shell too.
+- **Services are inside.** A Postgres or Redis from `services.*` runs in the
+  sandbox, so the project reaches it on `127.0.0.1` without `hostPorts`
+  (that's for services on the host). Ports bound inside are reachable from
+  the host's `127.0.0.1` too, e.g. to open a dev server in your browser.
+- **State stays in the project.** `.devenv/` (the eval cache, service data,
+  the shell's profile) is in the project directory, and devenv's own caches
+  are in the project's volume, so nothing is shared with devenv on the host
+  or other projects.
+- **Binary caches.** devenv asks the nix daemon to use the caches in
+  `cachix.pull`, which it only does for trusted users. Don't make yourself a
+  `trusted-users` entry to get them: a trusted user can make the daemon run
+  anything as root, and code in the sandbox talks to the daemon as you.
+  Add the caches to the daemon's own config instead (`extra-substituters`
+  and `extra-trusted-public-keys` in `/etc/nix/nix.conf`, or `nix.settings`
+  on NixOS); devenv's binary caching docs show the keys.
+- **Not on the host.** Don't enable devenv's `cd` hook (`devenv allow`) or
+  direnv's `use devenv` on the host for a sandboxed project: both evaluate
+  and run devenv.nix outside the sandbox, and the sandbox can edit it. Inside
+  is fine, if you want activation on `cd` there.
 
 ## Configuring the sandbox
 
