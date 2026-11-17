@@ -1,0 +1,44 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Unit tests, the project.nix check and the package build, as nix builds.
+  # The real-sandbox tests skip here: the nix build sandbox has no user
+  # namespaces.
+  flake-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check -L
+      - name: nixfmt
+        run: nix run nixpkgs#nixfmt -- --check flake.nix nix/*.nix tests/fixtures/*.nix
+      - name: ruff
+        run: nix develop -c sh -c 'ruff check . && ruff format --check .'
+
+  # The full suite against a built sandbox, so the real-sandbox tests run too.
+  real-sandbox:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      # Ubuntu 24.04's AppArmor denies unprivileged user namespaces to
+      # unconfined programs, which bwrap needs.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build sandbox
+        run: echo "SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox" >> "$GITHUB_ENV"
+      - name: pytest
+        run: nix develop -c pytest -v -rs tests
