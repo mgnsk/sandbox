@@ -176,6 +176,18 @@ What to know:
   sandbox, so the project reaches it on `127.0.0.1` without `hostPorts`
   (that's for services on the host). Ports bound inside are reachable from
   the host's `127.0.0.1` too, e.g. to open a dev server in your browser.
+- **Containers: build inside, run elsewhere.** `devenv container build` is
+  a nix build, so it works; running or loading the image doesn't, as there
+  is no Docker daemon inside and rootless podman needs the user namespaces
+  the sandbox blocks. Don't give the sandbox `/var/run/docker.sock` or a
+  daemon port through `hostPorts`: the Docker API is root on the host.
+  Instead, either push to a registry from inside
+  (`devenv container copy <name> --registry docker://ghcr.io/you/`, with
+  the registry's credentials inside) and pull it where it runs, or write an
+  archive into the project (`--registry oci-archive:` writes `./<name>`)
+  and `docker load -i <name>` it on the host. Load it with the host's own
+  tools - never run scripts from the build output on the host, since the
+  sandbox controls what devenv.nix builds.
 - **State stays in the project.** `.devenv/` (the eval cache, service data,
   the shell's profile) is in the project directory, and devenv's own caches
   are in the project's volume, so nothing is shared with devenv on the host
