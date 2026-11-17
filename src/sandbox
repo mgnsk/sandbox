@@ -134,8 +134,9 @@ def bind_args(binds, variables, project):
     for bind in binds:
         src = os.path.realpath(expand(bind["src"], variables))
         dst = expand(bind["dst"], variables) if bind["dst"] else src
-        if bind["writableWhenProject"] and src == project:
-            # The project bind below covers it, read-write and .git included.
+        if src == project and dst == src:
+            # The project bind below covers it, read-write and .git included:
+            # a repo bound for reference elsewhere is the project here.
             continue
         flag = "--bind" if bind["mode"] == "rw" else "--ro-bind"
         args += [flag + ("-try" if bind["optional"] else ""), src, dst]

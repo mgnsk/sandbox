@@ -39,17 +39,7 @@ let
       hideGit = mkOption {
         type = types.bool;
         default = false;
-        description = "Put an empty tmpfs over src/.git, so a repo bound for reference doesn't show its history.";
-      };
-      writableWhenProject = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          When src is the project the sandbox starts in, skip this bind and
-          leave it to the project bind (read-write, .git included) - for a
-          repo, like your dotfiles, that is read-only reference everywhere
-          else.
-        '';
+        description = "Put an empty tmpfs over src/.git, so a repo bound for reference doesn't show its history. A bind of the project itself is skipped in favour of the project bind, read-write with .git.";
       };
     };
   };

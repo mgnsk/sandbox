@@ -157,8 +157,7 @@ def test_profile_selection(tmp_path):
 
 
 def _bind(src, **kw):
-    return {"src": src, "dst": None, "mode": "ro", "optional": False, "hideGit": False,
-            "writableWhenProject": False, **kw}  # fmt: skip
+    return {"src": src, "dst": None, "mode": "ro", "optional": False, "hideGit": False, **kw}
 
 
 def test_binds_end_with_the_whole_project(tmp_path):
@@ -169,17 +168,23 @@ def test_binds_end_with_the_whole_project(tmp_path):
 
 def test_hide_git_outside_its_own_project(tmp_path):
     (tmp_path / ".git").mkdir()
-    b = _bind(str(tmp_path), hideGit=True, writableWhenProject=True)
+    b = _bind(str(tmp_path), hideGit=True)
     args = sandbox.bind_args([b], {}, "/p")
     assert args == ["--ro-bind", str(tmp_path), str(tmp_path), "--tmpfs", f"{tmp_path}/.git", "--bind", "/p", "/p"]
 
 
-def test_writable_when_project_binds_it_whole(tmp_path):
-    """Read-write with .git, in place of the read-only reference bind."""
+def test_bind_of_the_project_gives_way_to_it(tmp_path):
+    """A repo bound for reference is read-write with .git when it is the project."""
     (tmp_path / ".git").mkdir()
-    b = _bind(str(tmp_path), hideGit=True, writableWhenProject=True)
+    b = _bind(str(tmp_path), hideGit=True)
     args = sandbox.bind_args([b], {}, str(tmp_path))
     assert args == ["--bind", str(tmp_path), str(tmp_path)]
+
+
+def test_bind_of_the_project_elsewhere_is_kept(tmp_path):
+    b = _bind(str(tmp_path), dst="/elsewhere")
+    args = sandbox.bind_args([b], {}, str(tmp_path))
+    assert args == ["--ro-bind", str(tmp_path), "/elsewhere", "--bind", str(tmp_path), str(tmp_path)]
 
 
 def test_bind_paths_are_expanded(tmp_path):

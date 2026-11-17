@@ -165,14 +165,15 @@ the host's after - xdg-open hands approved URLs to the host's browser. The
 project root is found by looking for `.git`, not by running git, which would
 read a sandbox-writable repo config on the host.
 
-## Writable reference binds
+## Projects the host runs
 
-A bind with `writableWhenProject` (e.g. your dotfiles) is read-only reference
-in every other project and all of it, `.git` included, read-write when it is
-the project. In that mode it is **not a boundary**: if the repo holds
-anything the host runs - shell config, a home-manager flake, this sandbox's
-own configuration - sandboxed code can rewrite it (or add a git hook,
-`core.fsmonitor`, ...) and get host code execution at the next switch or
-shell. Only run trusted code in such a project. Untrusted agents and builds
-belong in a project directory, where those binds are read-only and
-per-project volumes isolate the rest.
+A bind whose src is the project gives way to the project bind, so a repo bound
+read-only for reference elsewhere (e.g. your dotfiles) is all read-write,
+`.git` included, when it is the project. Like any project it is then **not a
+boundary** for what the host does with it: if the repo holds anything the host
+runs - shell config, a home-manager flake, this sandbox's own configuration -
+sandboxed code can rewrite it (or add a git hook, `core.fsmonitor`, ...) and
+get host code execution at the next switch, shell or host-side git command.
+Only run trusted code in such a project. Untrusted agents and builds belong in
+other projects, where those binds are read-only and per-project volumes
+isolate the rest.

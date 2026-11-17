@@ -177,7 +177,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `basePackages` | small userland | Replace to trim or swap the base set. |
 | `env` | `{ }` | Variables inside; `~`, `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` expanded. |
 | `passEnv` | `[ ]` | Host variables passed in, besides TERM/COLORTERM/LANG/LC_ALL. |
-| `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; writableWhenProject; }`. |
+| `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; one whose src is the project is left to the project bind. |
 | `hostPorts` | `[ ]` | Like `SANDBOX_HOST_PORTS`, always. |
 | `stateDir` | `$XDG_DATA_HOME/sandbox` | Volumes, secrets, exchange dirs. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl | For prebuilt binaries. |
