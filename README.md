@@ -154,6 +154,47 @@ profiles.personal = {
 
 or the other way round, `true` only in the profiles that should use a key.
 
+### 1Password's SSH agent
+
+The ssh agent guard proxies whichever agent `$SSH_AUTH_SOCK` points to when
+the sandbox starts; for 1Password that's `~/.1password/agent.sock` (Settings →
+Developer → Use the SSH agent). With `SSH_AUTH_SOCK` set to that on the host,
+the defaults work; set `guards.sshAgent.socket` only if you start `sandbox`
+from somewhere it isn't set.
+
+Inside, `SSH_AUTH_SOCK` points at the guard's proxy. If your shell config sets
+`SSH_AUTH_SOCK` unconditionally (e.g. home-manager session variables, which
+the shell inside sources too with `homeManager.enable`), it overrides that.
+Either keep a value that's already set:
+
+```nix
+home.sessionVariables.SSH_AUTH_SOCK = "\${SSH_AUTH_SOCK:-$HOME/.1password/agent.sock}";
+```
+
+or put the proxy where your config points:
+
+```nix
+guards.sshAgent.path = "~/.1password/agent.sock";
+```
+
+Inside, only the guard's proxy is visible, never the real socket. A sign
+request (an ssh login, `git push` over ssh) gets the sandbox's popup first,
+except git commit and tag signatures; 1Password's own approval on the host
+still applies on top, as for any client.
+
+**Commit signing:** use `gpg.format = ssh` with `user.signingKey` set to the
+public key itself (`ssh-ed25519 AAAA...`), so `ssh-keygen` signs through the
+agent. 1Password's `gpg.ssh.program = op-ssh-sign` talks to the app directly
+rather than through the agent socket, and the app isn't reachable inside.
+
+**`op` (the 1Password CLI)** can't use the desktop app integration inside. The
+app only accepts `op` running setgid as the `onepassword-cli` group, and
+setuid/setgid does nothing in the sandbox (`no_new_privs`), so binding the
+app's sockets in wouldn't help either. A manual `op account add` or a service
+account token (`OP_SERVICE_ACCOUNT_TOKEN`) would work, but that puts a
+1Password credential inside the sandbox, where the project's code can read it.
+Use `op` on the host instead.
+
 ### The project's own sandbox config: sandbox.nix
 
 A `sandbox.nix` in the project root configures that project's sandbox, on
@@ -433,7 +474,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `stateDir` | `$XDG_DATA_HOME/sandbox` | Volumes, secrets, exchange dirs. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl | For prebuilt binaries. |
 | `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
-| `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). |
+| `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). See [1Password's SSH agent](#1passwords-ssh-agent). |
 | `guards.github.enable` | on | Needs `gh auth login` on the host. |
 | `guards.forgejo.enable` | off | Needs `fj auth login` on the host. |
 | `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
