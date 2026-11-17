@@ -187,6 +187,7 @@ let
         NIX_LD_LIBRARY_PATH = lib.makeLibraryPath cfg.nixLd.libraries;
         # The store is read-only in here; builds go through the host's daemon.
         NIX_REMOTE = "daemon";
+        NIX_CONFIG = cfg.nixConfig;
       }
       // cfg.env
       // layer.env;
@@ -368,6 +369,16 @@ in
       };
       defaultText = lib.literalMD "C.UTF-8 and en_US.UTF-8";
       description = "glibcLocales build for LOCALE_ARCHIVE.";
+    };
+
+    nixConfig = mkOption {
+      type = types.lines;
+      default = "experimental-features = nix-command flakes";
+      description = ''
+        Nix settings inside, as NIX_CONFIG. The host's /etc/nix isn't bound
+        in (it can name access tokens), so without this nix inside runs on
+        defaults - no flakes, no `nix develop`.
+      '';
     };
 
     nixLd.libraries = mkOption {

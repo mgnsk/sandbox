@@ -43,43 +43,119 @@ it every guarded request is refused.
 
 ## Install
 
-Standalone:
-
 ```sh
 nix profile add github:mgnsk/sandbox
+```
+
+That's all a project needs: `sandbox` is one command for every project, and a
+project brings its own tools through its flake (below). For home-manager and
+custom builds, see [Configuring the sandbox](#configuring-the-sandbox).
+
+## Using it in a project
+
+Say a project has just a `flake.nix` with a dev shell:
+
+```nix
+{
+  inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+
+  outputs = { nixpkgs, ... }:
+    let pkgs = nixpkgs.legacyPackages.x86_64-linux;
+    in {
+      devShells.x86_64-linux.default = pkgs.mkShell {
+        packages = [ pkgs.go pkgs.gopls pkgs.golangci-lint ];
+      };
+    };
+}
+```
+
+Start the sandbox in the project and enter the dev shell inside it:
+
+```sh
+cd ~/src/myproject
+sandbox                         # shell in the sandbox
+nix develop                     # the project's tools, built through the host's daemon
+```
+
+Or in one go:
+
+```sh
+sandbox nix develop                    # interactive dev shell
+sandbox nix develop -c claude          # Claude Code with the project's tools on PATH
+sandbox nix develop -c go test ./...   # a one-off command
+```
+
+With direnv, `use flake` in `.envrc` does the same whenever you `cd` in,
+provided `direnv` is installed (`packages = [ pkgs.direnv pkgs.nix-direnv ]`).
+
+The project's `$HOME` (`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ...)
+persists between runs in its volume; nothing in it is shared with your real
+home or with other projects.
+
+### Don't define the sandbox in the project's flake
+
+It's tempting to add a `packages.sandbox = sandbox.lib.mkSandbox { ... }`
+output to the project and `nix run .#sandbox`. Don't: the project directory is
+writable from inside, so anything running in the sandbox can edit
+`flake.nix` and widen the next sandbox you start from it (bind your real
+`~`, drop the guards). Keep the sandbox's own configuration outside the
+projects it runs, as below, and let projects contribute only a dev shell,
+which runs inside.
+
+## Configuring the sandbox
+
+From your own flake - your system or user config, never a sandboxed project:
+
+```nix
+{
+  inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+  inputs.sandbox.url = "github:mgnsk/sandbox";
+  inputs.sandbox.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { nixpkgs, sandbox, ... }:
+    let
+      pkgs = import nixpkgs {
+        system = "x86_64-linux";
+        config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";
+      };
+    in {
+      packages.x86_64-linux.default = sandbox.lib.mkSandbox {
+        inherit pkgs;
+        modules = [{
+          packages = [ pkgs.neovim pkgs.direnv pkgs.nix-direnv ];
+          hostPorts = [ "5432" ];               # a host Postgres, always
+          guards.forgejo.enable = true;
+          profiles.work = {
+            paths = [ "~/work" ];
+            env.GOPRIVATE = "git.example.com";
+          };
+        }];
+      };
+    };
+}
+```
+
+```sh
+nix profile add ~/my-sandbox-config      # in place of github:mgnsk/sandbox
 ```
 
 With home-manager:
 
 ```nix
-{
-  inputs.sandbox.url = "github:mgnsk/sandbox";
-  inputs.sandbox.inputs.nixpkgs.follows = "nixpkgs";
-  # ...
-  modules = [
-    inputs.sandbox.homeManagerModules.default
-    {
-      programs.sandbox.enable = true;
-      programs.sandbox.settings = {
-        packages = [ pkgs.go pkgs.nodejs ];
-      };
-    }
-  ];
-}
+modules = [
+  inputs.sandbox.homeManagerModules.default
+  {
+    programs.sandbox.enable = true;
+    programs.sandbox.settings = {
+      packages = [ pkgs.neovim ];
+    };
+  }
+];
 ```
 
 The home-manager module also links your current home-manager generation into
 each project's `$HOME` at every start (`homeManager.enable`), so your shell
 config, git config, etc. apply inside.
-
-Or build a configured package yourself:
-
-```nix
-sandbox.lib.mkSandbox {
-  inherit pkgs;
-  modules = [ { guards.forgejo.enable = true; } ];
-}
-```
 
 `pkgs` must allow the unfree `claude-code`, or set `claude.enable = false`.
 
@@ -105,6 +181,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `hostPorts` | `[ ]` | Like `SANDBOX_HOST_PORTS`, always. |
 | `stateDir` | `$XDG_DATA_HOME/sandbox` | Volumes, secrets, exchange dirs. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl | For prebuilt binaries. |
+| `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). |
 | `guards.github.enable` | on | Needs `gh auth login` on the host. |
 | `guards.forgejo.enable` | off | Needs `fj auth login` on the host. |
