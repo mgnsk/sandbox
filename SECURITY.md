@@ -26,7 +26,8 @@ browser.
 
 The only host-backed paths writable from inside are:
 
-- the project directory (`$PWD`); and
+- the project directory: the top level of the git work tree `$PWD` is in, or
+  `$PWD` itself outside one; and
 - a set of **per-project volumes** under `~/.ide/<volume>/` that map onto
   host-looking paths but are isolated per project and are never the real host
   dir — a file the sandbox writes to one never reaches the host path it shadows,

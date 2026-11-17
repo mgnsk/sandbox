@@ -13,8 +13,8 @@ sandbox claude   # or any command
 What you get, per project:
 
 - **Its own `$HOME`**, a persistent volume under the state dir
-  (`~/.local/share/sandbox/<project>`); only the project directory itself is
-  the host's, read-write.
+  (`~/.local/share/sandbox/<project>`); only the project directory itself (the
+  enclosing git work tree, or `$PWD` outside one) is the host's, read-write.
 - **No host userland.** `PATH` is a nix package set (bash, coreutils, git,
   openssh, curl, python3, nix, claude, ...), plus `~/.nix-profile/bin`.
   `/bin/sh`, `/usr/bin/env` and nix-ld for prebuilt binaries are provided.

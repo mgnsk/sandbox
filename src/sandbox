@@ -128,19 +128,14 @@ def select_profile(config, cwd, project, variables):
 # -- bwrap arguments --------------------------------------------------------
 
 
-def bind_args(binds, variables, project, cwd):
-    """bwrap args for the profile's extra binds and the project. Returns
-    (args, project_bound)."""
+def bind_args(binds, variables, project):
+    """bwrap args for the profile's extra binds and the project."""
     args = []
-    project_bound = False
     for bind in binds:
         src = os.path.realpath(expand(bind["src"], variables))
         dst = expand(bind["dst"], variables) if bind["dst"] else src
         if bind["writableWhenProject"] and src == project:
-            # Bound whole, rather than just $PWD, so starting in a
-            # subdirectory still gets .git.
-            args += ["--bind", src, dst]
-            project_bound = True
+            # The project bind below covers it, read-write and .git included.
             continue
         flag = "--bind" if bind["mode"] == "rw" else "--ro-bind"
         args += [flag + ("-try" if bind["optional"] else ""), src, dst]
@@ -148,9 +143,10 @@ def bind_args(binds, variables, project, cwd):
             # Its history, with whatever was ever committed and removed
             # again, is none of another project's business.
             args += ["--tmpfs", os.path.join(dst, ".git")]
-    if not project_bound:
-        args += ["--bind", cwd, cwd]
-    return args, project_bound
+    # The whole work tree rather than just $PWD, so starting in a
+    # subdirectory still gets .git.
+    args += ["--bind", project, project]
+    return args
 
 
 def base_args(config, env):
@@ -501,6 +497,14 @@ def main(argv):
     check_outside(cwd, state_dir)
 
     project = project_root(cwd)
+    if project != cwd:
+        # The work tree is bound read-write whole, so it gets the same checks
+        # (a git repo in ~ would otherwise bind all of the host home).
+        try:
+            check_cwd(project, home)
+            check_outside(project, state_dir)
+        except SandboxError as e:
+            raise SandboxError(f"{cwd} is in the git work tree {project}: {e}") from None
     volume_dir = os.path.join(state_dir, volume_name(project))
     # Per-project persistent $HOME, nested at $HOME's own path inside the
     # volume dir, so secrets.sqlite3 and exchange/ next to it stay out of
@@ -551,7 +555,7 @@ def main(argv):
             args += ["--ro-bind", profile["claudeDir"], "/etc/claude-code"]
 
         args += exchange_args(volume_dir)
-        binds, _ = bind_args(profile["binds"], variables, project, cwd)
+        binds = bind_args(profile["binds"], variables, project)
         args += binds
 
         # sandbox-init links the nix profile and home-manager generation into

@@ -79,6 +79,20 @@ def test_project_root_outside_a_repo_is_cwd(tmp_path):
     assert sandbox.project_root(str(tmp_path)) == str(tmp_path)
 
 
+def test_refuses_a_work_tree_that_contains_home(tmp_path, monkeypatch):
+    """The whole work tree is bound read-write, so a git repo in ~ must not
+    make a project under it bind all of the host home."""
+    home = tmp_path / "home"
+    (home / ".git").mkdir(parents=True)
+    (home / "src/p").mkdir(parents=True)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"stateDir": str(tmp_path / "state")}))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(home / "src/p")
+    with pytest.raises(sandbox.SandboxError, match="git work tree .*contains \\$HOME"):
+        sandbox.main(["sandbox", str(config)])
+
+
 def test_volume_name_is_unchanged_from_the_bash_launcher():
     """Existing volumes stay in use."""
     assert sandbox.volume_name("/home/u/p") == "_home_u_p-" + __import__("hashlib").sha256(b"/home/u/p").hexdigest()[:8]
@@ -147,30 +161,29 @@ def _bind(src, **kw):
             "writableWhenProject": False, **kw}  # fmt: skip
 
 
-def test_binds_end_with_the_project(tmp_path):
-    args, whole = sandbox.bind_args([_bind(str(tmp_path), optional=True)], {}, "/p", "/p/sub")
-    assert args == ["--ro-bind-try", str(tmp_path), str(tmp_path), "--bind", "/p/sub", "/p/sub"]
-    assert not whole
+def test_binds_end_with_the_whole_project(tmp_path):
+    """The work tree's top level, not just $PWD, so a subdirectory still gets .git."""
+    args = sandbox.bind_args([_bind(str(tmp_path), optional=True)], {}, "/p")
+    assert args == ["--ro-bind-try", str(tmp_path), str(tmp_path), "--bind", "/p", "/p"]
 
 
 def test_hide_git_outside_its_own_project(tmp_path):
     (tmp_path / ".git").mkdir()
     b = _bind(str(tmp_path), hideGit=True, writableWhenProject=True)
-    args, _ = sandbox.bind_args([b], {}, "/p", "/p")
+    args = sandbox.bind_args([b], {}, "/p")
     assert args == ["--ro-bind", str(tmp_path), str(tmp_path), "--tmpfs", f"{tmp_path}/.git", "--bind", "/p", "/p"]
 
 
 def test_writable_when_project_binds_it_whole(tmp_path):
-    """Starting in a subdirectory still gets .git, read-write."""
+    """Read-write with .git, in place of the read-only reference bind."""
     (tmp_path / ".git").mkdir()
     b = _bind(str(tmp_path), hideGit=True, writableWhenProject=True)
-    args, whole = sandbox.bind_args([b], {}, str(tmp_path), f"{tmp_path}/sub")
+    args = sandbox.bind_args([b], {}, str(tmp_path))
     assert args == ["--bind", str(tmp_path), str(tmp_path)]
-    assert whole
 
 
 def test_bind_paths_are_expanded(tmp_path):
-    args, _ = sandbox.bind_args([_bind("~/x", dst="$HOME/y", mode="rw")], {"HOME": str(tmp_path)}, "/p", "/p")
+    args = sandbox.bind_args([_bind("~/x", dst="$HOME/y", mode="rw")], {"HOME": str(tmp_path)}, "/p")
     assert args[:3] == ["--bind", str(tmp_path / "x"), str(tmp_path / "y")]
 
 
@@ -380,6 +393,16 @@ def test_args_are_run_as_the_command(project_dir, state_dir):
     result = run_sandbox("", cwd=project_dir, state_dir=state_dir, args=["echo", "hello there"])
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "hello there"
+
+
+def test_subdirectory_gets_the_whole_work_tree(project_dir, state_dir):
+    """Started in a subdirectory, the repo root and .git are there, read-write."""
+    sub = project_dir / "sub"
+    sub.mkdir()
+    result = run_sandbox("test -d ../.git && touch ../top && echo ok\n", cwd=sub, state_dir=state_dir)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+    assert (project_dir / "top").exists()
 
 
 def test_environment_is_cleared_and_reallowlisted(run_in):

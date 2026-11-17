@@ -45,8 +45,8 @@ let
         type = types.bool;
         default = false;
         description = ''
-          When src is the project the sandbox starts in, bind all of it
-          read-write (.git included) in place of the project bind - for a
+          When src is the project the sandbox starts in, skip this bind and
+          leave it to the project bind (read-write, .git included) - for a
           repo, like your dotfiles, that is read-only reference everywhere
           else.
         '';
