@@ -1,69 +1,47 @@
-"""The tmux popup the sandbox's guards ask for approval in.
+"""The guards' side of the approval popup the launcher shows.
+
+The launcher (`sandbox`, see popup_relay) owns the terminal the sandbox runs
+on and listens on a socket only the guards know: $SANDBOX_POPUP_SOCKET, in a
+private temp dir that's never bound in. A guard sends the text to show and
+gets the user's answer back.
 
 Each guard runs on the host, one process per sandbox, for as long as that
 sandbox does. So an Approvals held in a guard's memory is what "always in this
 sandbox" means: nothing is written down, and the next sandbox asks again.
 """
 
+import json
 import os
-import shlex
-import subprocess
-import tempfile
+import socket
 import threading
-import uuid
 
-PROMPT = "y = once, A = always in this sandbox, N = no "
+ENV = "SANDBOX_POPUP_SOCKET"
 
 
-def ask(name, text, show_cmd, width, height=None):
+def ask(name, text):
     """Show text in a popup and block for the answer: "once", "always", or
-    None for no / no tmux / popup failure.
+    None for no / no terminal to ask on / any failure.
 
-    show_cmd is the shell command displaying the text, with {} for its file.
-    The text itself is only ever in that file, never interpolated into the
-    popup's shell command: that command runs on the host, outside the sandbox,
-    so request-derived text must never be treated as shell syntax there.
+    The text is only ever drawn by the launcher, never run: it's sent as
+    data over the socket, and the launcher replaces anything non-printable.
     """
-    if "TMUX" not in os.environ:
+    path = os.environ.get(ENV)
+    if not path:
         return None
-
-    channel = f"{name}-{uuid.uuid4().hex}"
-    marker = info_path = None
     try:
-        marker_fd, marker = tempfile.mkstemp(prefix=f"{name}-marker-")
-        os.close(marker_fd)
-        info_fd, info_path = tempfile.mkstemp(prefix=f"{name}-info-")
-        with os.fdopen(info_fd, "w", encoding="utf-8") as f:
-            f.write(text)
-
-        popup_cmd = (
-            f"{show_cmd.format(shlex.quote(info_path))}; "
-            f'read -p "{PROMPT}" a; '
-            f'case "$a" in [yY]) echo once > {shlex.quote(marker)};; '
-            f"[aA]) echo always > {shlex.quote(marker)};; esac; "
-            f"tmux wait-for -S {channel}"
-        )
-        size = ["-w", str(width)] + (["-h", str(height)] if height else [])
-        with subprocess.Popen(
-            ["tmux", "display-popup", "-E", *size, popup_cmd]
-        ) as popup:
-
-            def watch_popup():
-                # A popup that fails to launch (e.g. no attached client) never
-                # runs popup_cmd, so nothing else would signal the channel.
-                if popup.wait() != 0:
-                    subprocess.run(["tmux", "wait-for", "-S", channel], check=False)
-
-            threading.Thread(target=watch_popup, daemon=True).start()
-            subprocess.run(["tmux", "wait-for", channel], check=False)
-        with open(marker, encoding="utf-8") as f:
-            answer = f.read().strip()
-        return answer if answer in ("once", "always") else None
-    finally:
-        if marker:
-            os.unlink(marker)
-        if info_path:
-            os.unlink(info_path)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.connect(path)
+            sock.sendall(json.dumps({"name": name, "text": text}).encode())
+            sock.shutdown(socket.SHUT_WR)
+            answer = b""
+            while chunk := sock.recv(64):
+                answer += chunk
+                if len(answer) > 64:
+                    return None
+    except OSError:
+        return None
+    answer = answer.decode("ascii", "replace")
+    return answer if answer in ("once", "always") else None
 
 
 class Approvals:

@@ -18,7 +18,7 @@ The fix is to stop running gh and git on the host at all:
 - `gh` and `git` run only inside the sandbox.
 - The real token stays on the host, in a proxy that `gh`'s API requests go
   through. The proxy adds the token and decides per HTTP request: reads pass,
-  writes get the tmux popup.
+  writes get the popup.
 
 ## Design
 

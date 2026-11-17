@@ -10,7 +10,7 @@ the sandbox, and decides per request (the mechanics are api_proxy.py's):
   - REST GET/HEAD, and GraphQL documents containing only queries, are
     forwarded as-is;
   - everything else - REST writes, GraphQL mutations/subscriptions, and
-    anything it can't parse - waits for the user's approval in a tmux popup.
+    anything it can't parse - waits for the user's approval in a popup.
 
 The client's Authorization header is always dropped; the real token is added
 only for TOKEN_HOSTS. gh and git themselves run inside the sandbox, so nothing

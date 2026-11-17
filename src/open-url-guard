@@ -1,5 +1,5 @@
 #!/bin/env python3
-"""Opens web URLs from a sandbox in the host's browser, behind a tmux popup.
+"""Opens web URLs from a sandbox in the host's browser, behind a popup.
 
 The sandbox has no display, so its xdg-open (sandbox-xdg-open) sends the
 URL here instead. The host's xdg-open picks a handler by scheme, and for a
@@ -86,8 +86,8 @@ def clean(s):
     return "".join(c if c.isprintable() else "?" for c in s)
 
 
-def confirm_via_tmux(url, cwd, cmdline):
-    """Ask in a tmux popup whether to open url - see guard_popup.ask for the
+def confirm_via_popup(url, cwd, cmdline):
+    """Ask in a popup whether to open url - see guard_popup.ask for the
     answers. Shown whole and wrapped, not truncated: a URL is approved for
     exactly what's on screen."""
     text = (
@@ -97,9 +97,7 @@ def confirm_via_tmux(url, cwd, cmdline):
         f"  command:  {clean(cmdline)}\n\n"
         f"{url}\n\n"
     )
-    return guard_popup.ask(
-        "open-url-guard", text, "fold -w 80 {} | less -FRX", 90, "60%"
-    )
+    return guard_popup.ask("open-url-guard", text)
 
 
 def open_url(url):
@@ -134,7 +132,7 @@ def read_line(client):
         return None
 
 
-def handle_client(client, confirm=confirm_via_tmux, opener=open_url):
+def handle_client(client, confirm=confirm_via_popup, opener=open_url):
     """Answer one client's request to open a URL."""
     try:
         cwd, cmdline = describe_peer(client)

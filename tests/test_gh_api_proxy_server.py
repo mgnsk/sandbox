@@ -67,7 +67,7 @@ class FakeUpstream(BaseHTTPRequestHandler):
 
 
 class Confirm:
-    """Stands in for the tmux popup: records each prompt, gives a fixed answer."""
+    """Stands in for the popup: records each prompt, gives a fixed answer."""
 
     def __init__(self, answer):
         self.answer = answer

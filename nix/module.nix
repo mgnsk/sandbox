@@ -137,14 +137,12 @@ let
       bash = lib.getExe pkgs.bash;
       shell = lib.getExe pkgs.bashInteractive;
     };
-    # Host-side tools the guards run: tmux for popups, gh for the host's
-    # token, xdg-open to hand URLs to the browser.
+    # Host-side tools the guards run: gh for the host's token, xdg-open to
+    # hand URLs to the browser.
     hostPath = lib.makeBinPath [
-      pkgs.tmux
       pkgs.gh
       pkgs.xdg-utils
       pkgs.coreutils
-      pkgs.less
     ];
     fhs = {
       bin = "${sandboxPkgs.fhs}/bin";
@@ -353,7 +351,7 @@ in
         enable = mkOption {
           type = types.bool;
           default = true;
-          description = "Proxy the host's ssh agent, with non-commit-signing requests behind a tmux popup.";
+          description = "Proxy the host's ssh agent, with non-commit-signing requests behind a popup.";
         };
         socket = mkOption {
           type = types.nullOr types.str;
@@ -395,7 +393,7 @@ in
       openUrl.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "xdg-open inside opens http(s) URLs in the host's browser, after a tmux popup.";
+        description = "xdg-open inside opens http(s) URLs in the host's browser, after a popup.";
       };
     };
 
