@@ -1,7 +1,7 @@
 """Runs a command (default: a login bash) in a per-project sandbox.
 
 bwrap + pasta + seccomp, with guard proxies on the host for ssh-agent, a
-Secret Service, the GitHub and Forgejo APIs and opening URLs. See SECURITY.md
+Secret Service, the GitHub, Forgejo and Claude APIs and opening URLs. See SECURITY.md
 for the threat model; the reasoning for individual flags is next to them here.
 
 Started by the `sandbox` wrapper nix builds, as
@@ -16,6 +16,9 @@ ports) is shown on the terminal for approval first.
 Options:
   --reload             evaluate sandbox.nix again, even if it is unchanged
   --no-project-config  ignore sandbox.nix
+  --claude-api-key     set this project's Claude API key and exit (with
+                       guards.claudeApiKey.enable); running sandboxes
+                       pick it up
 """
 
 import hashlib
@@ -29,6 +32,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -154,7 +158,7 @@ STORE_PATH_RE = re.compile(r"^/nix/store/[0-9a-z]{32}-[^/]+(/[^/]+)*$")
 
 def parse_options(args):
     """The launcher's own leading options, and the command after them."""
-    options = {"reload": False, "projectConfig": True}
+    options = {"reload": False, "projectConfig": True, "claudeApiKey": False}
     while args and args[0].startswith("--"):
         arg, args = args[0], args[1:]
         if arg == "--":
@@ -163,6 +167,8 @@ def parse_options(args):
             options["reload"] = True
         elif arg == "--no-project-config":
             options["projectConfig"] = False
+        elif arg == "--claude-api-key":
+            options["claudeApiKey"] = True
         else:
             raise SandboxError(
                 f"unknown option {arg} (put -- before a command starting with --)"
@@ -361,6 +367,74 @@ def approve_project(manifest, volume_dir, project_file, open_tty=open_tty):
     if answer not in ("y", "yes"):
         raise SandboxError("host access not approved, not starting")
     write_json(approved_file, access)
+
+
+def read_secret(tty, prompt):
+    """A line from tty without echoing it, when tty is a terminal."""
+    tty.write(prompt)
+    tty.flush()
+    try:
+        fd = tty.fileno()
+        old = termios.tcgetattr(fd)
+    except (OSError, ValueError, termios.error):
+        fd = old = None  # Not a terminal (tests): read it plainly.
+    if old is not None:
+        new = list(old)
+        new[3] &= ~termios.ECHO
+        termios.tcsetattr(fd, termios.TCSAFLUSH, new)
+    try:
+        return tty.readline().strip()
+    finally:
+        if old is not None:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+            tty.write("\n")
+            tty.flush()
+
+
+CLAUDE_API_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
+
+
+def claude_api_key(volume_dir, ask_again, open_tty=open_tty):
+    """The file for the project's Claude API key, asking for the key on the
+    terminal when there's none yet (or ask_again). It's in the volume dir,
+    out of the sandbox's reach; claude-api-proxy reads it per request, so a
+    key set later reaches a running sandbox."""
+    key_file = os.path.join(volume_dir, "claude-api-key")
+    if os.path.exists(key_file) and not ask_again:
+        return key_file
+    try:
+        tty = open_tty()
+    except OSError:
+        print(
+            "sandbox: no Claude API key for this project yet - run `sandbox --claude-api-key` from a terminal",
+            file=sys.stderr,
+        )
+        return key_file
+    with tty:
+        tty.write(
+            "sandbox: Claude Code here uses an API key that stays outside the sandbox.\n"
+            "Create one for this project at https://platform.claude.com/settings/keys\n"
+            "(a workspace with a spend limit caps what a misbehaving sandbox can spend).\n"
+        )
+        key = read_secret(tty, "API key (Enter to skip): ")
+        if key and not CLAUDE_API_KEY_RE.match(key):
+            tty.write("sandbox: that doesn't look like an API key, not saved\n")
+            key = ""
+        if not key:
+            if not os.path.exists(key_file):
+                tty.write(
+                    "sandbox: no key - Claude Code inside can't reach the API until `sandbox --claude-api-key` sets one\n"
+                )
+            return key_file
+    os.makedirs(volume_dir, exist_ok=True)
+    tmp = key_file + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key + "\n")
+    os.replace(tmp, key_file)
+    return key_file
 
 
 def apply_project(profile, manifest):
@@ -622,6 +696,22 @@ def forgejo_args(guards, runtime_dir):
     return ["--bind", sock, inside, "--setenv", "FJ_HTTP_UNIX_SOCKET", inside]
 
 
+def claude_api_args(guards, key_file, runtime_dir):
+    """Claude Code inside sends its API requests as plain HTTP over a socket
+    to claude-api-proxy, which adds the project's API key; the managed
+    apiKeyHelper gives it a placeholder key."""
+    inside = f"{runtime_dir}/claude-api.sock"
+    sock = os.path.join(guards.tempdir(), "claude-api.sock")
+    proc = guards.guard("claude-api-proxy", sock, key_file)
+    guards.wait_for(sock, proc, "claude-api-proxy")
+    return [
+        "--bind", sock, inside,
+        "--setenv", "ANTHROPIC_UNIX_SOCKET", inside,
+        # http: plain requests on the socket, which the proxy can read.
+        "--setenv", "ANTHROPIC_BASE_URL", "http://api.anthropic.com",
+    ]  # fmt: skip
+
+
 def open_url_args(guards, runtime_dir):
     """No display in here, so xdg-open (/usr/bin/xdg-open, the shim) hands
     http(s) URLs to open-url-guard, which opens them in the host's browser
@@ -860,6 +950,13 @@ def main(argv):
     home_volume = volume_dir + home
     os.makedirs(home_volume, exist_ok=True)
 
+    guards_cfg = config["guards"]
+    if options["claudeApiKey"]:
+        if not guards_cfg["claudeApiKey"]:
+            raise SandboxError("--claude-api-key needs guards.claudeApiKey.enable")
+        claude_api_key(volume_dir, True)
+        return 0
+
     profile = select_profile(config, cwd, project, variables)
     host_ports = config["hostPorts"]
     if options["projectConfig"] and os.path.lexists(
@@ -879,6 +976,8 @@ def main(argv):
         if not command and manifest["command"]:
             command = manifest["command"]
     tcp, udp = parse_host_ports(host_port_specs(host_ports, os.environ))
+    if guards_cfg["claudeApiKey"]:
+        claude_key_file = claude_api_key(volume_dir, False)
 
     if not os.access(config["seccomp"], os.R_OK):
         raise SandboxError(f"missing seccomp filter {config['seccomp']}")
@@ -890,7 +989,6 @@ def main(argv):
     # round.
     args += ["--bind", home_volume, home]
 
-    guards_cfg = config["guards"]
     with ExitStack() as stack:
         guards = Guards(config)
         stack.callback(guards.close)
@@ -913,6 +1011,8 @@ def main(argv):
             args += github_args(guards, runtime_dir)
         if guards_cfg["forgejo"]:
             args += forgejo_args(guards, runtime_dir)
+        if guards_cfg["claudeApiKey"]:
+            args += claude_api_args(guards, claude_key_file, runtime_dir)
         if guards_cfg["openUrl"]:
             args += open_url_args(guards, runtime_dir)
 

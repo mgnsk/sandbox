@@ -18,8 +18,8 @@ uid/gid pinned (not namespace-root) and `--disable-userns` to stop nesting;
 `--unshare-all`; `--cap-drop ALL`; `--clearenv` with a small re-allowlist; a
 fresh pasta network namespace (no host abstract-socket exposure); a seccomp
 denylist (`nix/seccomp.py`) trimming kernel attack surface; and guard
-proxies for ssh-agent, the Secret Service, and the GitHub and Forgejo APIs so host
-credentials are never bound in directly, and one for opening URLs in the host's
+proxies for ssh-agent, the Secret Service, and the GitHub, Forgejo and Claude
+APIs so host credentials are never bound in directly, and one for opening URLs in the host's
 browser.
 
 ## Writable surface
@@ -122,6 +122,34 @@ gh-api-proxy) runs on the host and per request:
   the host's `keys.json` - re-read every request, so a login on the host
   reaches running sandboxes;
 - forwards `GET`/`HEAD`, and holds everything else for a tmux popup.
+
+## Claude Code: a login inside, or an API key outside
+
+By default Claude Code is logged in inside, per project, and keeps its
+credentials in `~/.claude/.credentials.json` in the project's volume.
+Anything running in that sandbox can read the file and use the login
+elsewhere until it's revoked on claude.ai. Other projects' logins and the
+host's are out of its reach. There is no way around this for a Claude
+subscription: Anthropic doesn't allow a tool to store or intermediate
+claude.ai credentials, so the login can't be held outside.
+
+`guards.claudeApiKey.enable` keeps an API key outside instead. The launcher
+asks for the project's key on the terminal and stores it in the volume dir
+(`claude-api-key`, mode 0600), out of the sandbox's reach. Claude Code inside
+gets a placeholder from the managed `apiKeyHelper`, and `ANTHROPIC_UNIX_SOCKET`
+plus an `http://` `ANTHROPIC_BASE_URL` make it send plain HTTP over a socket
+to `src/claude-api-proxy` on the host, which per request:
+
+- forwards only to `api.anthropic.com`, over HTTPS, and only the paths Claude
+  Code uses (messages, token counting, models, its own `/api/claude_code/`
+  endpoints) - not the Files or Batches APIs the key could also reach;
+- drops the client's `Authorization` and `x-api-key` and adds the real key,
+  re-read every request.
+
+There are no popups: Claude Code makes a request per turn. Anything in the
+sandbox can therefore use the key through the socket while the sandbox runs,
+but can't take it away. A key per project, in a Console workspace with a spend
+limit, bounds what that costs.
 
 ## Opening URLs: http(s) only, behind a popup
 

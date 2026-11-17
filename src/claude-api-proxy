@@ -1,0 +1,110 @@
+#!/bin/env python3
+"""Claude API proxy for the sandbox: Claude Code inside on an API key that
+never enters the sandbox.
+
+Runs outside the sandbox, listening on a private socket that the sandbox launcher
+binds in. Claude Code inside has ANTHROPIC_UNIX_SOCKET pointing here and
+ANTHROPIC_BASE_URL=http://api.anthropic.com, so it sends its API requests here
+as plain HTTP, with a placeholder key from the managed apiKeyHelper. This
+proxy (the mechanics are api_proxy.py's):
+
+  - forwards only the paths Claude Code needs (PATHS, PATH_PREFIXES), to
+    api.anthropic.com over HTTPS - nothing else the key could do, like the
+    Files or Batches APIs;
+  - drops the client's Authorization and x-api-key and adds the project's
+    real key as x-api-key;
+  - asks nothing: Claude Code makes a request per turn, too many for popups.
+
+The key is read from the file given as argv[2] for each request, so
+`sandbox --claude-api-key` reaches running sandboxes.
+
+Only API keys go through here, never a Claude subscription login: Anthropic
+doesn't allow tools to store or intermediate claude.ai credentials.
+"""
+
+import os
+import re
+import signal
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import api_proxy
+
+API_HOST = "api.anthropic.com"
+
+# Host headers Claude Code sends over the socket: the base URL's for the API,
+# "localhost" for a few of its own requests.
+HOSTS = frozenset({API_HOST, "localhost"})
+
+PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
+PATH_PREFIXES = ("/v1/models", "/api/claude_code/")
+
+KEY_RE = re.compile(r"^[A-Za-z0-9_-]{20,512}$")
+
+
+def path_allowed(path):
+    """Whether Claude Code needs path (query included)."""
+    path = urlsplit(path).path
+    if ".." in path.split("/"):
+        return False
+    return path in PATHS or path.startswith(PATH_PREFIXES)
+
+
+def read_key(path):
+    """The key in the file at path, or None if it's missing or malformed."""
+    try:
+        key = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return key if KEY_RE.match(key) else None
+
+
+class ProxyServer(api_proxy.ProxyServer):
+    """claude-api-proxy's policy over api_proxy's server; key (a callable
+    returning the key or None) and upstream are injectable for tests."""
+
+    name = "claude-api-proxy"
+    credential_headers = frozenset({"x-api-key"})
+
+    def __init__(self, path, key, upstream=api_proxy.open_upstream):
+        super().__init__(path, upstream=upstream, confirm=lambda *_: False)
+        self.key = key
+
+    def host_allowed(self, host):
+        return host in HOSTS and self.key() is not None
+
+    def host_refusal(self, host):
+        if host in HOSTS:
+            return "no Claude API key for this project - run `sandbox --claude-api-key` on the host"
+        return super().host_refusal(host)
+
+    def path_allowed(self, host, path):
+        return path_allowed(path)
+
+    def upstream_host(self, host):
+        return API_HOST
+
+    def describe_write(self, method, host, path, body):
+        return None
+
+    def authorization(self, host):
+        return None
+
+    def credentials(self, host):
+        key = self.key()
+        return [] if key is None else [("x-api-key", key)]
+
+
+def main():
+    """Serve on argv[1] with the key in the file argv[2] until killed."""
+    listen_path, key_file = sys.argv[1], sys.argv[2]
+    if os.path.exists(listen_path):
+        os.unlink(listen_path)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    with ProxyServer(listen_path, lambda: read_key(key_file)) as server:
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
