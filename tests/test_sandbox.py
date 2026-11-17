@@ -20,7 +20,6 @@ themselves there. Each gets its own $SANDBOX_STATE_DIR.
 import contextlib
 import json
 import os
-import re
 import shutil
 import signal
 import socket
@@ -1161,35 +1160,41 @@ def test_bad_host_ports_stop_the_sandbox(project_dir, bad):
     assert "SANDBOX_HOST_PORTS" in result.stderr
 
 
-def test_abstract_x11_socket_is_not_reachable(project_dir):
+def test_host_abstract_sockets_are_not_reachable(project_dir):
     """The old --share-net exposed the host's abstract @/tmp/.X11-unix/X<n>
     socket to anything in the sandbox - Xwayland accepts unauthenticated local
     connections on it, so that was enough to drive XTEST against every X
-    client on the desktop. pasta's own netns must not have that socket.
+    client on the desktop. The abstract namespace belongs to the netns, and
+    pasta's own must not have the host's sockets: one bound here, standing in
+    for X11's, must be out of reach inside.
     """
-    match = re.match(r":(\d+)", os.environ.get("DISPLAY", ""))
-    if match is None:
-        pytest.skip("no $DISPLAY on this host to check against")
     if shutil.which("python3") is None:
         pytest.skip("no python3 on this host to run the probe with")
 
-    display_num = match.group(1)
-    probe = (
-        "python3 - <<'PYEOF'\n"
-        "import socket\n"
-        "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
-        "s.settimeout(2)\n"
-        "try:\n"
-        f"    s.connect('\\0/tmp/.X11-unix/X{display_num}')\n"
-        "    print('CONNECTED')\n"
-        "except OSError as e:\n"
-        "    print('REFUSED', e)\n"
-        "PYEOF\n"
-    )
-    result = run_sandbox(probe, cwd=project_dir)
+    name = f"\0/tmp/.X11-unix/sandbox-test-{os.getpid()}"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(name)
+        listener.listen(1)
+        # Reachable outside, so the check inside means something.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(name)
+
+        probe = (
+            "python3 - <<'PYEOF'\n"
+            "import socket\n"
+            "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+            "s.settimeout(2)\n"
+            "try:\n"
+            f"    s.connect({name!r})\n"
+            "    print('CONNECTED')\n"
+            "except OSError as e:\n"
+            "    print('REFUSED', e)\n"
+            "PYEOF\n"
+        )
+        result = run_sandbox(probe, cwd=project_dir)
     assert result.returncode == 0, result.stderr
     assert "CONNECTED" not in result.stdout, (
-        "the sandbox can still reach the host's abstract X11 socket - "
+        "the sandbox can still reach the host's abstract sockets - "
         "--share-net is retaining the host's netns instead of pasta's"
     )
 
