@@ -548,15 +548,17 @@ config, git config, etc. apply inside. Without it, see
 [Git config without home-manager](#git-config-without-home-manager) and
 [SSH agent](#ssh-agent) for binding your config in.
 
-`gh` and `fj` inside must be this flake's wrappers (`packages.<system>.gh`
-and `.forgejo-cli`): upstream gh and fj, pointed at their guard's proxy
-(`HTTPS_PROXY`) and trusting its per-sandbox CA. Unwrapped, they send their
-placeholder credentials straight to the API and fail with 401. The sandbox's
-own come first on `PATH`, but a login shell that prepends `~/.nix-profile/bin`
-brings the profile's copy first. The home-manager module installs the
-wrappers at high priority for that; with `nix profile`, install those two
-from this flake in place of nixpkgs' `gh`/`forgejo-cli`. Outside a sandbox
-the wrappers are plain gh and fj.
+**gh or fj in `~/.nix-profile`?** Inside, `gh` and `fj` must be this flake's
+wrappers: upstream gh and fj pointed at their guard's proxy and trusting its
+per-sandbox CA. The sandbox puts its own first on `PATH`, but a login shell
+that prepends `~/.nix-profile/bin` brings the profile's copy first, and that
+one fails with 401 (it only has the placeholder token). Either:
+
+- don't keep `gh`/`fj` in `~/.nix-profile`: the sandbox brings its own, and
+  with [per-project tokens](#authentication) the host doesn't need gh at all;
+- or use the home-manager module, which installs the wrappers at high
+  priority and builds them from your own nixpkgs (outside a sandbox they're
+  plain gh and fj).
 
 ## Configuration
 
