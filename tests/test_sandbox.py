@@ -649,6 +649,37 @@ def test_github_token_is_kept_out_of_the_home(tmp_path, monkeypatch):
     assert token_file.read_text() == TOKEN + "\n"
 
 
+def test_open_tty_reads_a_secret_from_a_real_terminal():
+    import pty
+    import threading
+
+    master, slave = pty.openpty()
+    seen = b""
+
+    def type_after_the_prompt():
+        # Typed only once the prompt is out: read_secret flushes pending
+        # input when it turns echo off, as a terminal user never types ahead.
+        nonlocal seen
+        while b"Token: " not in seen:
+            seen += os.read(master, 1024)
+        os.write(master, b"tok\n")
+        seen = b""
+        while b"\n" not in seen:
+            seen += os.read(master, 1024)
+
+    typist = threading.Thread(target=type_after_the_prompt, daemon=True)
+    typist.start()
+    try:
+        with sandbox.open_tty(os.ttyname(slave)) as tty:
+            assert sandbox.read_secret(tty, "Token: ") == "tok"
+        typist.join(timeout=5)
+        assert not typist.is_alive()
+        assert b"tok" not in seen  # Not echoed.
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
 def test_token_needs_a_terminal(tmp_path, monkeypatch):
     monkeypatch.delenv("SANDBOX_EXCHANGE", raising=False)
 
