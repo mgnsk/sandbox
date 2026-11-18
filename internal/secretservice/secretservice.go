@@ -19,6 +19,11 @@
 // Collection.SearchItems/CreateItem on a single fixed collection,
 // Item.GetSecret/Delete. The Prompt object/signal dance is never triggered,
 // because Unlock/CreateItem/Delete always return the null prompt path "/".
+//
+// TODO: support libsecret clients (secret-tool, GNOME apps), then drop this
+// note. libsecret opens only a dh-ietf1024-sha256-aes128-cbc-pkcs7 session
+// (never "plain") and searches with Service.SearchItems, both missing here;
+// done once `secret-tool store`/`lookup`/`clear` work against this guard.
 package secretservice
 
 import (
