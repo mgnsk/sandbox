@@ -309,15 +309,8 @@ whatever it put there on the host. `sandbox.nix` is the safe way.
 devenv on `PATH`. Its shell, scripts, tasks, processes and services all run
 sandboxed.
 
-devenv itself comes from your config, e.g. a profile for every devenv
-project:
-
-```nix
-profiles.devenv = {
-  projectFiles = [ "devenv.nix" ];
-  packages = [ pkgs.devenv ];
-};
-```
+devenv itself comes from your side: `packages = [ pkgs.devenv ]` in your
+sandbox config, or installed in `~/.nix-profile` or through home-manager.
 
 ```nix
 # sandbox.nix, next to devenv.nix
@@ -414,7 +407,7 @@ From your own flake - your system or user config, never a sandboxed project:
           guards.forgejo.enable = true;
           profiles.work = {
             paths = [ "~/work" ];
-            env.GOPRIVATE = "git.example.com";
+            guards.claudeApiKey.enable = true;
           };
         }];
       };
@@ -509,10 +502,11 @@ are refused.
 
 ### Profiles
 
-A profile adds `packages`, `env`, `binds` and `claude.*` (language servers and
-marketplaces included) on top of the top level, and can turn
-`guards.claudeApiKey.enable` on or off, when the sandbox starts under one of its `paths` or in a project whose
-root has one of its `projectFiles`; the highest `priority` wins.
+A profile adds `binds` and `claude.*` (language servers and marketplaces
+included) on top of the top level, and can turn `guards.claudeApiKey.enable`
+on or off, when the sandbox starts under one of its `paths` or in a project
+whose root has one of its `projectFiles`; the highest `priority` wins.
+`packages` and `env` are top-level only: the same in every project.
 
 ```nix
 profiles.flake = {

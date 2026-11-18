@@ -58,20 +58,22 @@ let
     ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli
     ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
 
+  # The same for every profile: packages and env are the top level's alone.
+  env = pkgs.buildEnv {
+    name = "sandbox-env";
+    paths = basePackages ++ cfg.packages;
+    pathsToLink = [
+      "/bin"
+      "/share"
+    ];
+    ignoreCollisions = true;
+  };
+
   # One resolved layer (the top level, or it plus a profile) as the launcher
   # reads it.
   resolve =
     name: l:
     let
-      env = pkgs.buildEnv {
-        name = "sandbox-env-${name}";
-        paths = basePackages ++ cfg.packages ++ l.packages;
-        pathsToLink = [
-          "/bin"
-          "/share"
-        ];
-        ignoreCollisions = true;
-      };
       path = [
         "${env}/bin"
       ]
@@ -118,8 +120,7 @@ let
         NIX_REMOTE = "daemon";
         NIX_CONFIG = cfg.nixConfig;
       }
-      // cfg.env
-      // l.env;
+      // cfg.env;
       binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
       inherit claudeApiKey;
@@ -196,8 +197,6 @@ let
       homeManager = cfg.homeManager.enable;
     };
     default = resolve "default" {
-      packages = [ ];
-      env = { };
       binds = [ ];
       claude = {
         settings = { };
@@ -221,6 +220,18 @@ let
 in
 {
   options = layerOptions // {
+    packages = mkOption {
+      type = types.listOf types.package;
+      default = [ ];
+      description = "Packages on PATH inside, after the base set, in every project.";
+    };
+
+    env = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = "Environment variables inside, with `~`/`$HOME`/`$USER`/`$XDG_RUNTIME_DIR` expanded at start.";
+    };
+
     basePackages = mkOption {
       type = types.listOf types.package;
       default = with pkgs; [

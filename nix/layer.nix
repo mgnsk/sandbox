@@ -1,6 +1,10 @@
-# What the top level, each profile and (all but packages and env) a project's
-# sandbox.nix can set, and how a layer's Claude Code options become the
-# managed config dir. Shared by module.nix and project.nix.
+# What the top level, each profile and a project's sandbox.nix can set, and
+# how a layer's Claude Code options become the managed config dir. Shared by
+# module.nix and project.nix.
+#
+# Not packages or env: those are the top level's alone (module.nix). A
+# project's tools and variables come from its dev shell (a flake, devenv),
+# yours from your config, ~/.nix-profile or home-manager.
 { lib, pkgs }:
 let
   inherit (lib) mkOption types;
@@ -139,16 +143,6 @@ in
   inherit json;
 
   options = {
-    packages = mkOption {
-      type = types.listOf types.package;
-      default = [ ];
-      description = "Packages on PATH inside, after the base set.";
-    };
-    env = mkOption {
-      type = types.attrsOf types.str;
-      default = { };
-      description = "Environment variables inside, with `~`/`$HOME`/`$USER`/`$XDG_RUNTIME_DIR` expanded at start.";
-    };
     binds = mkOption {
       type = types.listOf bindType;
       default = [ ];
