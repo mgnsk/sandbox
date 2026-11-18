@@ -1,8 +1,6 @@
 # A project's sandbox.nix, for nix/project-check.nix.
 { pkgs, ... }:
 {
-  packages = [ pkgs.hello ];
-  env.FOO = "bar";
   hostPorts = [ "5432" ];
   binds = [
     {

@@ -1,6 +1,6 @@
-# What the top level, each profile and a project's sandbox.nix can set, and
-# how a layer's Claude Code options become the managed config dir. Shared by
-# module.nix and project.nix.
+# What the top level, each profile and (all but packages and env) a project's
+# sandbox.nix can set, and how a layer's Claude Code options become the
+# managed config dir. Shared by module.nix and project.nix.
 { lib, pkgs }:
 let
   inherit (lib) mkOption types;

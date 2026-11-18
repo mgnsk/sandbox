@@ -49,8 +49,8 @@ nix profile add github:mgnsk/sandbox
 ```
 
 That's all a project needs: `sandbox` is one command for every project, and a
-project brings its own tools through its flake or a `sandbox.nix` (below). For home-manager and
-custom builds, see [Configuring the sandbox](#configuring-the-sandbox).
+project brings its own tools through its dev shell (a flake or devenv,
+below). For home-manager and custom builds, see [Configuring the sandbox](#configuring-the-sandbox).
 
 ## Using it in a project
 
@@ -197,14 +197,12 @@ Use `op` on the host instead.
 
 ### The project's own sandbox config: sandbox.nix
 
-A `sandbox.nix` in the project root configures that project's sandbox, on
-top of yours - like `devenv.nix`, a module that gets `pkgs`:
+A `sandbox.nix` in the project root configures the sandbox around the
+project, on top of yours - like `devenv.nix`, a module that gets `pkgs`:
 
 ```nix
 { pkgs, ... }:
 {
-  packages = [ pkgs.go pkgs.golangci-lint ];
-  env.GOFLAGS = "-mod=mod";
   command = [ "nix" "develop" ];          # what a bare `sandbox` runs
   claude.lspServers.gopls = {
     package = pkgs.gopls;
@@ -216,9 +214,13 @@ top of yours - like `devenv.nix`, a module that gets `pkgs`:
 }
 ```
 
-It can set `packages` (first on `PATH`), `env`, `command`, `claude.*`
-(settings, memory, MCP and language servers, marketplaces), `hostPorts` and
-`binds`. `pkgs` is the sandbox's own nixpkgs; to use the project's pinned
+It can set `command`, `claude.*` (settings, memory, MCP and language
+servers, marketplaces), `hostPorts` and `binds`. Not `packages` or `env`:
+the project's tools and variables belong in its dev shell (a flake's
+`devShells`, devenv), which `command` enters, so they're defined once.
+Your own tools come from your sandbox config, `~/.nix-profile` and, with the
+home-manager module, your home-manager generation. `pkgs` is the sandbox's
+own nixpkgs; to use the project's pinned
 one, import it yourself, e.g.
 `(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}`.
 
@@ -227,20 +229,6 @@ A full example, with every option it can set:
 ```nix
 { pkgs, lib, ... }:
 {
-  # First on PATH inside, ahead of the sandbox's base set.
-  packages = [
-    pkgs.go
-    pkgs.golangci-lint
-    pkgs.postgresql # psql, for the host database below
-  ];
-
-  # Variables inside; ~, $HOME, $USER and $XDG_RUNTIME_DIR are expanded at start.
-  env = {
-    GOFLAGS = "-mod=mod";
-    PGHOST = "127.0.0.1";
-    DATASETS = "~/datasets";
-  };
-
   # What a bare `sandbox` runs, in place of a login shell.
   command = [ "nix" "develop" ];
 
@@ -321,11 +309,19 @@ whatever it put there on the host. `sandbox.nix` is the safe way.
 devenv on `PATH`. Its shell, scripts, tasks, processes and services all run
 sandboxed.
 
+devenv itself comes from your config, e.g. a profile for every devenv
+project:
+
+```nix
+profiles.devenv = {
+  projectFiles = [ "devenv.nix" ];
+  packages = [ pkgs.devenv ];
+};
+```
+
 ```nix
 # sandbox.nix, next to devenv.nix
-{ pkgs, ... }:
 {
-  packages = [ pkgs.devenv ];
   command = [ "devenv" "shell" ];   # a bare `sandbox` enters the devenv shell
 }
 ```
@@ -340,10 +336,9 @@ sandbox devenv shell -- go test ./...    # a one-off command
 What to know:
 
 - **Who configures what.** devenv.nix describes the dev environment
-  (languages, packages, services); sandbox.nix describes the sandbox around
-  it (host ports, binds, Claude config). Tools only devenv's shell needs
-  belong in devenv.nix; put something in sandbox.nix `packages` only if it
-  should be on `PATH` outside the devenv shell too.
+  (languages, packages, env, services); sandbox.nix describes the sandbox
+  around it (host ports, binds, Claude config). Tools you want in every
+  project go in your own config instead.
 - **Services are inside.** A Postgres or Redis from `services.*` runs in the
   sandbox, so the project reaches it on `127.0.0.1` without `hostPorts`
   (that's for services on the host). Ports bound inside are reachable from

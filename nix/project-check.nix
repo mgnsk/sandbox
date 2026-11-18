@@ -61,13 +61,10 @@ assert
   ];
 runCommand "sandbox-project-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
-    .env == {FOO: "bar"}
-    and .hostPorts == ["5432"]
+    .hostPorts == ["5432"]
     and .command == ["nix", "develop"]
     and .claudeDir == null
     and .binds == [{src: "~/data", dst: null, mode: "rw", optional: false, hideGit: false}]
-    and (.path | test("^/nix/store/.*-sandbox-project-env/bin$"))
   ' ${manifest}
-  test -x "$(jq -r .path ${manifest})/hello"
   touch $out
 ''
