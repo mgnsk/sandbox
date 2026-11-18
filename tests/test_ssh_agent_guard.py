@@ -286,6 +286,13 @@ def test_popup_says_unknown_for_a_key_never_listed(guard):
     assert "  comment:  unknown\n" in popups.texts[0]
 
 
+def test_popup_says_unknown_for_a_key_listed_without_a_comment(guard):
+    path, agent, popups = guard
+    agent.identities = identities_answer([(b"fake-key", b"")])
+    exchange(path, bytes([REQUEST_IDENTITIES]), sign_request(data=b"session"))
+    assert "  comment:  unknown\n" in popups.texts[0]
+
+
 def test_popup_strips_escapes_and_truncates(guard):
     path, agent, popups = guard
     agent.identities = identities_answer([(b"fake-key", b"\x1b[31mred" + b"a" * 300)])

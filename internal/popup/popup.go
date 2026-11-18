@@ -98,3 +98,12 @@ func Clean(s string) string {
 		return '?'
 	}, s)
 }
+
+// CleanLimit is Clean, then cut to limit characters with an ellipsis.
+func CleanLimit(s string, limit int) string {
+	r := []rune(Clean(s))
+	if len(r) <= limit {
+		return string(r)
+	}
+	return string(r[:limit]) + "…"
+}

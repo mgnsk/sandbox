@@ -13,6 +13,7 @@ import (
 
 	"github.com/mgnsk/sandbox/internal/initcmd"
 	"github.com/mgnsk/sandbox/internal/openurl"
+	"github.com/mgnsk/sandbox/internal/sshagent"
 	"github.com/mgnsk/sandbox/internal/xdgopen"
 )
 
@@ -21,6 +22,7 @@ var programs = map[string]func(args []string) int{
 	"sandbox-init":     initcmd.Main,
 	"open-url-guard":   openurl.Main,
 	"sandbox-xdg-open": xdgopen.Main,
+	"ssh-agent-guard":  sshagent.Main,
 }
 
 func main() {

@@ -1,3 +1,4 @@
 sandbox-init
 open-url-guard
 sandbox-xdg-open
+ssh-agent-guard

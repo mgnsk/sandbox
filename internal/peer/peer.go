@@ -32,11 +32,15 @@ func PID(conn *net.UnixConn) (int, error) {
 	return int(cred.Pid), nil
 }
 
-// Describe gives the cwd and command line of conn's peer, sampled while it
-// still holds the connection, or "unknown" for both.
+// Describe gives the cwd and command line of conn's peer, each "unknown"
+// if it can't be read.
 //
-// The peer's /proc entries are only a hint for the user: a process can
-// change its own command line, and the pid may be reused once it exits.
+// SO_PEERCRED gives an authentic pid, but only as of connect() - and /proc
+// here is the host's. Sampled lazily, at the moment a request needs a popup,
+// a peer that has since exited may have had its pid reused by an unrelated
+// host process, whose command line the popup would then attribute the
+// request to. So a guard calls this once up front, while the peer is
+// provably alive on the other end.
 func Describe(conn *net.UnixConn) (cwd, cmdline string) {
 	pid, err := PID(conn)
 	if err != nil {
@@ -45,22 +49,26 @@ func Describe(conn *net.UnixConn) (cwd, cmdline string) {
 	proc := "/proc/" + strconv.Itoa(pid)
 	cwd, err = os.Readlink(proc + "/cwd")
 	if err != nil {
-		return "unknown", "unknown"
+		cwd = "unknown"
 	}
-	data, err := os.ReadFile(proc + "/cmdline")
-	if err != nil {
-		return "unknown", "unknown"
-	}
-	parts := bytes.Split(bytes.TrimRight(data, "\x00"), []byte{0})
-	quoted := make([]string, len(parts))
-	for i, p := range parts {
-		quoted[i] = Quote(decode(p))
-	}
-	return cwd, strings.Join(quoted, " ")
+	return cwd, readCmdline(proc + "/cmdline")
 }
 
-// decode reads b as UTF-8, each invalid byte replaced with U+FFFD.
-func decode(b []byte) string {
+func readCmdline(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "unknown"
+	}
+	parts := bytes.Split(bytes.TrimSuffix(data, []byte{0}), []byte{0})
+	quoted := make([]string, len(parts))
+	for i, p := range parts {
+		quoted[i] = Quote(Decode(p))
+	}
+	return strings.Join(quoted, " ")
+}
+
+// Decode reads b as UTF-8, each invalid byte replaced with U+FFFD.
+func Decode(b []byte) string {
 	var sb strings.Builder
 	for len(b) > 0 {
 		r, n := utf8.DecodeRune(b)
