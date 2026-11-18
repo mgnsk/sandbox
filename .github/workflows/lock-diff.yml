@@ -1,0 +1,88 @@
+name: lock diff
+
+# On a PR that changes flake.lock (Dependabot's weekly bump), a comment with
+# what changes inside the sandbox: the main packages' versions with their
+# changelogs, and the full closure diff of the default package.
+
+on:
+  pull_request:
+    paths: [flake.lock]
+
+permissions:
+  contents: read
+  # The comment. Dependabot's runs get a read-only token unless asked.
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diff:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+      - name: Diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          SYSTEM: x86_64-linux
+        run: |
+          git worktree add -q "$RUNNER_TEMP/base" "$BASE"
+          head=$PWD base=$RUNNER_TEMP/base
+
+          # Version and changelog of the packages that matter most inside.
+          versions() {
+            # shellcheck disable=SC2016 # ${n} is nix's
+            nix eval --json --impure --expr '
+              let
+                p = (builtins.getFlake "path:'"$1"'").inputs.nixpkgs.legacyPackages.'"$SYSTEM"';
+              in
+              map (n: {
+                name = n;
+                version = p.${n}.version;
+                changelog = p.${n}.meta.changelog or null;
+              }) [ "claude-code" "gh" "forgejo-cli" "nix" "bubblewrap" "passt" "python3" "git" "openssh" ]'
+          }
+          versions "$base" > "$RUNNER_TEMP/old.json"
+          versions "$head" > "$RUNNER_TEMP/new.json"
+
+          old=$(nix build --no-link --print-out-paths "path:$base#default")
+          new=$(nix build --no-link --print-out-paths "path:$head#default")
+
+          rev() { jq -r .nodes.nixpkgs.locked.rev "$1/flake.lock"; }
+          {
+            echo "### What changes inside the sandbox"
+            echo
+            echo "nixpkgs: [$(rev "$base" | cut -c1-12)...$(rev "$head" | cut -c1-12)](https://github.com/NixOS/nixpkgs/compare/$(rev "$base")...$(rev "$head"))"
+            echo
+            echo "| Package | Old | New | Changelog |"
+            echo "| --- | --- | --- | --- |"
+            jq -r --slurpfile old "$RUNNER_TEMP/old.json" '
+              ($old[0] | map({(.name): .version}) | add) as $o
+              | .[]
+              | select($o[.name] != .version)
+              | "| \(.name) | \($o[.name]) | \(.version) | \(if .changelog then "[changelog](\(.changelog))" else "" end) |"
+            ' "$RUNNER_TEMP/new.json"
+            echo
+            echo "Packages not listed are unchanged."
+            echo
+            echo "<details><summary>Full closure diff of the default package</summary>"
+            echo
+            echo '```'
+            # Without colours, and without the nixpkgs source itself (a
+            # hash for a name), which project.nix depends on.
+            nix store diff-closures "$old" "$new" \
+              | sed 's/\x1b\[[0-9;]*m//g' | grep -Ev '^[0-9a-z]{32}:' || true
+            echo '```'
+            echo
+            echo "</details>"
+          } > "$RUNNER_TEMP/comment.md"
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --edit-last --create-if-none --body-file "$RUNNER_TEMP/comment.md"
