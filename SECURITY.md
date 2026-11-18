@@ -269,6 +269,18 @@ treated as untrusted input:
   where the sandbox can't write; without a terminal the sandbox doesn't
   start.
 
+## Your config (~/.config/sandbox/config.nix)
+
+The default package runs with `~/.config/sandbox/config.nix` when it exists.
+It is trusted like a home-manager config: built on the host with the host's
+`nix-build`, and the result is the configuration the launcher runs. It must
+therefore stay out of reach of every sandbox. `~/.config` is a host dot
+directory, never in a volume nor allowed as a project; the launcher also
+refuses to start when the config dir or any file in it resolves into the
+current project (a dotfiles repo linked in). It can't see other running
+sandboxes, so a repo holding the config is covered by the next section. The
+cache key and GC root live in `~/.local/state/sandbox`, likewise host state.
+
 ## Projects the host runs
 
 A bind whose src is the project gives way to the project bind, so a repo bound

@@ -9,12 +9,18 @@ Started by the `sandbox` wrapper nix builds, as
 runs - bwrap, pasta, the guards, the environment inside - comes from store
 paths in CONFIG.json, never from the host's PATH.
 
+Without a config of its own (the flake's default package), it runs with
+~/.config/sandbox/config.nix when that exists: a module like any other
+sandbox config, built on the host with nix-build and cached until a file in
+~/.config/sandbox or the sandbox itself changes.
+
 A project's sandbox.nix adds to the selected profile. It is evaluated inside
 a sandbox of the project, and what it asks for beyond the inside (binds, host
 ports) is shown on the terminal for approval first.
 
 Options:
-  --reload             evaluate sandbox.nix again, even if it is unchanged
+  --reload             evaluate sandbox.nix and ~/.config/sandbox/config.nix
+                       again, even if they are unchanged
   --no-project-config  ignore sandbox.nix
   --claude-api-key     set this project's Claude API key and exit (when
                        guards.claudeApiKey.enable is on for its profile);
@@ -151,6 +157,115 @@ def select_profile(config, cwd, project, variables):
         if matches and (best is None or profile["priority"] > best["priority"]):
             best = profile
     return best or config["default"]
+
+
+# -- your config (~/.config/sandbox/config.nix) -----------------------------
+
+USER_CONFIG_FILE = "config.nix"
+
+
+def is_within(path, dir):
+    return f"{path}/".startswith(f"{dir.rstrip('/')}/")
+
+
+def user_config_files(config_dir):
+    """Every file under the config dir (through symlinks to files, which
+    dotfiles managers make), sorted: what the cache key covers."""
+    files = []
+    for root, dirs, names in os.walk(config_dir):
+        dirs.sort()
+        files += [
+            os.path.join(root, n)
+            for n in sorted(names)
+            if os.path.isfile(os.path.join(root, n))
+        ]
+    return files
+
+
+def build_user_config(user_config, file, link):
+    """nix-build user.nix on the file, with a GC root at link; its store path."""
+    nix_build = shutil.which("nix-build")
+    if not nix_build:
+        raise SandboxError(f"building {file} needs nix-build on PATH")
+    argv = [
+        nix_build, user_config["eval"],
+        "--argstr", "nixpkgs", user_config["nixpkgs"],
+        "--argstr", "system", user_config["system"],
+        "--argstr", "file", file,
+        "--out-link", link,
+    ]  # fmt: skip
+    print(f"sandbox: building {file}", file=sys.stderr)
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except KeyboardInterrupt:
+        raise SandboxError(f"building {file} interrupted") from None
+    outs = [line for line in result.stdout.splitlines() if is_store_path(line)]
+    if result.returncode != 0 or not outs:
+        raise SandboxError(f"building {file} failed")
+    return outs[-1]
+
+
+def user_config(config, config_path, environ, home, project, reload, build=None):
+    """The config to run with: the one built from ~/.config/sandbox/config.nix
+    when this sandbox takes one and it exists, else this one. Cached until a
+    file in ~/.config/sandbox or this sandbox changes; imports from outside
+    that dir aren't tracked, --reload picks them up."""
+    if not config.get("userConfig"):
+        return config_path, config
+    config_dir = os.path.join(
+        environ.get("XDG_CONFIG_HOME") or f"{home}/.config", "sandbox"
+    )
+    file = os.path.join(config_dir, USER_CONFIG_FILE)
+    if not os.path.isfile(file):
+        return config_path, config
+    files = user_config_files(config_dir)
+    # It's built and run on the host: not from anywhere a sandbox can write.
+    for path in [config_dir, *files]:
+        real = os.path.realpath(path)
+        if is_within(real, project):
+            raise SandboxError(
+                f"refusing to use {file}: {real} is in this project, which the sandbox can write"
+            )
+    digest = hashlib.sha256(os.path.realpath(config_path).encode())
+    for path in files:
+        digest.update(json.dumps(os.path.relpath(path, config_dir)).encode())
+        digest.update(hashlib.sha256(Path(path).read_bytes()).digest())
+    key = digest.hexdigest()
+
+    state = os.path.join(
+        environ.get("XDG_STATE_HOME") or f"{home}/.local/state", "sandbox"
+    )
+    os.makedirs(state, exist_ok=True)
+    cache = os.path.join(state, "config.json")
+    out = None
+    if not reload:
+        try:
+            cached = json.loads(Path(cache).read_text(encoding="utf-8"))
+            if (
+                cached["key"] == key
+                and is_store_path(cached["config"])
+                and os.path.isfile(cached["config"])
+            ):
+                out = cached["config"]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    if out is None:
+        build = build or build_user_config
+        out = build(config["userConfig"], file, os.path.join(state, "config"))
+        write_json(cache, {"key": key, "config": out})
+    try:
+        built = json.loads(Path(out).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SandboxError(f"can't read the {file} result {out}: {e}") from None
+    if not isinstance(built, dict) or built.get("userConfig") is not None:
+        raise SandboxError(f"bad {file} result {out}")
+    return out, built
 
 
 # -- project config (sandbox.nix) -------------------------------------------
@@ -1055,6 +1170,24 @@ def main(argv):
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(os.getuid())
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     variables = {"HOME": home, "USER": user, "XDG_RUNTIME_DIR": runtime_dir}
+    check_cwd(cwd, home)
+    project = project_root(cwd)
+
+    def in_work_tree(check, *args):
+        # The work tree is bound read-write whole, so it gets the same checks
+        # (a git repo in ~ would otherwise bind all of the host home).
+        if project != cwd:
+            try:
+                check(project, *args)
+            except SandboxError as e:
+                raise SandboxError(
+                    f"{cwd} is in the git work tree {project}: {e}"
+                ) from None
+
+    in_work_tree(check_cwd, home)
+    config_path, config = user_config(
+        config, config_path, os.environ, home, project, options["reload"]
+    )
 
     state_dir = os.environ.get("SANDBOX_STATE_DIR") or config["stateDir"]
     if state_dir:
@@ -1064,20 +1197,8 @@ def main(argv):
             os.environ.get("XDG_DATA_HOME") or f"{home}/.local/share", "sandbox"
         )
     state_dir = os.path.realpath(state_dir)
-    check_cwd(cwd, home)
     check_outside(cwd, state_dir)
-
-    project = project_root(cwd)
-    if project != cwd:
-        # The work tree is bound read-write whole, so it gets the same checks
-        # (a git repo in ~ would otherwise bind all of the host home).
-        try:
-            check_cwd(project, home)
-            check_outside(project, state_dir)
-        except SandboxError as e:
-            raise SandboxError(
-                f"{cwd} is in the git work tree {project}: {e}"
-            ) from None
+    in_work_tree(check_outside, state_dir)
     volume_dir = os.path.join(state_dir, volume_name(project))
     # Per-project persistent $HOME, nested at $HOME's own path inside the
     # volume dir, so secrets.sqlite3 and exchange/ next to it stay out of
