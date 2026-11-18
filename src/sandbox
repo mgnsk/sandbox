@@ -28,6 +28,7 @@ Options:
 """
 
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -481,9 +482,12 @@ def describe_host_access(access):
     return "\n".join(lines)
 
 
-def open_tty():
-    """The controlling terminal, also when stdin/stdout are redirected."""
-    return open("/dev/tty", "r+", encoding="utf-8")
+def open_tty(path="/dev/tty"):
+    """The controlling terminal, also when stdin/stdout are redirected.
+    Unbuffered underneath, as getpass does it: open(path, "r+") wants a
+    seekable file and fails on every terminal."""
+    raw = io.FileIO(os.open(path, os.O_RDWR | os.O_NOCTTY), "r+")
+    return io.TextIOWrapper(raw, encoding="utf-8", write_through=True)
 
 
 def approve_project(manifest, volume_dir, project_file, open_tty=open_tty):
