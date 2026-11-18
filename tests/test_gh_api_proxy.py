@@ -258,6 +258,38 @@ def test_graphql_popup_lists_operations_and_variables(proxy, world):
     assert '"id": "R_1"' in text
 
 
+def test_graphql_popup_text_in_full(proxy, world):
+    """Operations with their top-level fields (not aliases), and variables
+    as sent: key order kept, indented, non-ASCII as it is."""
+    variables = {
+        "z": {"nested": [1, -2, 1.5, True, False, None], "empty": {}, "none": []},
+        "a": 'quote " backslash \\ newline \n tab \t ctl \x01 日本',
+    }
+    query = (
+        "query Q { viewer { login } } "
+        "mutation { first: addStar(input: {}) { clientMutationId } "
+        "...F removeStar(input: {}) { clientMutationId } } "
+        "fragment F on Mutation { x }"
+    )
+    request(proxy, "POST", API, "/graphql", graphql(query, variables=variables))
+    [text] = world[3].texts
+    dumped = json.dumps(variables, indent=2, ensure_ascii=False)
+    assert text == (
+        "Allow sandboxed GitHub API write?\n\n"
+        "POST api.github.com/graphql\n\n"
+        "query Q: viewer\n"
+        "mutation (anonymous): addStar, removeStar\n\n"
+        f"variables:\n{dumped}\n"
+    )
+
+
+@pytest.mark.parametrize("variables", [None, {}, [], 0, 0.0, "", False])
+def test_empty_graphql_variables_are_not_shown(proxy, world, variables):
+    query = "mutation { addStar(input: {}) { clientMutationId } }"
+    request(proxy, "POST", API, "/graphql", graphql(query, variables=variables))
+    assert "variables:" not in world[3].texts[0]
+
+
 def test_popup_text_is_cleaned_but_not_truncated(proxy, world):
     path = "/repos/o/r/\x1b[31m/" + "x" * 5000
     request(proxy, "DELETE", API, path)
@@ -338,7 +370,7 @@ def test_download_hosts_are_tunneled_unread(proxy, world, host):
 
 @pytest.mark.parametrize(
     "target",
-    ["example.com:443", "githubusercontent.com.example.com:443", "api.github.com.:443",
+    ["example.com:443", "githubusercontent.com.example.com:443",
      "api.github.com:8443", "github.com:22"],
 )  # fmt: skip
 def test_other_hosts_are_intercepted_and_refused(proxy, world, target):
@@ -360,7 +392,8 @@ def test_connect_needs_the_secret(proxy, world, auth):
 
 
 @pytest.mark.parametrize(
-    "target", ["api.github.com", "a b:443", "[::1]:443", "x:0", "x:70000"]
+    "target",
+    ["api.github.com", "a b:443", "[::1]:443", "x:0", "x:70000", "api.github.com.:443"],
 )
 def test_bad_connect_target_is_refused(proxy, target):
     sock, head = proxy_connect(proxy, target)
@@ -409,6 +442,35 @@ def test_each_proxy_has_its_own_ca_and_secret(start):
 )  # fmt: skip
 def test_malformed_requests_are_refused(proxy, world, raw, status):
     assert_refused(https_send(proxy, "api.github.com:443", raw), status, world[2])
+
+
+@pytest.mark.parametrize(
+    ("raw", "status"),
+    [
+        (b"PROPFIND /user HTTP/1.1\r\nHost: api.github.com\r\n\r\n", 501),
+        (b"CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com\r\n\r\n", 501),
+        (b"GET /user HTTP/2.0\r\nHost: api.github.com\r\n\r\n", 505),
+        (b"GET /user HTTP/x\r\nHost: api.github.com\r\n\r\n", 400),
+        (b"GET /user HTTP/1.1\r\nHost: api.github.com\r\n" + b"X-A: 1\r\n" * 100 + b"\r\n", 431),
+        (b"GET /user HTTP/1.1\r\nHost: api.github.com\r\nX-A: " + b"a" * 70000 + b"\r\n\r\n", 431),
+    ],
+    ids=["unknown-method", "connect-inside", "http2", "bad-version",
+         "too-many-headers", "header-too-long"],
+)  # fmt: skip
+def test_requests_it_cannot_read_are_refused(proxy, world, raw, status):
+    """Refused by status alone: the body is http.server's own page in the
+    Python implementation."""
+    assert https_send(proxy, "api.github.com:443", raw)[0] == status
+    assert world[2].seen == []
+
+
+def test_a_network_path_target_is_a_plain_path(proxy, world):
+    """//x is /x, as http.server reads it - never another host."""
+    status, _, _ = https_send(
+        proxy, "api.github.com:443", raw_request("GET", API, "//evil.example/user")
+    )
+    assert status == 200
+    assert world[2].seen[0]["path"] == "/evil.example/user"
 
 
 def test_oversized_graphql_body_is_refused(proxy, world):

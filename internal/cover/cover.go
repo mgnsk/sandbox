@@ -34,3 +34,15 @@ func DieOnSignals() {
 		_ = syscall.Kill(os.Getpid(), sig)
 	}()
 }
+
+// ExitOnTerm makes SIGTERM a clean exit (status 0), after writing the
+// counters.
+func ExitOnTerm() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM)
+	go func() {
+		<-ch
+		Flush()
+		os.Exit(0)
+	}()
+}

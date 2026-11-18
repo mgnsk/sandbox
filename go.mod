@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/godbus/dbus/v5 v5.2.4
+	github.com/vektah/gqlparser/v2 v2.5.64
 	modernc.org/sqlite v1.62.0
 )
 

@@ -366,7 +366,8 @@ class ConnectHandler(RefusingHandler):
                 [("Proxy-Authenticate", 'Basic realm="sandbox"')],
             )
         match = CONNECT_RE.match(self.path.lower())
-        if not match or not 0 < int(match[2]) < 65536:
+        # A trailing dot: no client sends one in TLS, so refused up front.
+        if not match or match[1].endswith(".") or not 0 < int(match[2]) < 65536:
             return self.refuse(400, f"bad CONNECT target: {clean(self.path)}")
         name, port = match[1], match[2]
         host = name if port == "443" else f"{name}:{port}"

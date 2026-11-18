@@ -18,7 +18,7 @@ buildGoModule {
     ];
   };
   # Update with lib.fakeHash and the hash nix reports after a go.mod change.
-  vendorHash = "sha256-4L1ZisA9ok+6kV+vGF2etWMK9/eL1jiBKxhL9j7BTvc=";
+  vendorHash = "sha256-YHVlL6pUokcwO+mLj+QwqXjTqPjtO/KnvbxOnHD9Wuc=";
   env.CGO_ENABLED = 0;
   ldflags = [
     "-s"

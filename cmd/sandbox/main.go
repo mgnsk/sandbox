@@ -11,6 +11,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mgnsk/sandbox/internal/claudeproxy"
+	"github.com/mgnsk/sandbox/internal/forgejoproxy"
+	"github.com/mgnsk/sandbox/internal/ghproxy"
 	"github.com/mgnsk/sandbox/internal/initcmd"
 	"github.com/mgnsk/sandbox/internal/openurl"
 	"github.com/mgnsk/sandbox/internal/secretservice"
@@ -25,6 +28,9 @@ var programs = map[string]func(args []string) int{
 	"sandbox-xdg-open":     xdgopen.Main,
 	"ssh-agent-guard":      sshagent.Main,
 	"secret-service-guard": secretservice.Main,
+	"claude-api-proxy":     claudeproxy.Main,
+	"forgejo-api-proxy":    forgejoproxy.Main,
+	"gh-api-proxy":         ghproxy.Main,
 }
 
 func main() {
