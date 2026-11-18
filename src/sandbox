@@ -539,6 +539,10 @@ class Guards:
         self.config = config
         self.procs = []
         self.dirs = []
+        # Host loopback ports pasta maps in (-T), and CA certificates the
+        # gh/fj wrappers trust, from the HTTPS-intercepting guards.
+        self.tcp_ports = []
+        self.ca_certs = []
         self.env = dict(os.environ)
         # gh, xdg-open, ... from the store first; the host's PATH after,
         # for what xdg-open hands URLs to (the browser).
@@ -657,36 +661,64 @@ def secret_service_args(guards, volume_dir, runtime_dir):
     ]
 
 
-def github_args(guards, runtime_dir):
-    """gh inside (patched to send its API requests over GH_HTTP_UNIX_SOCKET)
-    has just a placeholder token; gh-api-proxy, out here, swaps in the host's
-    real one and gates writes behind a popup. One host token for every
-    sandbox - per-sandbox OAuth logins hit GitHub's cap on simultaneously
-    valid tokens."""
-    sock = os.path.join(guards.tempdir(), "gh-api.sock")
-    proc = guards.guard("gh-api-proxy", sock)
+def https_proxy(guards, name):
+    """Start an HTTPS-intercepting guard; its HTTPS_PROXY URL once it's up.
+
+    It listens on a free port of the host's loopback, which pasta maps to the
+    same port inside. The URL carries a per-launch secret the guard checks,
+    since anything on the host's loopback can connect to that port. Its CA
+    certificate (the key stays in the guard) goes into the bundle the gh/fj
+    wrappers trust, see ca_bundle_args."""
+    tmp = guards.tempdir()
+    proc = guards.guard(name, tmp)
+    info_path = os.path.join(tmp, "proxy.json")
+    guards.wait_for(info_path, proc, name)
+    info = json.loads(Path(info_path).read_text(encoding="utf-8"))
+    port = int(info["port"])
+    guards.tcp_ports.append(str(port))
+    guards.ca_certs.append(Path(tmp, "ca.pem").read_text(encoding="ascii"))
+    return f"http://sandbox:{info['secret']}@127.0.0.1:{port}"
+
+
+def github_args(guards):
+    """gh inside (upstream gh, wrapped to use SANDBOX_GH_PROXY as its
+    HTTPS_PROXY) has just a placeholder token; gh-api-proxy, out here,
+    intercepts its requests, swaps in the host's real token and gates writes
+    behind a popup. One host token for every sandbox - per-sandbox OAuth
+    logins hit GitHub's cap on simultaneously valid tokens."""
     try:
-        guards.wait_for(sock, proc, "gh-api-proxy")
+        url = https_proxy(guards, "gh-api-proxy")
     except SandboxError as e:
         print(f"sandbox: {e} - gh inside has no API access", file=sys.stderr)
         return []
-    inside = f"{runtime_dir}/gh-api.sock"
     return [
-        "--bind", sock, inside,
-        "--setenv", "GH_HTTP_UNIX_SOCKET", inside,
+        "--setenv", "SANDBOX_GH_PROXY", url,
         # Only so gh considers itself logged in; never a real credential.
         "--setenv", "GH_TOKEN", "sandbox-placeholder",
     ]  # fmt: skip
 
 
-def forgejo_args(guards, runtime_dir):
+def forgejo_args(guards):
     """The same for fj: forgejo-api-proxy adds the token the host's fj is
     logged in with, read per request, so no login is needed to start."""
-    sock = os.path.join(guards.tempdir(), "forgejo-api.sock")
-    proc = guards.guard("forgejo-api-proxy", sock)
-    guards.wait_for(sock, proc, "forgejo-api-proxy")
-    inside = f"{runtime_dir}/forgejo-api.sock"
-    return ["--bind", sock, inside, "--setenv", "FJ_HTTP_UNIX_SOCKET", inside]
+    return ["--setenv", "SANDBOX_FJ_PROXY", https_proxy(guards, "forgejo-api-proxy")]
+
+
+def ca_bundle_args(guards, config, runtime_dir):
+    """The system CA bundle plus the HTTPS-intercepting guards' CAs, as
+    SANDBOX_CA_FILE, which the gh/fj wrappers make their SSL_CERT_FILE.
+    Nothing else inside trusts these CAs."""
+    if not guards.ca_certs:
+        return []
+    system = Path(config["fhs"]["ssl"], "certs", "ca-bundle.crt").read_text(
+        encoding="utf-8"
+    )
+    path = os.path.join(guards.tempdir(), "ca-bundle.pem")
+    Path(path).write_text(
+        "\n".join([system.rstrip("\n"), *guards.ca_certs]), encoding="utf-8"
+    )
+    inside = f"{runtime_dir}/sandbox-ca.pem"
+    return ["--ro-bind", path, inside, "--setenv", "SANDBOX_CA_FILE", inside]
 
 
 def claude_api_args(guards, key_file, runtime_dir):
@@ -1017,9 +1049,11 @@ def main(argv):
         if guards_cfg["secretService"]:
             args += secret_service_args(guards, volume_dir, runtime_dir)
         if guards_cfg["github"]:
-            args += github_args(guards, runtime_dir)
+            args += github_args(guards)
         if guards_cfg["forgejo"]:
-            args += forgejo_args(guards, runtime_dir)
+            args += forgejo_args(guards)
+        args += ca_bundle_args(guards, config, runtime_dir)
+        tcp += guards.tcp_ports
         if claude_api:
             args += claude_api_args(guards, claude_key_file, runtime_dir)
         if guards_cfg["openUrl"]:

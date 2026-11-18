@@ -21,11 +21,13 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
 import stat
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -722,6 +724,36 @@ def test_guards_get_store_tools_first_on_path(monkeypatch):
     assert "PYTHONPATH" not in guards.env
 
 
+def test_https_proxy_guard_gives_its_url_port_and_ca(tmp_path):
+    guards = sandbox.Guards(
+        {"hostPath": "/x", "python": sys.executable, "src": str(BIN_DIR)}
+    )
+    try:
+        url = sandbox.https_proxy(guards, "forgejo-api-proxy")
+        match = re.fullmatch(r"http://sandbox:([^@:]+)@127\.0\.0\.1:([0-9]+)", url)
+        assert match, url
+        assert guards.tcp_ports == [match[2]]
+        [ca] = guards.ca_certs
+        assert ca.startswith("-----BEGIN CERTIFICATE-----")
+
+        ssl_dir = tmp_path / "ssl"
+        (ssl_dir / "certs").mkdir(parents=True)
+        (ssl_dir / "certs" / "ca-bundle.crt").write_text("SYSTEM\n")
+        args = sandbox.ca_bundle_args(guards, {"fhs": {"ssl": str(ssl_dir)}}, "/run/u")
+        assert args[0] == "--ro-bind"
+        assert args[2:] == [
+            "/run/u/sandbox-ca.pem", "--setenv", "SANDBOX_CA_FILE", "/run/u/sandbox-ca.pem"
+        ]  # fmt: skip
+        assert Path(args[1]).read_text() == "SYSTEM\n" + ca
+    finally:
+        guards.close()
+
+
+def test_no_ca_bundle_without_intercepting_guards():
+    guards = sandbox.Guards({"hostPath": "/x", "python": "python3", "src": "/x"})
+    assert sandbox.ca_bundle_args(guards, {}, "/run/u") == []
+
+
 # -- real sandbox ----------------------------------------------------------------
 
 
@@ -920,7 +952,7 @@ def test_exchange_dir_is_read_only(run_in):
 
 def test_gh_and_xdg_open_talk_to_their_guards(run_in):
     result = run_in(
-        '[ -S "$GH_HTTP_UNIX_SOCKET" ] && echo "gh=[$GH_HTTP_UNIX_SOCKET]"\n'
+        '[ -n "$SANDBOX_GH_PROXY" ] && [ -r "$SANDBOX_CA_FILE" ] && echo gh-proxy\n'
         '[ -S "$XDG_RUNTIME_DIR/open-url.sock" ] && echo url-socket\n'
         'echo "browser=[$BROWSER]"\n'
         "xdg-open file:///etc/passwd; echo rc=$?\n"

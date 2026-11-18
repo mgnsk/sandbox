@@ -4,10 +4,13 @@ They have no .py extension and hyphenated names, so they
 can't be `import`ed normally - load_module() imports one by file path instead.
 """
 
+import base64
+import http.client
 import importlib.machinery
 import importlib.util
 import json
 import socket
+import ssl
 import sys
 import threading
 from pathlib import Path
@@ -84,3 +87,55 @@ class FakeProxy:
 
     def close(self):
         self._server.close()
+
+
+# -- HTTPS-intercepting proxies -------------------------------------------------
+
+
+def serve(server):
+    """Run a socketserver in a daemon thread; returns it."""
+    threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
+    return server
+
+
+def connect(server, target, auth=True):
+    """A socket CONNECTed through an api_proxy.HttpsProxyServer to target
+    ("host:port"), and the proxy's status line and headers. auth: send its
+    secret (True), nothing (False) or this Proxy-Authorization value."""
+    sock = socket.create_connection(server.server_address[:2], timeout=10)
+    lines = [f"CONNECT {target} HTTP/1.1", f"Host: {target}"]
+    if auth is True:
+        token = base64.b64encode(f"sandbox:{server.secret}".encode()).decode()
+        lines.append(f"Proxy-Authorization: Basic {token}")
+    elif auth:
+        lines.append(f"Proxy-Authorization: {auth}")
+    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        byte = sock.recv(1)
+        if not byte:
+            break
+        head += byte
+    return sock, head.decode("latin-1")
+
+
+def tls_wrap(sock, server, hostname):
+    """sock wrapped in TLS, trusting only server's CA."""
+    ctx = ssl.create_default_context(cadata=server.ca.pem().decode())
+    return ctx.wrap_socket(sock, server_hostname=hostname)
+
+
+def https_send(server, target, raw):
+    """raw sent inside a CONNECT tunnel to target, intercepted by server;
+    returns (status, headers, body)."""
+    sock, head = connect(server, target)
+    assert " 200 " in head.split("\r\n", 1)[0], head
+    tls = tls_wrap(sock, server, target.rsplit(":", 1)[0])
+    try:
+        tls.sendall(raw)
+        method = raw.split(b" ", 1)[0].decode()
+        response = http.client.HTTPResponse(tls, method=method)
+        response.begin()
+        return response.status, dict(response.getheaders()), response.read()
+    finally:
+        tls.close()

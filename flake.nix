@@ -63,6 +63,7 @@
           pkgs.mkShell {
             packages = [
               (pkgs.python3.withPackages (ps: [
+                ps.cryptography
                 ps.dbus-fast
                 ps.graphql-core
                 ps.pytest

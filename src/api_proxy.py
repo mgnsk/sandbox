@@ -1,10 +1,17 @@
-"""The HTTP-over-unix-socket proxy behind the sandbox's API guards
-(gh-api-proxy, forgejo-api-proxy, claude-api-proxy).
+"""The proxies behind the sandbox's API guards (gh-api-proxy,
+forgejo-api-proxy, claude-api-proxy). Each guard runs on the host and holds
+the real token, which never enters the sandbox. Clients inside reach it one
+of two ways:
 
-Each guard runs on the host, listening on a private socket that the sandbox launcher
-binds in. A patched client inside sends its API requests there as plain HTTP,
-with the real host in Host. The proxy holds the real token, which never enters
-the sandbox, and per request:
+  - ProxyServer: plain HTTP over a private unix socket the launcher binds
+    in, with the real host in Host (Claude Code's ANTHROPIC_UNIX_SOCKET).
+  - HttpsProxyServer: an HTTPS_PROXY on the host's loopback, which pasta
+    maps into the sandbox. A client CONNECTs (with the per-launch secret in
+    Proxy-Authorization), the proxy answers the TLS handshake itself with a
+    certificate from its own throwaway CA (mitm_ca), which only the sandbox's
+    gh and fj wrappers trust, and reads the request inside.
+
+Either way, per request, the proxy:
 
   - refuses malformed requests, and hosts and paths the guard doesn't allow;
   - forwards reads as-is, and holds writes for the user's approval in a popup
@@ -16,17 +23,24 @@ the sandbox, and per request:
 ProxyServer's policy methods are what a guard overrides.
 """
 
+import base64
+import hmac
 import http.client
 import json
+import os
+import re
+import secrets
 import shlex
 import socket
 import socketserver
 import ssl
 import struct
+import threading
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import guard_popup
+import mitm_ca
 
 CHUNK = 64 * 1024
 
@@ -95,8 +109,34 @@ def open_upstream(host):
     )
 
 
-class Handler(BaseHTTPRequestHandler):
-    """One request per connection: validate, classify, approve, forward."""
+def open_tunnel(name, port):
+    """A TCP connection to the real host, for a tunnel left alone."""
+    return socket.create_connection((name, port), timeout=300)
+
+
+def relay(client, upstream):
+    """Copy bytes both ways until both sides are done."""
+
+    def pump(src, dst):
+        try:
+            while data := src.recv(CHUNK):
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    back = threading.Thread(target=pump, args=(upstream, client), daemon=True)
+    back.start()
+    pump(client, upstream)
+    back.join()
+
+
+class RefusingHandler(BaseHTTPRequestHandler):
+    """Quiet, and refuses with a message the client shows."""
 
     protocol_version = "HTTP/1.1"
     timeout = 60  # For reading the request.
@@ -104,13 +144,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # pylint: disable=redefined-builtin
         pass
 
-    def do_GET(self):  # pylint: disable=invalid-name
-        """Every method goes through proxy()."""
-        self.proxy()
-
-    do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = do_GET
-
-    def refuse(self, status, message):
+    def refuse(self, status, message, headers=()):
         """Answer with an error the client shows as its message."""
         body = json.dumps({"message": f"{self.server.name}: {message}"}).encode()
         try:
@@ -118,10 +152,27 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Connection", "close")
+            for name, value in headers:
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
         except OSError:
             pass  # Client already gone.
+
+
+class Handler(RefusingHandler):
+    """One request per connection: validate, classify, approve, forward.
+
+    tunnel_host is the CONNECT target ("host" or "host:port") for a request
+    read inside a tunnel; its Host must name the same."""
+
+    tunnel_host = None
+
+    def do_GET(self):  # pylint: disable=invalid-name
+        """Every method goes through proxy()."""
+        self.proxy()
+
+    do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = do_GET
 
     def check_request(self):
         """(host, body length) of a well-formed request to an allowed host,
@@ -132,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
         host = hosts[0].lower().removesuffix(":443") if len(hosts) == 1 else ""
         if not self.path.startswith("/"):
             self.refuse(400, "expected an origin-form request target")
+        elif self.tunnel_host is not None and host != self.tunnel_host:
+            self.refuse(421, f"Host {clean(host)} isn't the CONNECT target")
         elif not self.server.host_allowed(host):
             self.refuse(403, self.server.host_refusal(clean(host)))
         elif not self.server.path_allowed(host, self.path):
@@ -228,18 +281,101 @@ class Handler(BaseHTTPRequestHandler):
             pass  # Client or upstream went away mid-response.
 
 
-class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    """A guard's socket server. upstream and confirm are injectable for
-    tests; a guard overrides name, popup_title and the policy methods."""
+class TunnelHandler(Handler):
+    """Handler for the one request inside a CONNECT tunnel."""
 
-    daemon_threads = True
+    def __init__(self, request, client_address, server, tunnel_host):
+        self.tunnel_host = tunnel_host
+        super().__init__(request, client_address, server)
+
+
+# host:port, as a client CONNECTs to it. No IPv6 literals.
+CONNECT_RE = re.compile(r"^([a-z0-9.-]+):([0-9]{1,5})$")
+
+
+class ConnectHandler(RefusingHandler):
+    """Answers a CONNECT, then the TLS handshake inside it with a
+    certificate for the target, and hands the tunnel to TunnelHandler."""
+
+    def do_CONNECT(self):  # pylint: disable=invalid-name
+        """Authenticate, open the tunnel, intercept it."""
+        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
+        if not self.server.authorized(self.headers.get_all("Proxy-Authorization")):
+            return self.refuse(
+                407,
+                "proxy authentication required",
+                [("Proxy-Authenticate", 'Basic realm="sandbox"')],
+            )
+        match = CONNECT_RE.match(self.path.lower())
+        if not match or not 0 < int(match[2]) < 65536:
+            return self.refuse(400, f"bad CONNECT target: {clean(self.path)}")
+        name, port = match[1], match[2]
+        host = name if port == "443" else f"{name}:{port}"
+        if self.server.tunnel_allowed(host):
+            return self.tunnel(name, int(port))
+        try:
+            self.send_response_only(200, "Connection Established")
+            self.end_headers()
+            tls = self.server.ca.context(name).wrap_socket(
+                self.connection, server_side=True
+            )
+        except (OSError, ssl.SSLError):
+            return None  # Client gone, or didn't trust the certificate.
+        try:
+            TunnelHandler(tls, self.client_address, self.server, host)
+        except (OSError, ssl.SSLError):
+            pass
+        finally:
+            close_tls(tls)
+        return None
+
+    def tunnel(self, name, port):
+        """Connect the client to the real host, without looking inside."""
+        try:
+            upstream = self.server.open_tunnel(name, port)
+        except OSError as e:
+            return self.refuse(502, f"upstream error: {e}")
+        with upstream:
+            try:
+                self.send_response_only(200, "Connection Established")
+                self.end_headers()
+            except OSError:
+                return None
+            self.connection.settimeout(300)
+            relay(self.connection, upstream)
+        return None
+
+    def do_GET(self):  # pylint: disable=invalid-name
+        """Plain-HTTP proxying isn't offered: everything goes over CONNECT."""
+        self.close_connection = True  # pylint: disable=attribute-defined-outside-init
+        self.refuse(405, "only CONNECT")
+
+    do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = do_GET
+
+
+def close_tls(tls):
+    """Close with a close_notify: responses here are close-delimited, and
+    rustls (fj) takes an EOF without one as a truncated body."""
+    try:
+        tls.settimeout(2)
+        tls.unwrap()
+    except (OSError, ValueError, ssl.SSLError):
+        pass
+    finally:
+        tls.close()
+
+
+class Policy:
+    """What a guard decides, shared by both transports. upstream and confirm
+    are injectable for tests; a guard overrides name, popup_title and the
+    policy methods."""
 
     name = "api-proxy"
     popup_title = "Allow sandboxed API write?"
 
-    def __init__(self, path, upstream=open_upstream, confirm=None):
-        super().__init__(path, Handler)
+    def __init__(self, upstream=open_upstream, confirm=None, tunnel=open_tunnel):
         self.open_upstream = upstream
+        self.open_tunnel = tunnel
         self.confirm = confirm or self.confirm_via_popup
         self._approvals = guard_popup.Approvals()
 
@@ -248,6 +384,12 @@ class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     def host_allowed(self, host):
         """Whether requests to host are forwarded at all."""
         raise NotImplementedError
+
+    def tunnel_allowed(self, host):
+        """Whether a CONNECT to host ("name" or "name:port") is passed
+        through as it is, unread: hosts that get no credentials, which the
+        client's children (git under gh) may reach too."""
+        return False
 
     def path_allowed(self, host, path):
         """Whether requests for path (with its query) on host are forwarded."""
@@ -287,19 +429,86 @@ class ProxyServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
     # -- approval -------------------------------------------------------------
 
+    def peer_cmdline(self, sock):
+        """The requesting process's command line, or None if unknowable."""
+        return None
+
     def confirm_via_popup(self, description, cmdline):
         """Ask in a popup whether to allow a write - see guard_popup.ask
         for the answers."""
-        text = f"{self.popup_title}\n\n  process:  {clean(cmdline)}\n\n{clean(description)}\n"
+        process = f"  process:  {clean(cmdline)}\n\n" if cmdline else ""
+        text = f"{self.popup_title}\n\n{process}{clean(description)}\n"
         return guard_popup.ask(self.name, text)
 
     def approve(self, sock, description):
         """Whether to let a write through, per the popup or an earlier
         "always" answer."""
+        return self._approvals.approve(
+            lambda: self.confirm(description, self.peer_cmdline(sock))
+        )
+
+
+class ProxyServer(Policy, socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    """A guard on a unix socket, taking plain HTTP."""
+
+    daemon_threads = True
+
+    def __init__(self, path, upstream=open_upstream, confirm=None):
+        Policy.__init__(self, upstream=upstream, confirm=confirm)
+        socketserver.UnixStreamServer.__init__(self, path, Handler)
+
+    def peer_cmdline(self, sock):
         try:
             pid = peer_pid(sock)
         except OSError:
-            pid = None
-        return self._approvals.approve(
-            lambda: self.confirm(description, peer_cmdline(pid) if pid else "unknown")
+            return "unknown"
+        return peer_cmdline(pid) if pid else "unknown"
+
+
+class HttpsProxyServer(Policy, socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """A guard as an intercepting HTTPS_PROXY on address. The peer is pasta,
+    so the popup can't name the requesting process."""
+
+    daemon_threads = True
+    allow_reuse_address = False
+
+    def __init__(
+        self,
+        address=("127.0.0.1", 0),
+        secret=None,
+        ca=None,
+        upstream=open_upstream,
+        confirm=None,
+        tunnel=open_tunnel,
+    ):
+        Policy.__init__(self, upstream=upstream, confirm=confirm, tunnel=tunnel)
+        socketserver.TCPServer.__init__(self, address, ConnectHandler)
+        self.ca = ca or mitm_ca.CA(f"sandbox {self.name}")
+        self.secret = secret or secrets.token_urlsafe(32)
+        token = base64.b64encode(f"sandbox:{self.secret}".encode()).decode()
+        self._expected_auth = f"Basic {token}".encode()
+
+    @property
+    def proxy_url(self):
+        """HTTPS_PROXY for a client, the secret included."""
+        host, port = self.server_address[:2]
+        return f"http://sandbox:{self.secret}@{host}:{port}"
+
+    def authorized(self, values):
+        """Whether Proxy-Authorization (all its values) carries the secret."""
+        return (
+            values is not None
+            and len(values) == 1
+            and hmac.compare_digest(values[0].strip().encode(), self._expected_auth)
         )
+
+    def announce(self, state_dir):
+        """Write ca.pem, then proxy.json ({"port", "secret"}) - the launcher
+        waits for the latter. state_dir is private to the launcher's user."""
+        Path(state_dir, "ca.pem").write_bytes(self.ca.pem())
+        info = json.dumps({"port": self.server_address[1], "secret": self.secret})
+        tmp = Path(state_dir, ".proxy.json")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(info)
+        os.replace(tmp, Path(state_dir, "proxy.json"))

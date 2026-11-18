@@ -5,12 +5,11 @@ covered through gh-api-proxy's tests."""
 
 import http.client
 import json
-import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from conftest import load_module
+from conftest import connect, https_send, load_module, serve
 
 proxy = load_module("forgejo-api-proxy")
 
@@ -111,24 +110,23 @@ def upstream():
 
 
 @pytest.fixture
-def make_proxy(tmp_path_factory, upstream):
+def make_proxy(upstream):
     servers = []
 
     def make(tokens, answer=None):
         confirm = Confirm(answer)
-        path = str(tmp_path_factory.mktemp("p") / "s")
         port = upstream.server_address[1]
-        server = proxy.ProxyServer(
-            path,
-            tokens=lambda: dict(tokens),
-            upstream=lambda host: http.client.HTTPConnection(
-                "127.0.0.1", port, timeout=10
-            ),
-            confirm=confirm,
+        server = serve(
+            proxy.ProxyServer(
+                tokens=lambda: dict(tokens),
+                upstream=lambda host: http.client.HTTPConnection(
+                    "127.0.0.1", port, timeout=10
+                ),
+                confirm=confirm,
+            )
         )
-        threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
         servers.append(server)
-        return path, confirm
+        return server, confirm
 
     yield make
     for server in servers:
@@ -136,20 +134,15 @@ def make_proxy(tmp_path_factory, upstream):
         server.server_close()
 
 
-def request(sock_path, method, host, path, body=b"", headers=()):
-    """Send a request; return (status, body)."""
+def request(server, method, host, path, body=b"", headers=()):
+    """Send a request through a tunnel to host; return (status, body)."""
     lines = [f"{method} {path} HTTP/1.1", f"Host: {host}", *headers]
     if body or method not in ("GET", "HEAD"):
         lines.append(f"Content-Length: {len(body)}")
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(sock_path)
-    try:
-        sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
-        response = http.client.HTTPResponse(sock, method=method)
-        response.begin()
-        return response.status, response.read()
-    finally:
-        sock.close()
+    raw = ("\r\n".join(lines) + "\r\n\r\n").encode() + body
+    target = host if ":" in host else f"{host}:443"
+    status, _, out = https_send(server, target, raw)
+    return status, out
 
 
 def test_read_gets_the_hosts_token_without_a_prompt(make_proxy):
@@ -170,13 +163,23 @@ def test_host_with_a_port_keeps_it(make_proxy):
     assert FakeForgejo.seen[0]["headers"]["Host"] == f"{HOST}:3000"
 
 
-@pytest.mark.parametrize("host", ["other.example", f"{HOST}:3000", "", "a b"])
+@pytest.mark.parametrize("host", ["other.example", f"{HOST}:3000"])
 def test_hosts_not_logged_in_on_the_host_are_refused(make_proxy, host):
     path, _ = make_proxy({HOST: "real"})
     status, body = request(path, "GET", host, "/api/v1/user")
     assert status == 403
     assert json.loads(body)["message"].startswith("forgejo-api-proxy:")
     assert FakeForgejo.seen == []
+
+
+def test_nothing_is_tunneled_unread(make_proxy):
+    """Every host is intercepted, so one not logged in gets the refusal
+    above rather than a tunnel to the host's own services."""
+    server, _ = make_proxy({HOST: "real"})
+    assert not server.tunnel_allowed("127.0.0.1:22")
+    sock, head = connect(server, "127.0.0.1:22")
+    sock.close()
+    assert " 200 " in head.split("\r\n", 1)[0]  # Then the TLS handshake.
 
 
 def test_refusal_says_how_to_log_in(make_proxy):

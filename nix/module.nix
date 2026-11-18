@@ -383,12 +383,12 @@ in
       github.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "gh inside, talking to the API through a host proxy that holds the host gh's token and gates writes.";
+        description = "gh inside, its API requests intercepted by a host proxy (HTTPS_PROXY, with a per-sandbox CA only gh trusts) that holds the host gh's token and gates writes.";
       };
       forgejo.enable = mkOption {
         type = types.bool;
         default = false;
-        description = "fj (forgejo-cli) inside, through a host proxy holding the host fj's tokens.";
+        description = "fj (forgejo-cli) inside, its API requests intercepted by a host proxy (as for gh) holding the host fj's tokens.";
       };
       claudeApiKey.enable = mkOption {
         type = types.bool;
@@ -431,9 +431,10 @@ in
       type = types.listOf types.package;
       readOnly = true;
       description = ''
-        The patched clients the guards rely on (gh, fj), for putting first in
+        The wrapped clients the guards rely on (gh, fj), for putting first in
         a profile whose PATH entry can come before the sandbox's own inside.
-        Patched, they behave as usual without the sandbox's socket variables.
+        They're upstream gh and fj, which the wrappers point at the guards'
+        proxies; without the sandbox's variables they behave as usual.
       '';
     };
 
