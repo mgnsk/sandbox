@@ -28,10 +28,15 @@ The only host-backed paths writable from inside are:
 
 - the project directory: the top level of the git work tree `$PWD` is in, or
   `$PWD` itself outside one; and
-- a set of **per-project volumes** under `~/.ide/<volume>/` that map onto
-  host-looking paths but are isolated per project and are never the real host
-  dir — a file the sandbox writes to one never reaches the host path it shadows,
-  and a file the host has there is not visible inside.
+- a **per-project home volume**, mounted over `$HOME`: the directory
+  `<state dir>/<volume><$HOME>` on the host, where the state dir is
+  `stateDir` (default `$XDG_DATA_HOME/sandbox`, i.e.
+  `~/.local/share/sandbox`) and `<volume>` is the project path made flat plus
+  a hash. It looks like the host home but is never the real one — a file the
+  sandbox writes there never reaches the host path it shadows, and a file the
+  host has there is not visible inside. The project's secrets (tokens, keys,
+  Secret Service data, approvals) sit next to it in `<state dir>/<volume>/`,
+  outside the mount, out of the sandbox's reach.
 
 Everything else the sandbox needs (`/nix`, configured reference binds, home-manager-generated
 config) is mounted **read-only**. Home-manager files, when enabled, reach the
@@ -40,7 +45,7 @@ read-only store; the host never writes into a volume, since a symlink planted th
 path.
 
 Persistent per-project state (caches, tool config, PATH directories, …) uses
-these volumes rather than a shared bind of the host path. Sharing host state
+this volume rather than a shared bind of the host path. Sharing host state
 that a host tool later trusts — a `$PATH` directory, or a build cache a
 toolchain treats as verified and doesn't re-check — would let sandboxed code
 plant something the host or another project runs. The trade is that state isn't
