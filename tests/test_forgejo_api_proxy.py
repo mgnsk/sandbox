@@ -92,6 +92,17 @@ def test_missing_or_odd_keys_file_means_no_hosts(tmp_path, content):
     assert proxy.host_tokens(keys) == {}
 
 
+def test_project_tokens_keep_only_well_formed_entries(tmp_path):
+    tokens = tmp_path / "forgejo-tokens.json"
+    assert proxy.api_proxy.read_tokens(tokens) == {}
+    tokens.write_text(
+        json.dumps({"A.example": "aaaaaaaa", "b.example": "bad token", "c": 1})
+    )
+    assert proxy.api_proxy.read_tokens(tokens) == {"a.example": "aaaaaaaa"}
+    tokens.write_text("[]")
+    assert proxy.api_proxy.read_tokens(tokens) == {}
+
+
 def test_keys_path_follows_xdg_data_home(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert proxy.keys_path() == tmp_path / "forgejo-cli" / "keys.json"

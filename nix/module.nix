@@ -383,12 +383,12 @@ in
       github.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "gh inside, its API requests intercepted by a host proxy (HTTPS_PROXY, with a per-sandbox CA only gh trusts) that holds the host gh's token and gates writes.";
+        description = "gh inside, its API requests intercepted by a host proxy (HTTPS_PROXY, with a per-sandbox CA only gh trusts) that holds the token (the project's from `sandbox --gh-token`, else the host gh's) and gates writes.";
       };
       forgejo.enable = mkOption {
         type = types.bool;
         default = false;
-        description = "fj (forgejo-cli) inside, its API requests intercepted by a host proxy (as for gh) holding the host fj's tokens.";
+        description = "fj (forgejo-cli) inside, its API requests intercepted by a host proxy (as for gh) holding the tokens (the project's from `sandbox --fj-token HOST`, else the host fj's).";
       };
       claudeApiKey.enable = mkOption {
         type = types.bool;

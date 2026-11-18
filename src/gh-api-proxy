@@ -5,8 +5,9 @@ Runs outside the sandbox as an intercepting HTTPS_PROXY on the host's
 loopback, which the launcher maps into the sandbox. The sandbox's gh (upstream
 gh, wrapped to set HTTPS_PROXY and trust this proxy's CA) sends every API
 request through it, with only a placeholder token. This proxy holds the real
-token, which never enters the sandbox, and decides per request (the mechanics
-are api_proxy.py's):
+token, which never enters the sandbox: the project's own (`sandbox
+--gh-token`, from the file in argv[2], read per request) if it has one, else
+the host gh's. It decides per request (the mechanics are api_proxy.py's):
 
   - REST GET/HEAD, and GraphQL documents containing only queries, are
     forwarded as-is;
@@ -123,11 +124,17 @@ class ProxyServer(api_proxy.HttpsProxyServer):
     popup_title = "Allow sandboxed GitHub API write?"
 
     def __init__(self, token, **kwargs):
+        """token: the token, or a callable returning it (None for none)."""
         super().__init__(**kwargs)
-        self.token = token
+        self.token = token if callable(token) else lambda: token
 
     def host_allowed(self, host):
-        return host_allowed(host)
+        return host_allowed(host) and bool(self.token())
+
+    def host_refusal(self, host):
+        if host_allowed(host):
+            return NO_TOKEN
+        return super().host_refusal(host)
 
     def tunnel_allowed(self, host):
         return tunnel_allowed(host)
@@ -142,24 +149,40 @@ class ProxyServer(api_proxy.HttpsProxyServer):
         return describe_write(method, host, path, body)
 
     def authorization(self, host):
-        return f"token {self.token}" if host in TOKEN_HOSTS else None
+        token = self.token()
+        return f"token {token}" if token and host in TOKEN_HOSTS else None
+
+
+NO_TOKEN = (
+    "no GitHub token - on the host, outside the sandbox, run `sandbox --gh-token`"
+    " in the project (a token for this project) or `gh auth login` (the host's,"
+    " for every project; restart the sandbox after it)"
+)
 
 
 def host_token():
-    """The host gh's token, for the proxy's lifetime only."""
-    result = subprocess.run(
-        ["gh", "auth", "token"], capture_output=True, text=True, check=False
-    )
+    """The host gh's token, for the proxy's lifetime only; "" if gh isn't
+    logged in (or there's no gh)."""
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def main():
-    """Serve until killed, announcing the port, secret and CA in argv[1]."""
-    token = host_token()
-    if not token:
-        sys.exit(
-            "gh-api-proxy: `gh auth token` gave no token - run `gh auth login` on the host"
-        )
+    """Serve until killed, announcing the port, secret and CA in argv[1];
+    argv[2] is the project's token file."""
+    project_file = sys.argv[2]
+    host = host_token()
+
+    def token():
+        return api_proxy.read_token(project_file) or host or None
+
+    if not token():
+        print(f"sandbox: {NO_TOKEN}", file=sys.stderr)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     with ProxyServer(token) as server:
         server.announce(sys.argv[1])
