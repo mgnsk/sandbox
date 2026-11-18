@@ -70,6 +70,8 @@ To update, including the packages inside (Claude Code, gh, ...):
 nix profile upgrade sandbox
 ```
 
+`sandbox` reminds you at start once it's 30 days old (`upgradeNotice.days`).
+
 ## Using it in a project
 
 Say a project has just a `flake.nix` with a dev shell:
@@ -628,6 +630,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `claude.lspServers.<name>` | `{ }` | `{ package; command; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. |
 | `claude.marketplaces.<name>` | `{ }` | Plugin marketplace directories (store paths); enable their plugins in `claude.settings.enabledPlugins`. |
 | `profiles.<name>` | | Per-project additions, see below. |
+| `upgradeNotice.days` | `30` | Days after which `sandbox` suggests `nix profile upgrade sandbox`; 0 never. Only for `nix profile add github:mgnsk/sandbox`, not your own builds. |
 | `nixpkgs.config` | `{ }` | `config.nix` only: nixpkgs config for its `pkgs`, e.g. `allowUnfree = true`. |
 
 ### Plugins and language servers

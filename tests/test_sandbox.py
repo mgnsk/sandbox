@@ -361,6 +361,39 @@ def test_project_manifest_is_cached(tmp_path, monkeypatch):
     assert calls[-1][1:] == (str(project / "sandbox.nix"), f"{STORE}-claude")
 
 
+# -- unit: upgrade notice ------------------------------------------------------
+
+DAY = 86400
+
+
+def test_upgrade_notice():
+    assert sandbox.upgrade_notice(0, 30, 100 * DAY) is None  # age unknown
+    assert sandbox.upgrade_notice(None, 30, 100 * DAY) is None
+    assert sandbox.upgrade_notice(10 * DAY, 30, 39 * DAY) is None
+    assert sandbox.upgrade_notice(10 * DAY, 0, 900 * DAY) is None  # turned off
+    notice = sandbox.upgrade_notice(10 * DAY, 30, 40.5 * DAY)
+    assert "30 days old" in notice and "nix profile upgrade sandbox" in notice
+
+
+def test_main_prints_the_upgrade_notice_once(tmp_path, monkeypatch, capsys):
+    """Not again from the launcher that evaluates sandbox.nix."""
+    home = tmp_path / "home"
+    (home / "api").mkdir(parents=True)
+    config = _api_key_config(tmp_path, home / "api")
+    data = json.loads(config.read_text())
+    data.update(released=1, upgradeNoticeDays=30)
+    config.write_text(json.dumps(data))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(sandbox, "open_tty", lambda: _Tty(KEY + "\n"))
+    monkeypatch.chdir(home / "api")
+    monkeypatch.delenv(sandbox.QUIET_ENV, raising=False)
+    sandbox.main(["sandbox", str(config), "--claude-api-key"])
+    assert "nix profile upgrade sandbox" in capsys.readouterr().err
+    monkeypatch.setenv(sandbox.QUIET_ENV, "1")
+    sandbox.main(["sandbox", str(config), "--claude-api-key"])
+    assert "upgrade" not in capsys.readouterr().err
+
+
 # -- unit: ~/.config/sandbox/config.nix ---------------------------------------
 
 

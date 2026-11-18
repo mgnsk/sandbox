@@ -159,6 +159,25 @@ def select_profile(config, cwd, project, variables):
     return best or config["default"]
 
 
+# -- upgrade notice ---------------------------------------------------------
+
+# Set for the launcher that evaluates sandbox.nix, so it doesn't repeat it.
+QUIET_ENV = "SANDBOX_NO_UPGRADE_NOTICE"
+
+
+def upgrade_notice(released, days, now):
+    """A suggestion to upgrade once the installed flake is `days` old."""
+    if not released or not days:
+        return None
+    age = int((now - released) // 86400)
+    if age < days:
+        return None
+    return (
+        f"this sandbox is {age} days old; `nix profile upgrade sandbox` updates "
+        "it and the tools inside (upgradeNotice.days = 0 turns this off)"
+    )
+
+
 # -- your config (~/.config/sandbox/config.nix) -----------------------------
 
 USER_CONFIG_FILE = "config.nix"
@@ -402,6 +421,7 @@ def evaluate_project(config, config_path, project_file, base):
             stdout=subprocess.PIPE,
             text=True,
             check=False,
+            env={**os.environ, QUIET_ENV: "1"},
         )
     except KeyboardInterrupt:
         raise SandboxError(f"evaluating {project_file} interrupted") from None
@@ -1185,9 +1205,14 @@ def main(argv):
                 ) from None
 
     in_work_tree(check_cwd, home)
+    # The installed package's age; a config built from config.nix has none.
+    released = config.get("released")
     config_path, config = user_config(
         config, config_path, os.environ, home, project, options["reload"]
     )
+    notice = upgrade_notice(released, config.get("upgradeNoticeDays"), time.time())
+    if notice and not os.environ.get(QUIET_ENV):
+        print(f"sandbox: {notice}", file=sys.stderr)
 
     state_dir = os.environ.get("SANDBOX_STATE_DIR") or config["stateDir"]
     if state_dir:
