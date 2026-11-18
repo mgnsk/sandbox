@@ -212,6 +212,44 @@ account token (`OP_SERVICE_ACCOUNT_TOKEN`) would work, but that puts a
 1Password credential inside the sandbox, where the project's code can read it.
 Use `op` on the host instead.
 
+### Git config without home-manager
+
+Each project's `$HOME` starts empty, so without the home-manager module git
+inside has no `~/.gitconfig`, and the first commit fails with "Author
+identity unknown". Pick one of these in your sandbox config.
+
+Bind your host config in, read-only, for every project:
+
+```nix
+binds = [
+  { src = "~/.gitconfig"; }
+  { src = "~/.config/git"; optional = true; }
+];
+```
+
+Settings in it that point at the host don't work inside: an `include.path`
+to a file that isn't bound in, a credential helper that isn't on the
+sandbox's `PATH`, and `gpg.ssh.program = op-ssh-sign` (see
+[1Password's SSH agent](#1passwords-ssh-agent)).
+
+Or set only what's needed, with no host file:
+
+```nix
+env = {
+  GIT_AUTHOR_NAME = "Your Name";
+  GIT_AUTHOR_EMAIL = "you@example.com";
+  GIT_COMMITTER_NAME = "Your Name";
+  GIT_COMMITTER_EMAIL = "you@example.com";
+  # Any other setting, numbered from 0:
+  GIT_CONFIG_COUNT = "1";
+  GIT_CONFIG_KEY_0 = "pull.rebase";
+  GIT_CONFIG_VALUE_0 = "true";
+};
+```
+
+`git config --global` inside also works, but it lands in that project's
+volume, so every project needs it once.
+
 ### The project's own sandbox config: sandbox.nix
 
 A `sandbox.nix` in the project root configures the sandbox around the
