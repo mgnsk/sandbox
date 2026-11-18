@@ -474,10 +474,18 @@ def forgejo_host(value):
 def ask_token(intro, prompt, open_tty=None):
     """A token read on the terminal (hidden input); "" when skipped or
     malformed."""
+    if os.environ.get("SANDBOX_EXCHANGE"):
+        # Only a hint, not a control: in here it would land in this
+        # sandbox's volume, where no proxy reads it.
+        raise SandboxError(
+            "this is inside a sandbox - set the token on the host, in the project"
+        )
     try:
         tty = (open_tty or globals()["open_tty"])()
     except OSError:
-        raise SandboxError("setting a token needs a terminal") from None
+        raise SandboxError(
+            "setting a token needs a terminal - run it in one on the host, in the project"
+        ) from None
     with tty:
         tty.write(intro)
         token = read_secret(tty, prompt)

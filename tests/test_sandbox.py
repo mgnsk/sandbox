@@ -461,7 +461,8 @@ def test_claude_api_key_is_asked_once_and_kept_out_of_the_home(tmp_path):
 TOKEN = "github_pat_" + "t" * 40
 
 
-def test_github_token_is_kept_out_of_the_home(tmp_path):
+def test_github_token_is_kept_out_of_the_home(tmp_path, monkeypatch):
+    monkeypatch.delenv("SANDBOX_EXCHANGE", raising=False)
     tty = _Tty(TOKEN + "\n")
     sandbox.set_github_token(str(tmp_path), lambda: tty)
 
@@ -475,7 +476,9 @@ def test_github_token_is_kept_out_of_the_home(tmp_path):
     assert token_file.read_text() == TOKEN + "\n"
 
 
-def test_token_needs_a_terminal(tmp_path):
+def test_token_needs_a_terminal(tmp_path, monkeypatch):
+    monkeypatch.delenv("SANDBOX_EXCHANGE", raising=False)
+
     def no_tty():
         raise OSError("no tty")
 
@@ -483,7 +486,15 @@ def test_token_needs_a_terminal(tmp_path):
         sandbox.set_github_token(str(tmp_path), no_tty)
 
 
-def test_forgejo_tokens_are_kept_per_host(tmp_path):
+def test_token_is_not_set_inside_a_sandbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("SANDBOX_EXCHANGE", "/x/exchange")
+    with pytest.raises(sandbox.SandboxError, match="on the host"):
+        sandbox.set_github_token(str(tmp_path), lambda: _Tty(TOKEN + "\n"))
+    assert not (tmp_path / "github-token").exists()
+
+
+def test_forgejo_tokens_are_kept_per_host(tmp_path, monkeypatch):
+    monkeypatch.delenv("SANDBOX_EXCHANGE", raising=False)
     sandbox.set_forgejo_token(str(tmp_path), "a.example", lambda: _Tty("aaaaaaaa\n"))
     sandbox.set_forgejo_token(str(tmp_path), "b.example", lambda: _Tty("bbbbbbbb\n"))
     sandbox.set_forgejo_token(str(tmp_path), "a.example", lambda: _Tty("cccccccc\n"))
