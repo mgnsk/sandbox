@@ -37,7 +37,13 @@
         # Without a config of your own: ~/.config/sandbox/config.nix, if any.
         default = mkSandbox {
           inherit pkgs;
-          modules = [ { userConfig.enable = true; } ];
+          modules = [
+            {
+              userConfig.enable = true;
+              # When the installed main was committed, for the upgrade notice.
+              released = self.lastModified;
+            }
+          ];
         };
         inherit (pkgs.callPackage ./nix/packages.nix { }) gh forgejo-cli;
       });
