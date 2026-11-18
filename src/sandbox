@@ -204,12 +204,7 @@ def _is_bind(value):
 
 
 MANIFEST_FIELDS = {
-    "path": lambda v: v is None or is_store_path(v),
     "claudeDir": lambda v: v is None or is_store_path(v),
-    "env": lambda v: (
-        isinstance(v, dict)
-        and all(isinstance(k, str) and isinstance(x, str) for k, x in v.items())
-    ),
     "binds": lambda v: isinstance(v, list) and all(_is_bind(b) for b in v),
     "hostPorts": _is_str_list,
     "command": lambda v: v is None or (_is_str_list(v) and len(v) > 0),
@@ -441,17 +436,12 @@ def claude_api_key(volume_dir, ask_again, open_tty=None):
 
 
 def apply_project(profile, manifest):
-    """The profile with sandbox.nix's additions: its packages first on PATH,
-    its env and binds on top, and its Claude config (already merged with the
-    profile's by project.nix) in place of the profile's."""
-    env = {**profile["env"], **manifest["env"]}
-    if manifest["path"]:
-        env["PATH"] = (
-            f"{manifest['path']}:{env['PATH']}" if env.get("PATH") else manifest["path"]
-        )
+    """The profile with sandbox.nix's additions: its binds on top, and its
+    Claude config (already merged with the profile's by project.nix) in place
+    of the profile's. Tools and variables are the project's dev shell's
+    business (flake, devenv), not the sandbox's."""
     return {
         **profile,
-        "env": env,
         "binds": profile["binds"] + manifest["binds"],
         "claudeDir": (manifest["claudeDir"] or profile["claudeDir"])
         if profile["claudeDir"]

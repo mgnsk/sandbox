@@ -240,8 +240,8 @@ treated as untrusted input:
   and never through a symlink.
 - It can't change anything that runs on the host: the launcher, bwrap, pasta,
   seccomp, the guards and their settings come from the installed
-  configuration. What it sets otherwise (packages, env, command, Claude
-  config) runs inside.
+  configuration. What it sets otherwise (command, Claude config) runs
+  inside.
 - What reaches beyond the inside - `binds` and `hostPorts` - needs a yes on
   the controlling terminal, again whenever it changes. The approval and the
   evaluation cache live in the project's volume dir, outside the home volume,

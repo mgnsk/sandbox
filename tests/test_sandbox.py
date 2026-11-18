@@ -239,9 +239,7 @@ STORE = "/nix/store/" + "a" * 32
 
 def _manifest(**kw):
     return {
-        "path": None,
         "claudeDir": None,
-        "env": {},
         "binds": [],
         "hostPorts": [],
         "command": None,
@@ -276,7 +274,7 @@ def test_store_paths():
 
 
 def test_reads_a_manifest(tmp_path):
-    m = _manifest(path=f"{STORE}-env/bin", env={"A": "b"}, hostPorts=["5432"], command=["nix", "develop"],
+    m = _manifest(claudeDir=f"{STORE}-claude", hostPorts=["5432"], command=["nix", "develop"],
                   binds=[{"src": "~/x", "dst": None, "mode": "rw", "optional": False, "hideGit": False}])  # fmt: skip
     (tmp_path / "m.json").write_text(json.dumps(m))
     assert sandbox.read_manifest(tmp_path / "m.json") == m
@@ -285,9 +283,8 @@ def test_reads_a_manifest(tmp_path):
 @pytest.mark.parametrize(
     "bad",
     [
-        {"path": "/home/u/bin"},
         {"claudeDir": "/etc/claude-code"},
-        {"env": {"A": 1}},
+        {"env": {"A": "b"}},
         {
             "binds": [
                 {
@@ -320,7 +317,7 @@ def _project(tmp_path, content="{ ... }: { }\n"):
     config = tmp_path / "config.json"
     config.write_text("{}")
     out = tmp_path / "manifest.json"
-    out.write_text(json.dumps(_manifest(env={"N": "1"})))
+    out.write_text(json.dumps(_manifest(command=["n1"])))
     calls = []
 
     def evaluate(_config, config_path, project_file, base):
@@ -339,11 +336,11 @@ def test_project_manifest_is_cached(tmp_path, monkeypatch):
     project, out, calls, manifest = _project(tmp_path)
     # The cache only takes store paths.
     monkeypatch.setattr(sandbox, "is_store_path", lambda v: v == str(out))
-    assert manifest()["env"] == {"N": "1"}
-    assert manifest()["env"] == {"N": "1"}
+    assert manifest()["command"] == ["n1"]
+    assert manifest()["command"] == ["n1"]
     assert len(calls) == 1
     # Changed, reloaded or with another profile Claude config, it's evaluated again.
-    (project / "sandbox.nix").write_text('{ ... }: { env.N = "2"; }\n')
+    (project / "sandbox.nix").write_text('{ ... }: { command = [ "n2" ]; }\n')
     manifest()
     manifest(reload=True)
     manifest(base=f"{STORE}-claude")
@@ -398,7 +395,7 @@ def test_project_without_host_access_needs_no_approval(tmp_path):
         raise AssertionError("asked")
 
     sandbox.approve_project(
-        _manifest(env={"A": "b"}, path=f"{STORE}-env/bin"),
+        _manifest(command=["nix", "develop"], claudeDir=f"{STORE}-claude"),
         str(tmp_path),
         "p/sandbox.nix",
         no_tty,
@@ -522,14 +519,9 @@ def test_project_adds_to_the_profile():
         "binds": [{"src": "~/x"}],
         "claudeDir": f"{STORE}-claude-default",
     }
-    m = _manifest(
-        path=f"{STORE}-env/bin",
-        env={"A": "2", "B": "3"},
-        binds=[{"src": "~/y"}],
-        claudeDir=f"{STORE}-claude-project",
-    )
+    m = _manifest(binds=[{"src": "~/y"}], claudeDir=f"{STORE}-claude-project")
     p = sandbox.apply_project(profile, m)
-    assert p["env"] == {"PATH": f"{STORE}-env/bin:/env/bin", "A": "2", "B": "3"}
+    assert p["env"] == profile["env"]
     assert p["binds"] == [{"src": "~/x"}, {"src": "~/y"}]
     assert p["claudeDir"] == f"{STORE}-claude-project"
     # Without Claude Code in the profile, none comes in through the project.
@@ -855,13 +847,13 @@ def test_subdirectory_gets_the_whole_work_tree(project_dir, state_dir):
 
 
 def test_project_sandbox_nix_is_applied(project_dir, state_dir):
-    """Evaluated in a nested sandbox, its env and default command apply."""
+    """Evaluated in a nested sandbox, its default command applies."""
     (project_dir / "sandbox.nix").write_text(
-        '{ ... }: { env.FROM_PROJECT = "yes"; command = [ "sh" "-c" "echo $FROM_PROJECT" ]; }\n'
+        '{ ... }: { command = [ "sh" "-c" "echo from-project" ]; }\n'
     )
     result = run_sandbox("", cwd=project_dir, state_dir=state_dir, timeout=600)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[-1] == "yes"
+    assert result.stdout.strip().splitlines()[-1] == "from-project"
 
 
 def test_environment_is_cleared_and_reallowlisted(run_in):
