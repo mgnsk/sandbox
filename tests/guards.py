@@ -41,7 +41,12 @@ GUARD_CMD = os.environ.get("SANDBOX_GUARD_CMD")
 
 def guard_argv(name, *args):
     if GUARD_CMD:
-        return [*shlex.split(GUARD_CMD.format(name=name)), *map(str, args)]
+        cmd = shlex.split(GUARD_CMD.format(name=name))
+        # During the Go rewrite a program not yet ported has no link in the
+        # binary's bin dir; the Python one stands in.
+        # TODO: drop the fallback once src/ is gone.
+        if os.path.exists(cmd[0]):
+            return [*cmd, *map(str, args)]
     return [sys.executable, "-E", "-s", str(BIN_DIR / name), *map(str, args)]
 
 
@@ -57,7 +62,11 @@ def base_env(**extra):
     env = {
         "PATH": os.environ["PATH"],
         "HOME": "/nonexistent",
-        **{k: v for k, v in os.environ.items() if k.startswith("COVERAGE_")},
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if k.startswith("COVERAGE_") or k == "GOCOVERDIR"
+        },
     }
     env.update({k: str(v) for k, v in extra.items() if v is not None})
     return env
