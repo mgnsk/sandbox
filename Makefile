@@ -8,7 +8,7 @@ K ?=
 
 NIX_FILES := flake.nix nix/*.nix tests/fixtures/*.nix
 
-.PHONY: test lint fmt
+.PHONY: test coverage lint fmt
 
 # Everything: the sandbox.nix evaluation check, the whole pytest suite
 # against a fresh build of the sandbox, and lint. The real-sandbox tests need
@@ -18,6 +18,10 @@ test:
 	SANDBOX_BIN=$$(nix build --no-link --print-out-paths)/bin/sandbox \
 		$(DEV) pytest -v -rs $(if $(K),-k '$(K)') tests
 	$(if $(K),,$(MAKE) lint)
+
+# Line coverage of src/ by the pytest suite, programs it starts included.
+coverage:
+	$(DEV) pytest -q -p no:cacheprovider --cov --cov-report=term-missing:skip-covered $(if $(K),-k '$(K)') tests
 
 lint:
 	$(DEV) sh -c 'ruff check . && ruff format --check .'

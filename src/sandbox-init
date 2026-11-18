@@ -151,8 +151,11 @@ def main(argv):
     # volume - an existing gh config there is the sandbox's own.
     gh_config = home / ".config/gh/config.yml"
     if not gh_config.exists() and not gh_config.is_symlink():
-        gh_config.parent.mkdir(parents=True, exist_ok=True)
-        gh_config.write_text("git_protocol: ssh\n", encoding="utf-8")
+        try:
+            gh_config.parent.mkdir(parents=True, exist_ok=True)
+            gh_config.write_text("git_protocol: ssh\n", encoding="utf-8")
+        except OSError as e:
+            warn(f"not writing {gh_config}: {e.strerror}")
 
     os.execvp(command[0], command)
 
