@@ -12,23 +12,27 @@ sandbox claude   # or any command
 
 What you get, per project:
 
-- **Its own `$HOME`**, a persistent volume under the state dir
-  (`~/.local/share/sandbox/<project>`); only the project directory itself (the
-  enclosing git work tree, or `$PWD` outside one) is the host's, read-write.
+- **Its own `$HOME`**, kept between runs in `~/.local/share/sandbox`, one
+  folder per project.
+- **Your project, read-write**: the git work tree you start in (or just the
+  current directory outside a repo). Nothing else of your home is visible
+  unless you bind it in.
 - **No host userland.** `PATH` is a nix package set (bash, coreutils, git,
   openssh, curl, python3, nix, claude, ...), plus `~/.nix-profile/bin`.
   `/bin/sh`, `/usr/bin/env` and nix-ld for prebuilt binaries are provided.
 - **Nix builds** through the host's daemon (`/nix` is read-only inside).
-- **Network** out, but not to the host's own services, except ports listed in
-  `SANDBOX_HOST_PORTS` (`5037 8080/udp 9000-9010`). Ports bound inside are
-  reachable from the host's `127.0.0.1` (dev servers, OAuth callbacks).
-- **Guarded host access**, each request (or "always, for this sandbox") behind
-  a popup on the terminal the sandbox runs in:
-  - your ssh agent (commit signing passes without a popup);
-  - GitHub through `gh`, with the token (the host's or the project's) kept outside;
-  - Forgejo through `fj` (opt-in);
-  - the Claude API on a per-project API key (opt-in);
-  - opening http(s) URLs in the host's browser.
+- **Network** out, but not to the host's own services, except the ports you
+  open: `hostPorts` in your config, or `SANDBOX_HOST_PORTS="5037 8080/udp"`
+  for one run. Ports bound inside are reachable from the host's `127.0.0.1`
+  (dev servers, OAuth callbacks).
+- **Guarded host access**, credentials kept outside; what could act on your
+  behalf waits for a popup on the terminal the sandbox runs in (answer once,
+  or "always, for this sandbox"):
+  - your ssh agent: logins and pushes ask, commit signing doesn't;
+  - GitHub through `gh` (the host's or the project's token): writes ask, reads don't;
+  - Forgejo through `fj` (opt-in): the same;
+  - the Claude API on a per-project API key (opt-in): never asks;
+  - opening http(s) URLs in the host's browser: asks.
 - **A Secret Service** per project, so tools storing credentials via libsecret
   work without a desktop keyring.
 - **An exchange dir** (`$SANDBOX_EXCHANGE`), read-only inside, for output of
@@ -42,15 +46,23 @@ Requirements: Linux with unprivileged user namespaces, nix with a daemon
 (multi-user install). Popups need the sandbox started from a terminal (local
 or over ssh); without one every guarded request is refused.
 
+On Ubuntu 23.10 and later, AppArmor blocks unprivileged user namespaces for
+programs without a profile, which includes bwrap from the nix store. Either
+write an AppArmor profile allowing `userns` for that store path, or turn the
+restriction off with `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`
+(in `/etc/sysctl.d/` to keep it) - which drops that hardening for every
+program on the host, not just the sandbox.
+
 ## Install
 
 ```sh
 nix profile add github:mgnsk/sandbox
 ```
 
-That's all a project needs: `sandbox` is one command for every project, and a
-project brings its own tools through its dev shell (a flake or devenv,
-below). For home-manager and custom builds, see [Configuring the sandbox](#configuring-the-sandbox).
+`sandbox` is one command for every project; a project brings its own tools
+through its dev shell (a flake or devenv, below). For gh, set up
+[authentication](#authentication) first. For home-manager and custom builds,
+see [Configuring the sandbox](#configuring-the-sandbox).
 
 ## Using it in a project
 
@@ -86,12 +98,14 @@ sandbox nix develop -c claude          # Claude Code with the project's tools on
 sandbox nix develop -c go test ./...   # a one-off command
 ```
 
-With direnv, `use flake` in `.envrc` does the same whenever you `cd` in,
-provided `direnv` is installed (`packages = [ pkgs.direnv pkgs.nix-direnv ]`).
+With direnv, `use flake` in `.envrc` does the same whenever you `cd` in. Put
+`direnv` and `nix-direnv` in `packages` in
+[your sandbox config](#configuring-the-sandbox), or in `~/.nix-profile`.
 
 The project's `$HOME` (`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ...)
-persists between runs in its volume; nothing in it is shared with your real
-home or with other projects.
+persists between runs and isn't shared with other projects. From your real
+home it only gets what's linked or bound in: `~/.nix-profile`, your
+home-manager files (with the home-manager module) and your `binds`.
 
 ### Authentication
 
@@ -99,8 +113,9 @@ home or with other projects.
 each request (writes behind a popup); the token itself never enters the
 sandbox. It comes from either place, the project's own winning:
 
-- **Per project**, no gh or fj needed on the host. Run in the project, on the
-  host:
+- **Per project**, no gh or fj needed on the host. Run in the project, in a
+  terminal on the host - not inside the sandbox, which includes Claude Code's
+  `!` commands:
 
   ```sh
   sandbox --gh-token                 # asks for a GitHub token
@@ -108,15 +123,21 @@ sandbox. It comes from either place, the project's own winning:
   ```
 
   The token is read on the terminal (hidden input) and kept in the project's
-  volume dir, outside the sandbox; running sandboxes pick it up. For GitHub,
+  folder under `~/.local/share/sandbox`, next to its `$HOME` but outside the
+  sandbox; running sandboxes pick it up. For GitHub,
   use a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
-  limited to the project's repositories. Run it again to replace the token.
+  limited to the project's repositories, with what gh needs there: typically
+  read-only Contents and Actions, read-write Issues and Pull requests. Pushes go
+  over ssh, so the token needn't write Contents. Run it again to replace the
+  token. To remove it, delete `github-token` (or the host's entry in
+  `forgejo-tokens.json`) from the project's folder under
+  `~/.local/share/sandbox` - the folder named after the project's path.
 
 - **The host's login**, shared by every project without a token of its own:
 
   ```sh
-  gh auth login    # on the host
-  fj auth login    # on the host, only with guards.forgejo.enable
+  gh auth login                            # on the host
+  fj --host codeberg.org auth login        # on the host, if you enabled guards.forgejo
   ```
 
   The gh proxy reads the host's token when the sandbox starts, so after
@@ -148,8 +169,8 @@ stays on the host, and a proxy adds it to Claude Code's requests.
    [platform.claude.com](https://platform.claude.com/settings/keys), ideally
    in a workspace with a spend limit.
 2. Start the sandbox in the project; at the first start it asks for the key
-   on the terminal (hidden input) and keeps it in the project's volume dir,
-   outside the sandbox.
+   on the terminal (hidden input) and keeps it in the same project folder as
+   the gh and fj tokens, outside the sandbox.
 3. Run `claude` inside as usual - no login.
 
 `sandbox --claude-api-key` replaces the key (running sandboxes pick it up);
@@ -171,17 +192,18 @@ profiles.personal = {
 
 or the other way round, `true` only in the profiles that should use a key.
 
-### 1Password's SSH agent
+### SSH agent
 
 The ssh agent guard proxies whichever agent `$SSH_AUTH_SOCK` points to when
-the sandbox starts; for 1Password that's `~/.1password/agent.sock` (Settings →
-Developer → Use the SSH agent). With `SSH_AUTH_SOCK` set to that on the host,
-the defaults work; set `guards.sshAgent.socket` only if you start `sandbox`
-from somewhere it isn't set.
+the sandbox starts (`guards.sshAgent.socket` to pick another, e.g. if you
+start `sandbox` from somewhere it isn't set). Inside, only the guard's proxy
+is visible, never the real socket. A sign request (an ssh login, `git push`
+over ssh) gets the sandbox's popup first, except git commit and tag
+signatures; the agent's own approval, if it has one, still applies on top.
 
-Inside, `SSH_AUTH_SOCK` points at the guard's proxy. If your shell config sets
-`SSH_AUTH_SOCK` unconditionally (e.g. home-manager session variables, which
-the shell inside sources too with `homeManager.enable`), it overrides that.
+If your shell config sets `SSH_AUTH_SOCK` unconditionally (e.g. home-manager
+session variables, which the shell inside sources too with
+`homeManager.enable`), it overrides the guard's proxy.
 Either keep a value that's already set:
 
 ```nix
@@ -194,15 +216,24 @@ or put the proxy where your config points:
 guards.sshAgent.path = "~/.1password/agent.sock";
 ```
 
-Inside, only the guard's proxy is visible, never the real socket. A sign
-request (an ssh login, `git push` over ssh) gets the sandbox's popup first,
-except git commit and tag signatures; 1Password's own approval on the host
-still applies on top, as for any client.
+Your `~/.ssh/config` isn't there inside, only your `known_hosts` (read-only,
+as the system-wide one). Without home-manager's `programs.ssh`, bind it in
+with `binds = [ { src = "~/.ssh/config"; } ];`. Keys stay in the agent;
+`IdentityFile` lines naming private keys find nothing inside, but a public
+key there still picks the agent key to use, if you bind that `.pub` file in
+too.
 
 **Commit signing:** use `gpg.format = ssh` with `user.signingKey` set to the
 public key itself (`ssh-ed25519 AAAA...`), so `ssh-keygen` signs through the
-agent. 1Password's `gpg.ssh.program = op-ssh-sign` talks to the app directly
-rather than through the agent socket, and the app isn't reachable inside.
+agent.
+
+#### 1Password
+
+Its agent is `~/.1password/agent.sock` (Settings → Developer → Use the SSH
+agent); with `SSH_AUTH_SOCK` set to that on the host, the defaults work.
+`gpg.ssh.program = op-ssh-sign` doesn't work inside: it talks to the app
+directly rather than through the agent socket, and the app isn't reachable
+inside.
 
 **`op` (the 1Password CLI)** can't use the desktop app integration inside. The
 app only accepts `op` running setgid as the `onepassword-cli` group, and
@@ -216,7 +247,8 @@ Use `op` on the host instead.
 
 Each project's `$HOME` starts empty, so without the home-manager module git
 inside has no `~/.gitconfig`, and the first commit fails with "Author
-identity unknown". Pick one of these in your sandbox config.
+identity unknown". Pick one of these in [your sandbox config](#configuring-the-sandbox),
+at the top level (`env` isn't taken by a project's `sandbox.nix` or a profile).
 
 Bind your host config in, read-only, for every project:
 
@@ -230,7 +262,7 @@ binds = [
 Settings in it that point at the host don't work inside: an `include.path`
 to a file that isn't bound in, a credential helper that isn't on the
 sandbox's `PATH`, and `gpg.ssh.program = op-ssh-sign` (see
-[1Password's SSH agent](#1passwords-ssh-agent)).
+[1Password](#1password)).
 
 Or set only what's needed, with no host file:
 
@@ -247,8 +279,11 @@ env = {
 };
 ```
 
-`git config --global` inside also works, but it lands in that project's
-volume, so every project needs it once.
+For signed commits, add `gpg.format = ssh`, `user.signingKey` and
+`commit.gpgSign = true` the same way; see [SSH agent](#ssh-agent).
+
+`git config --global` inside also works, but it's saved in that project's
+`$HOME`, so every project needs it once.
 
 ### The project's own sandbox config: sandbox.nix
 
@@ -270,14 +305,27 @@ project, on top of yours - like `devenv.nix`, a module that gets `pkgs`:
 ```
 
 It can set `command`, `claude.*` (settings, memory, MCP and language
-servers, marketplaces), `hostPorts` and `binds`. Not `packages` or `env`:
-the project's tools and variables belong in its dev shell (a flake's
-`devShells`, devenv), which `command` enters, so they're defined once.
-Your own tools come from your sandbox config, `~/.nix-profile` and, with the
-home-manager module, your home-manager generation. `pkgs` is the sandbox's
-own nixpkgs; to use the project's pinned
-one, import it yourself, e.g.
-`(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}`.
+servers, marketplaces), `hostPorts` and `binds` - not `packages` or `env`.
+The project's tools and variables belong in its dev shell (a flake's
+`devShells`, devenv), which `command` enters, so they're defined once; your
+own tools come from your sandbox config, `~/.nix-profile` or home-manager.
+
+`pkgs` is the sandbox's own nixpkgs. To use the project's pinned one, import
+it yourself:
+
+```nix
+{ pkgs, ... }:
+let
+  system = pkgs.stdenv.hostPlatform.system;
+  projectPkgs = (builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${system};
+in
+{
+  claude.lspServers.gopls = {
+    package = projectPkgs.gopls;
+    extensionToLanguage.".go" = "go";
+  };
+}
+```
 
 A full example, with every option it can set:
 
@@ -291,7 +339,7 @@ A full example, with every option it can set:
   # Needs your approval on the terminal.
   hostPorts = [ "5432" "9000-9010" ];
 
-  # Host paths bound in, shadowing the project's home volume.
+  # Host paths bound in, over whatever the project's $HOME has there.
   # Needs your approval on the terminal.
   binds = [
     { src = "~/datasets"; }                                  # read-only, same path
@@ -336,7 +384,7 @@ A full example, with every option it can set:
 
 How it stays a sandbox, though the sandbox can edit the file:
 
-- **It's evaluated inside the sandbox** (a nested one, without the project's
+- **It's evaluated in a sandbox** (a separate one, without the project's
   config), never on the host, which would let it read host files into the
   store. The result is cached until `sandbox.nix`, your sandbox config or the
   profile changes; `sandbox --reload` picks up changes in files it imports,
@@ -348,9 +396,7 @@ How it stays a sandbox, though the sandbox can edit the file:
   whenever they change. Everything else only affects the inside and applies
   without asking.
 
-Its Claude settings go over yours: objects merge, lists (permission rules,
-hooks) add up, other values are replaced. A language server it defines
-replaces one of yours with the same name.
+A language server it defines replaces one of yours with the same name.
 
 Don't define the sandbox itself in the project's flake (a
 `packages.sandbox = sandbox.lib.mkSandbox { ... }` run with `nix run
@@ -391,7 +437,7 @@ What to know:
   sandbox, so the project reaches it on `127.0.0.1` without `hostPorts`
   (that's for services on the host). Ports bound inside are reachable from
   the host's `127.0.0.1` too, e.g. to open a dev server in your browser.
-- **One sandbox per network.** Each `sandbox` run has its own network
+- **Each sandbox has its own network.** Each `sandbox` run has its own network
   namespace, so services from `devenv up` in one sandbox aren't on
   `127.0.0.1` in another sandbox of the same project. The simplest fix is to
   run everything in one sandbox: `devenv up -d` (detached) and then
@@ -404,8 +450,8 @@ What to know:
   SANDBOX_HOST_PORTS="5432 6379" sandbox devenv shell -- claude   # second
   ```
 
-  Pass them only to the second sandbox, never through `hostPorts` in
-  sandbox.nix. That applies to both sandboxes, and the first one's port
+  Pass them only to the second sandbox, never through `hostPorts` (in
+  sandbox.nix or your config). That applies to both sandboxes, and the first one's port
   would then be held for the forward, so its service fails with "address
   in use". Each port can also be taken by only one sandbox (or host
   service) on the host at a time.
@@ -423,7 +469,7 @@ What to know:
   sandbox controls what devenv.nix builds.
 - **State stays in the project.** `.devenv/` (the eval cache, service data,
   the shell's profile) is in the project directory, and devenv's own caches
-  are in the project's volume, so nothing is shared with devenv on the host
+  are in the project's `$HOME`, so nothing is shared with devenv on the host
   or other projects.
 - **Binary caches.** devenv asks the nix daemon to use the caches in
   `cachix.pull`, which it only does for trusted users. Don't make yourself a
@@ -439,7 +485,11 @@ What to know:
 
 ## Configuring the sandbox
 
-From your own flake - your system or user config, never a sandboxed project:
+Your sandbox config is a list of modules: `modules` passed to
+`sandbox.lib.mkSandbox` in your own flake, or `programs.sandbox.settings`
+with home-manager. Keep it in your system or user config, never in a
+sandboxed project. Its top level applies to every project; `profiles` narrow
+some settings to projects under given paths (see [Profiles](#profiles)).
 
 ```nix
 {
@@ -451,6 +501,7 @@ From your own flake - your system or user config, never a sandboxed project:
     let
       pkgs = import nixpkgs {
         system = "x86_64-linux";
+        # claude-code is unfree
         config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";
       };
     in {
@@ -458,6 +509,7 @@ From your own flake - your system or user config, never a sandboxed project:
         inherit pkgs;
         modules = [{
           packages = [ pkgs.neovim pkgs.direnv pkgs.nix-direnv ];
+          env.EDITOR = "nvim";
           hostPorts = [ "5432" ];               # a host Postgres, always
           guards.forgejo.enable = true;
           profiles.work = {
@@ -480,6 +532,8 @@ With home-manager:
 modules = [
   inputs.sandbox.homeManagerModules.default
   {
+    # Your home-manager pkgs must allow the unfree claude-code
+    # (or set programs.sandbox.settings.claude.enable = false).
     programs.sandbox.enable = true;
     programs.sandbox.settings = {
       packages = [ pkgs.neovim ];
@@ -490,9 +544,9 @@ modules = [
 
 The home-manager module also links your current home-manager generation into
 each project's `$HOME` at every start (`homeManager.enable`), so your shell
-config, git config, etc. apply inside.
-
-`pkgs` must allow the unfree `claude-code`, or set `claude.enable = false`.
+config, git config, etc. apply inside. Without it, see
+[Git config without home-manager](#git-config-without-home-manager) and
+[SSH agent](#ssh-agent) for binding your config in.
 
 `gh` and `fj` inside must be this flake's wrappers (`packages.<system>.gh`
 and `.forgejo-cli`): upstream gh and fj, pointed at their guard's proxy
@@ -516,17 +570,20 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `passEnv` | `[ ]` | Host variables passed in, besides TERM/COLORTERM/LANG/LC_ALL. |
 | `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; one whose src is the project is left to the project bind. |
 | `hostPorts` | `[ ]` | Like `SANDBOX_HOST_PORTS`, always. |
-| `stateDir` | `$XDG_DATA_HOME/sandbox` | Volumes, secrets, exchange dirs. `$SANDBOX_STATE_DIR` overrides. |
+| `stateDir` | `$XDG_DATA_HOME/sandbox` | One folder per project: its `$HOME`, tokens and keys, Secret Service data, exchange dir. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl | For prebuilt binaries. |
 | `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
-| `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). See [1Password's SSH agent](#1passwords-ssh-agent). |
+| `nixProfile.enable` | on | Link the host's `~/.nix-profile` in and put its `bin/` on `PATH`, after the sandbox's own. |
+| `homeManager.enable` | off (on with the home-manager module) | Link your current home-manager generation into each project's `$HOME` at every start. |
+| `locales` | C.UTF-8, en_US.UTF-8 | glibcLocales build for `LOCALE_ARCHIVE`; override to add yours. |
+| `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). See [SSH agent](#ssh-agent). |
 | `guards.github.enable` | on | Needs `sandbox --gh-token` per project, or `gh auth login` on the host. |
-| `guards.forgejo.enable` | off | Needs `sandbox --fj-token HOST` per project, or `fj auth login` on the host. |
+| `guards.forgejo.enable` | off | Needs `sandbox --fj-token HOST` per project, or `fj --host HOST auth login` on the host. |
 | `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
-| `guards.openUrl.enable` | on | |
-| `guards.secretService.enable` | on | |
+| `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
+| `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
 | `claude.enable` / `.package` | on / `pkgs.claude-code` | |
-| `claude.settings` | autoupdater off, GitHub hook | managed-settings.json, merged across modules. |
+| `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
 | `claude.lspServers.<name>` | `{ }` | `{ package; command; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. |
@@ -537,7 +594,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 
 Plugins come from marketplaces in the store, pinned by your flake.lock like
 everything else, not from git checkouts that update themselves in each
-volume:
+project's `$HOME`:
 
 ```nix
 claude.lspServers = {
@@ -552,23 +609,26 @@ claude.marketplaces.mine = ./my-marketplace;   # .claude-plugin/marketplace.json
 claude.settings.enabledPlugins."some-plugin@mine" = true;
 ```
 
-Once any is set, these are the only marketplaces Claude Code knows: they're
-registered in every volume before its first session (so enabled plugins work
+Once any marketplace or language server is set, these are the only
+marketplaces Claude Code knows: they're
+registered in each project's `$HOME` before its first session (so enabled plugins work
 from the start), and the official marketplace and `/plugin marketplace add`
 are refused.
 
 ### Profiles
 
-A profile adds `binds` and `claude.*` (language servers and marketplaces
-included) on top of the top level, and can turn `guards.claudeApiKey.enable`
-on or off, when the sandbox starts under one of its `paths` or in a project
-whose root has one of its `projectFiles`; the highest `priority` wins.
-`packages` and `env` are top-level only: the same in every project.
+A profile applies when the sandbox starts under one of its `paths`, or in a
+project whose root has one of its `projectFiles`. Only one applies: the
+matching one with the highest `priority` (the first by name on a tie), so
+profiles don't combine with each other. It adds `binds` and `claude.*`
+(language servers and marketplaces included) on top of the top level, and
+can turn `guards.claudeApiKey.enable` on or off. `packages` and `env` are
+top-level only, the same in every project.
 
 ```nix
 profiles.flake = {
   projectFiles = [ "flake.nix" ];
-  claude.mcpServers.mcp-nixos = { type = "stdio"; command = "mcp-nixos"; };
+  claude.mcpServers.mcp-nixos = { type = "stdio"; command = lib.getExe pkgs.mcp-nixos; };
 };
 profiles.audio = {
   paths = [ "~/src/audio" ];
