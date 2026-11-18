@@ -12,10 +12,15 @@ import (
 	"strings"
 
 	"github.com/mgnsk/sandbox/internal/initcmd"
+	"github.com/mgnsk/sandbox/internal/openurl"
+	"github.com/mgnsk/sandbox/internal/xdgopen"
 )
 
+// Each also listed in the programs file, which the package links by.
 var programs = map[string]func(args []string) int{
-	"sandbox-init": initcmd.Main,
+	"sandbox-init":     initcmd.Main,
+	"open-url-guard":   openurl.Main,
+	"sandbox-xdg-open": xdgopen.Main,
 }
 
 func main() {

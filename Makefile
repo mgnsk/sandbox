@@ -10,7 +10,7 @@ NIX_FILES := flake.nix nix/*.nix tests/fixtures/*.nix
 
 # The Go rewrite's binary, with a link per program it has.
 GO_BIN := .build/go/bin
-GO_PROGRAMS := $(shell sed -n 's/.*programs = \[\(.*\)\];/\1/p' nix/go.nix | tr -d '"')
+GO_PROGRAMS = $(shell cat cmd/sandbox/programs)
 
 .PHONY: test test-go coverage coverage-go go-build lint fmt
 
@@ -47,7 +47,7 @@ go-build:
 lint:
 	$(DEV) sh -c 'ruff check . && ruff format --check .'
 	nix fmt -- --check $(NIX_FILES)
-	$(DEV) sh -c 'test -z "$$(gofmt -l cmd internal)" && go vet ./...'
+	$(DEV) sh -c 'test -z "$$(gofmt -l cmd internal)" && go vet ./... && go test ./...'
 
 fmt:
 	$(DEV) ruff format .

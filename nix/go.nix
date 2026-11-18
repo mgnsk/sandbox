@@ -23,7 +23,9 @@ buildGoModule {
     "-w"
   ];
   # Each program it runs as, linked to the binary.
-  programs = [ "sandbox-init" ];
+  programs = lib.filter (p: p != "") (
+    lib.splitString "\n" (builtins.readFile ../cmd/sandbox/programs)
+  );
   postInstall = ''
     for p in $programs; do
       ln -s sandbox $out/bin/$p

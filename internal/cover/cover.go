@@ -5,7 +5,9 @@ package cover
 
 import (
 	"os"
+	"os/signal"
 	"runtime/coverage"
+	"syscall"
 )
 
 // Flush writes the counters to $GOCOVERDIR, if set.
@@ -18,4 +20,17 @@ func Flush() {
 	// -covermode=atomic, which writing counters early needs).
 	_ = coverage.WriteMetaDir(dir)
 	_ = coverage.WriteCountersDir(dir)
+}
+
+// DieOnSignals makes SIGTERM and SIGINT end the process as their default
+// action would - killed by the signal - after writing the counters.
+func DieOnSignals() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := (<-ch).(syscall.Signal)
+		Flush()
+		signal.Reset(sig)
+		_ = syscall.Kill(os.Getpid(), sig)
+	}()
 }

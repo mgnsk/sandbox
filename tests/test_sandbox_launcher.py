@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import BIN_DIR
+from guards import guard_argv
 from launcher import Invocation, Launcher, store_file
 
 
@@ -1220,7 +1220,7 @@ def open_url(launcher, url):
     xdg.chmod(0o755)
     launcher.config["guards"]["openUrl"] = True
     return launcher.pty(
-        sys.executable, str(BIN_DIR / "sandbox-xdg-open"), url,
+        *guard_argv("sandbox-xdg-open", url),
         env={"XDG_OPEN_LOG": str(launcher.tmp / "xdg.log"), "PYTHONPATH": "/project"},
     )  # fmt: skip
 
@@ -1268,9 +1268,7 @@ def test_open_url_without_a_terminal_is_denied(launcher):
     """No one to ask: the guards answer no."""
     launcher.config["guards"]["openUrl"] = True
     (launcher.host_bin / "xdg-open").write_text("#!/bin/sh\nexit 0\n")
-    result = launcher.run(
-        sys.executable, str(BIN_DIR / "sandbox-xdg-open"), "https://example.org/"
-    )
+    result = launcher.run(*guard_argv("sandbox-xdg-open", "https://example.org/"))
     assert result.returncode == 4
     assert "denied" in result.stderr
 
