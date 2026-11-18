@@ -12,11 +12,13 @@ buildGoModule {
     root = ../.;
     fileset = lib.fileset.unions [
       ../go.mod
+      ../go.sum
       ../cmd
       ../internal
     ];
   };
-  vendorHash = null;
+  # Update with lib.fakeHash and the hash nix reports after a go.mod change.
+  vendorHash = "sha256-4L1ZisA9ok+6kV+vGF2etWMK9/eL1jiBKxhL9j7BTvc=";
   env.CGO_ENABLED = 0;
   ldflags = [
     "-s"
