@@ -67,9 +67,13 @@
                 ps.dbus-fast
                 ps.graphql-core
                 ps.pytest
+                ps.pytest-cov
+                ps.pyte
               ]))
               p.gh
               p.forgejo-cli
+              # For the launcher tests' secret-service guard.
+              pkgs.dbus
               pkgs.ruff
               pkgs.procps
             ];

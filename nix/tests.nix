@@ -3,6 +3,7 @@
 {
   cacert,
   callPackage,
+  dbus,
   python3,
   runCommand,
 }:
@@ -13,12 +14,14 @@ let
     ps.dbus-fast
     ps.graphql-core
     ps.pytest
+    ps.pyte
   ]);
 in
 runCommand "sandbox-tests"
   {
     nativeBuildInputs = [
       python
+      dbus
       p.gh
       p.forgejo-cli
     ];

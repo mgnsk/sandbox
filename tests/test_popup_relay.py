@@ -1,242 +1,409 @@
-import os
-import select
+"""Black-box tests for the launcher's terminal (src/popup_relay.py): the
+launcher runs on a pty, with a program inside that echoes what it's typed,
+and popups are asked for on its guards' socket the way a guard does. What
+the user sees is read off a terminal emulator (pyte) fed the launcher's
+output; what the sandbox sees, off what the program inside prints."""
+
+import json
+import socket
 import subprocess
 import sys
 import threading
 import time
 
+import pyte
 import pytest
-from conftest import BIN_DIR
+from launcher import Launcher
 
-import guard_popup
-import popup_relay
+PROMPT = "y = once, A = always in this sandbox, N = no:"
+GRACE = 0.6  # Keys typed sooner after a popup appears are dropped.
 
-# -- text ------------------------------------------------------------------------
+INSIDE = r"""
+import os, signal, sys, time
 
+def size(*_):
+    s = os.get_terminal_size()
+    print(f"size {s.lines} {s.columns}", flush=True)
 
-def test_escapes_and_bidi_are_neutralised():
-    lines = popup_relay.wrap("a\x1b[2Jb‮c\rd", 80)
-    assert lines == ["a?[2Jb?c?d"]
-
-
-def test_long_lines_wrap_rather_than_cut():
-    assert popup_relay.wrap("x" * 25, 10) == ["x" * 10, "x" * 10, "x" * 5]
-
-
-def test_wide_chars_count_double():
-    assert popup_relay.wrap("界" * 6, 10) == ["界" * 5, "界"]
-
-
-def test_trailing_blank_lines_go():
-    assert popup_relay.wrap("a\n\nb\n\n", 10) == ["a", "", "b"]
-
-
-# -- Popup -------------------------------------------------------------------
-
-
-def popup(text="text", rows=10, cols=40, grace=0.0):
-    return popup_relay.Popup("guard", text, rows, cols, now=0.0, grace=grace)
-
-
-@pytest.mark.parametrize(
-    "typed, answer",
-    [
-        (b"y\r", "once"),
-        (b"Y\r", "once"),
-        (b"a\r", "always"),
-        (b"A\r", "always"),
-        (b"\r", "no"),
-        (b"n\r", "no"),
-        (b"yes\r", "no"),
-        (b"\x03", "no"),
-        (b"x\x7fy\r", "once"),
-        (b"a\x15\r", "no"),
-    ],
-)
-def test_typed_answer(typed, answer):
-    assert popup().feed(typed, now=1.0) == answer
-
-
-def test_no_answer_until_enter():
-    p = popup()
-    assert p.feed(b"y", now=1.0) is None
-    assert p.feed(b"\r", now=1.0) == "once"
-
-
-def test_keys_during_grace_are_dropped():
-    p = popup(grace=0.5)
-    assert p.feed(b"y\r", now=0.1) is None
-    assert p.typed == ""
-    assert p.feed(b"\r", now=0.6) == "no"
-
-
-def test_arrow_keys_scroll_instead_of_typing():
-    p = popup("\n".join(str(i) for i in range(30)), rows=10)
-    p.feed(b"\x1b[B\x1b[B\x1bOB", now=1.0)
-    assert p.top == 3 and p.typed == ""
-    p.feed(b"\x1b[6~\x1b[6~\x1b[6~\x1b[6~", now=1.0)
-    assert p.top == p.max_top() == 30 - 7
-    p.feed(b"\x1b[H", now=1.0)
-    assert p.top == 0
-
-
-def test_render_shows_the_text_and_where_more_is():
-    p = popup("\n".join(f"line{i}" for i in range(30)), rows=10, cols=80)
-    screen = p.render(now=1.0).decode()
-    assert "guard asks for approval" in screen
-    assert "line0" in screen and "line6" in screen and "line7" not in screen
-    assert "lines 1-7 of 30" in screen
-    assert popup_relay.PROMPT.strip() in screen
-
-
-def test_render_never_passes_escapes_from_the_text():
-    screen = popup("\x1b]52;c;aGk=\x07\x1b[2J").render(now=1.0)
-    assert b"\x1b]" not in screen
-    assert b"\x07" not in screen
-
-
-# -- Modes -------------------------------------------------------------------
-
-
-def test_modes_follow_alt_screen_and_cursor():
-    m = popup_relay.Modes()
-    m.feed(b"\x1b[?1049h\x1b[?25l")
-    assert m.alt and not m.cursor
-    m.feed(b"xx\x1b[?10")
-    m.feed(b"49l")
-    assert not m.alt
-    m.feed(b"\x1bc")
-    assert m.cursor
-
-
-# -- the relay, on a real pty -------------------------------------------------
-
-DRIVER = """
-import sys
-sys.path.insert(0, sys.argv[1])
-import popup_relay
-listener = popup_relay.listen(sys.argv[2])
-sys.exit(popup_relay.Relay(listener, grace=float(sys.argv[3])).run(sys.argv[4:]))
-"""
-
-CHILD = """
-import sys
+signal.signal(signal.SIGWINCH, size)
+print("ready", flush=True)
 for line in sys.stdin:
     line = line.strip()
     if line == "quit":
         sys.exit(3)
+    elif line == "exit-soon":
+        time.sleep(1)
+        sys.exit(3)
+    elif line == "alt":
+        sys.stdout.write("\x1b[?1049h"); sys.stdout.flush()
+    elif line == "hide":
+        sys.stdout.write("\x1b[?25l"); sys.stdout.flush()
+    elif line == "split-alt":
+        # A mode change split across two reads.
+        sys.stdout.write("\x1b[?10"); sys.stdout.flush()
+        time.sleep(0.3)
+        sys.stdout.write("49h"); sys.stdout.flush()
+    elif line == "reset":
+        sys.stdout.write("\x1bc"); sys.stdout.flush()
+    elif line.startswith("later "):
+        path = line.split(" ", 1)[1]
+        while not os.path.exists(path):
+            time.sleep(0.05)
+        print("late-output", flush=True)
     print("got:" + line, flush=True)
 """
 
 
-class Terminal:
-    """The test's end of a pty the relay runs on, as if a user's terminal."""
+class Session:
+    """The launcher on a terminal, with INSIDE inside."""
 
-    def __init__(self, master):
-        self.master = master
-        self.seen = b""
+    def __init__(self, launcher):
+        launcher.config["guards"]["openUrl"] = True  # A guard, to ask through.
+        script = launcher.tmp / "inside.py"
+        script.write_text(INSIDE)
+        self.p = launcher.pty(sys.executable, str(script))
+        self.screen = pyte.Screen(80, 24)
+        self.p.watchers.append(pyte.ByteStream(self.screen).feed)
+        self.sock = self.p.popup_socket()
+        self.p.expect("ready")
 
-    def type(self, data):
-        os.write(self.master, data)
+    @property
+    def text(self):
+        return "\n".join(line.rstrip() for line in self.screen.display)
 
-    def wait_for(self, text, timeout=10):
-        deadline = time.monotonic() + timeout
-        while text not in self.seen:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise AssertionError(f"{text!r} never shown; saw {self.seen!r}")
-            if select.select([self.master], [], [], left)[0]:
+    def shown(self, text, timeout=20):
+        self.p.until(lambda: text in self.text, timeout, f"{text!r} on screen")
+
+    def closed(self, start):
+        """Wait for the popup screen to close (pyte has no alternate screen
+        to see it on)."""
+        self.p.until(lambda: b"\x1b[?1049l" in self.p.raw[start:], what="popup closed")
+
+    def ask(self, text, name="test-guard", raw=None):
+        """Ask in the background, as a guard does; the list the answer
+        ("" for none) lands in."""
+        answers = []
+
+        def run():
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.connect(self.sock)
+                sock.sendall(
+                    raw
+                    if raw is not None
+                    else json.dumps({"name": name, "text": text}).encode()
+                )
+                sock.shutdown(socket.SHUT_WR)
+                answer = b""
                 try:
-                    self.seen += os.read(self.master, 65536)
+                    while chunk := sock.recv(64):
+                        answer += chunk
                 except OSError:
-                    raise AssertionError(
-                        f"{text!r} never shown; saw {self.seen!r}"
-                    ) from None
+                    pass
+                answers.append(answer.decode())
+
+        threading.Thread(target=run, daemon=True).start()
+        return answers
+
+    def answered(self, answers, timeout=10):
+        deadline = time.monotonic() + timeout
+        while not answers:
+            assert time.monotonic() < deadline, "no answer"
+            self.p.read_for(0.05)
+        return answers[0]
+
+    def type(self, keys):
+        self.p.send(keys)
+
+    def answer(self, keys):
+        """Answer the popup on screen, once keys count."""
+        self.p.read_for(GRACE)
+        self.type(keys)
+
+    def quit(self):
+        self.type("quit\r")
+        return self.p.wait()
 
 
 @pytest.fixture
-def relay(tmp_path, monkeypatch):
-    master, slave = os.openpty()
-    popup_relay.set_size(slave, (24, 80, 0, 0))
-    sock = str(tmp_path / "popup.sock")
-    proc = subprocess.Popen(
-        [sys.executable, "-c", DRIVER, str(BIN_DIR), sock, "0.3",
-         sys.executable, "-c", CHILD],
-        stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
-    )  # fmt: skip
-    os.close(slave)
-    deadline = time.monotonic() + 10
-    while not os.path.exists(sock):
-        assert proc.poll() is None and time.monotonic() < deadline
-        time.sleep(0.02)
-    monkeypatch.setenv(guard_popup.ENV, sock)
-    yield Terminal(master), proc
-    if proc.poll() is None:
-        proc.kill()
-    proc.wait()
-    os.close(master)
+def session(tmp_path):
+    launcher = Launcher(tmp_path)
+    s = Session(launcher)
+    yield s
+    if s.p.proc.poll() is None:
+        # Forwarded to the sandbox, which ends it all as a closed terminal would.
+        s.p.signal()
+        try:
+            s.p.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            s.p.proc.kill()
+    launcher.close()
 
 
-def ask_in_background(text):
-    answers = []
-    thread = threading.Thread(
-        target=lambda: answers.append(guard_popup.ask("test-guard", text))
-    )
-    thread.start()
-    return thread, answers
+# -- relaying ---------------------------------------------------------------------
 
 
-def test_relays_both_ways_and_the_exit_status(relay):
-    term, proc = relay
-    term.type(b"hello\r")
-    term.wait_for(b"got:hello")
-    term.type(b"quit\r")
-    assert proc.wait(timeout=10) == 3
+def test_relays_both_ways_and_the_exit_status(session):
+    session.type("hello\r")
+    session.p.expect("got:hello")
+    assert session.quit().returncode == 3
 
 
-def test_popup_takes_the_keys_and_the_sandbox_never_sees_them(relay):
-    term, proc = relay
-    term.type(b"before\r")
-    term.wait_for(b"got:before")
+def test_resizing_reaches_the_sandbox(session):
+    session.p.resize(30, 100)
+    session.p.expect("size 30 100")
 
-    thread, answers = ask_in_background("Allow the thing?")
-    term.wait_for(b"Allow the thing?")
-    assert b"\x1b[?1049h" in term.seen
+
+# -- a popup ----------------------------------------------------------------------
+
+
+def test_popup_takes_the_keys_and_the_sandbox_never_sees_them(session):
+    session.type("before\r")
+    session.p.expect("got:before")
+    start = len(session.p.raw)
+    answers = session.ask("Allow the thing?")
+    session.shown("Allow the thing?")
+    # On the alternate screen, over the sandbox's.
+    assert b"\x1b[?1049h" in session.p.raw[start:]
     # Within the grace period: dropped, not answered, not relayed.
-    term.type(b"y\r")
-    time.sleep(0.5)
-    term.type(b"a\r")
-    thread.join(timeout=10)
-    assert answers == ["always"]
-    term.wait_for(b"\x1b[?1049l")
+    session.type("y\r")
+    session.answer("a\r")
+    assert session.answered(answers) == "always"
+    session.closed(start)
 
-    term.type(b"after\r")
-    term.wait_for(b"got:after")
-    term.type(b"quit\r")
-    assert proc.wait(timeout=10) == 3
-    assert b"got:y" not in term.seen and b"got:a\r" not in term.seen
+    session.type("after\r")
+    session.p.expect("got:after")
+    assert session.quit().returncode == 3
+    assert b"got:y\r" not in session.p.raw and b"got:a\r" not in session.p.raw
 
 
-def test_popups_queue_one_at_a_time(relay):
-    term, _ = relay
-    first, first_answer = ask_in_background("first request")
-    term.wait_for(b"first request")
-    second, second_answer = ask_in_background("second request")
-    time.sleep(0.4)
-    assert b"second request" not in term.seen
-    term.type(b"y\r")
-    first.join(timeout=10)
-    term.wait_for(b"second request")
-    time.sleep(0.4)
-    term.type(b"\r")
-    second.join(timeout=10)
-    assert (first_answer, second_answer) == (["once"], [None])
+def test_screen_shows_who_asks_the_text_and_the_prompt(session):
+    session.ask(
+        "Open in the host's browser?\n\n  host:     example.com\n",
+        name="open-url-guard",
+    )
+    session.shown(PROMPT)
+    lines = session.screen.display
+    assert lines[0].startswith(" sandbox: open-url-guard asks for approval")
+    assert lines[1].rstrip() == "Open in the host's browser?"
+    assert lines[3].rstrip() == "  host:     example.com"
+    assert lines[23].startswith(PROMPT)
 
 
-def test_sandbox_exiting_under_a_popup_answers_no(relay):
-    term, proc = relay
-    thread, answers = ask_in_background("pending")
-    term.wait_for(b"pending")
-    proc.terminate()
-    thread.join(timeout=10)
-    assert answers == [None]
+TYPED = [
+    ("y\r", "once"),
+    ("Y\r", "once"),
+    ("a\r", "always"),
+    ("A\r", "always"),
+    ("\r", "no"),
+    ("n\r", "no"),
+    ("yes\r", "no"),
+    ("\x03", "no"),
+    ("\x04", "no"),
+    ("x\x7fy\r", "once"),
+    ("x\x08y\r", "once"),
+    ("a\x15\r", "no"),
+    ("y\n", "once"),
+]
+
+
+def test_typed_answers(session):
+    for keys, answer in TYPED:
+        answers = session.ask(f"question {keys!r}")
+        session.shown(f"question {keys!r}")
+        session.answer(keys)
+        assert session.answered(answers) == answer, keys
+
+
+def test_no_answer_until_enter_and_what_is_typed_shows(session):
+    answers = session.ask("question")
+    session.shown(PROMPT)
+    session.answer("y")
+    session.shown(PROMPT + " y")
+    session.p.read_for(0.3)
+    assert answers == []
+    session.type("\r")
+    assert session.answered(answers) == "once"
+
+
+def test_keys_during_grace_are_dropped(session):
+    answers = session.ask("question")
+    session.shown(PROMPT)
+    session.type("y\r")
+    session.p.read_for(0.2)
+    assert answers == []
+    session.answer("\r")
+    assert session.answered(answers) == "no"
+
+
+def test_popups_queue_one_at_a_time(session):
+    start = len(session.p.raw)
+    first = session.ask("first request")
+    session.shown("first request")
+    second = session.ask("second request")
+    session.p.read_for(0.4)
+    assert "second request" not in session.text
+    session.answer("y\r")
+    assert session.answered(first) == "once"
+    session.shown("second request")
+    session.answer("\r")
+    assert session.answered(second) == "no"
+    # One screen for both.
+    session.closed(start)
+    assert session.p.raw[start:].count(b"\x1b[?1049h") == 1
+
+
+def test_sandbox_exiting_under_a_popup_answers_no(session):
+    session.type("exit-soon\r")
+    answers = session.ask("pending")
+    session.shown("pending")
+    assert session.answered(answers) == "no"
+    assert session.p.wait().returncode == 3
+
+
+def test_hanging_up_under_a_popup_answers_no(session):
+    answers = session.ask("pending")
+    session.shown("pending")
+    session.p.hang_up()
+    deadline = time.monotonic() + 10
+    while not answers:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert answers == ["no"]
+
+
+def test_output_is_held_back_under_a_popup(session, tmp_path):
+    flag = tmp_path / "flag"
+    session.type(f"later {flag}\r")
+    answers = session.ask("question")
+    session.shown("question")
+    flag.touch()
+    session.p.read_for(0.5)
+    assert b"late-output" not in session.p.raw
+    session.answer("y\r")
+    session.answered(answers)
+    session.shown("late-output")
+
+
+def test_malformed_requests_are_dropped(session):
+    for raw in (
+        b"not json",
+        b"{}",
+        json.dumps({"name": "x"}).encode(),
+        b"x" * (1 << 20 | 1),
+    ):
+        assert session.answered(session.ask(None, raw=raw)) == ""
+    assert PROMPT not in session.text
+    answers = session.ask("still works")
+    session.shown("still works")
+    session.answer("y\r")
+    assert session.answered(answers) == "once"
+
+
+# -- what's drawn -----------------------------------------------------------------
+
+
+def test_long_text_scrolls(session):
+    session.ask("\n".join(f"line{i}" for i in range(30)))
+    session.shown(PROMPT)
+
+    def status():
+        return session.screen.display[22]
+
+    assert "lines 1-21 of 30 - Up/Down/PgUp/PgDn to read it all" in status()
+    assert session.screen.display[1].rstrip() == "line0"
+    assert "line21" not in session.text
+    session.answer("\x1b[B\x1b[B\x1bOB")
+    session.shown("lines 4-24 of 30")
+    assert session.screen.display[1].rstrip() == "line3"
+    session.type("\x1b[6~\x1b[6~")
+    session.shown("lines 10-30 of 30")
+    session.type("\x1b[H")
+    session.shown("lines 1-21 of 30")
+    session.type("\x1b[F")
+    session.shown("lines 10-30 of 30")
+    session.type("\x1b[5~\x1b[A")
+    session.shown("lines 1-21 of 30")
+    # Scrolling never types.
+    assert session.screen.display[23].rstrip() == PROMPT
+
+
+def test_text_is_wrapped_not_cut(session):
+    session.ask("x" * 100 + "\n" + "界" * 50)
+    session.shown(PROMPT)
+    lines = [line.rstrip() for line in session.screen.display]
+    assert lines[1:3] == ["x" * 80, "x" * 20]
+    # Wide characters count double; pyte shows each as itself plus "".
+    assert lines[3].replace(" ", "") == "界" * 40
+    assert lines[4].replace(" ", "") == "界" * 10
+
+
+def test_trailing_blank_lines_go(session):
+    session.ask("a\n\nb" + "\n" * 40)
+    session.shown(PROMPT)
+    assert "lines " not in session.text  # Nothing to scroll to.
+
+
+def test_escapes_and_bidi_are_neutralised(session):
+    start = len(session.p.raw)
+    session.ask("a\x1b[2Jb‮c\rd\tz\n\x1b]52;c;aGk=\x07", name="evil\x1b[31m")
+    session.shown(PROMPT)
+    assert "a?[2Jb?c?d    z" in session.text
+    assert "sandbox: evil?[31m asks for approval" in session.text
+    shown = session.p.raw[start:]
+    assert b"\x1b]" not in shown and b"\x07" not in shown
+    assert b"\x1b[31m" not in shown
+
+
+def test_a_resize_redraws_the_popup_and_reaches_the_sandbox_after(session):
+    answers = session.ask("\n".join(f"line{i}" for i in range(30)))
+    session.shown("lines 1-21 of 30")
+    session.p.resize(40, 100)
+    session.screen.resize(40, 100)
+    session.p.until(lambda: "lines 1-21" not in session.text, what="redrawn")
+    assert "line29" in session.text
+    session.answer("y\r")
+    session.answered(answers)
+    session.p.expect("size 40 100")
+
+
+# -- the sandbox's own screen -------------------------------------------------------
+
+
+@pytest.mark.parametrize("enter", ["alt", "split-alt"])
+def test_over_a_full_screen_program_it_is_told_to_redraw(session, enter):
+    """On the alternate screen already (vim, less), the popup is drawn there,
+    and a resize away and back has the program redraw."""
+    session.type(f"{enter}\r")
+    session.p.expect(f"got:{enter}")
+    start = len(session.p.raw)
+    answers = session.ask("question")
+    session.shown("question")
+    assert b"\x1b[?1049h" not in session.p.raw[start:]
+    assert b"\x1b7" in session.p.raw[start:]
+    session.answer("y\r")
+    session.answered(answers)
+    session.p.expect("size 24 79")
+    session.p.expect("size 24 80")
+    assert b"\x1b8" in session.p.raw[start:]
+
+
+def test_the_cursor_is_left_as_the_sandbox_had_it(session):
+    session.type("hide\r")
+    session.p.expect("got:hide")
+    answers = session.ask("question")
+    session.shown("question")
+    session.answer("y\r")
+    session.answered(answers)
+    session.p.until(lambda: session.screen.cursor.hidden, what="cursor hidden")
+    # A terminal reset brings it back, and the main screen.
+    session.type("alt\r")
+    session.p.expect("got:alt")
+    session.type("reset\r")
+    session.p.expect("got:reset")
+    start = len(session.p.raw)
+    answers = session.ask("again")
+    session.shown("again")
+    assert b"\x1b[?1049h" in session.p.raw[start:]
+    session.answer("y\r")
+    session.answered(answers)
+    session.p.until(lambda: not session.screen.cursor.hidden, what="cursor shown")

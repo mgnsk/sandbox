@@ -1,231 +1,226 @@
-"""Tests for bin/forgejo-api-proxy: which hosts and tokens it takes from the
-host fj's keys.json, and its server with a fake upstream on loopback standing
-in for a Forgejo instance. The shared mechanics (refusals, streaming) are
-covered through gh-api-proxy's tests."""
+"""Black-box tests for src/forgejo-api-proxy, run as a program: which hosts
+and tokens it takes from the host fj's keys.json and the project's tokens
+file, and what it forwards, with a stand-in for every Forgejo instance. The
+shared mechanics (refusals, streaming) are covered through gh-api-proxy's
+tests."""
 
-import http.client
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from conftest import connect, https_send, load_module, serve
-
-proxy = load_module("forgejo-api-proxy")
+from guards import (
+    FakeCA,
+    FakePopups,
+    Guard,
+    ProxyInfo,
+    Upstream,
+    base_env,
+    https_send,
+    proxy_connect,
+    raw_request,
+    short_dir,
+    tls_wrap,
+)
 
 HOST = "forgejo.example"
+NAMES = (HOST, "a.example", "b.example", "c.example")
 
 
-class FakeForgejo(BaseHTTPRequestHandler):
-    """Records each request; answers every one with its path."""
+@pytest.fixture
+def world():
+    d = short_dir()
+    ca = FakeCA(d)
+    upstream = Upstream(ca, NAMES)
+    popups = FakePopups(d / "popup.sock")
+    yield d, upstream, popups, ca
+    popups.close()
+    upstream.close()
 
-    protocol_version = "HTTP/1.1"
-    seen = []
 
-    def log_message(self, format, *args):  # pylint: disable=redefined-builtin
-        pass
+@pytest.fixture
+def start(world):
+    """Start a forgejo-api-proxy with these host fj logins and project
+    tokens; its ProxyInfo and the two files, which it reads per request."""
+    d, upstream, popups, ca = world
+    guards = []
 
-    def answer(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length) if length else b""
-        self.seen.append(
-            {
-                "method": self.command,
-                "path": self.path,
-                "headers": dict(self.headers),
-                "body": body,
-            }
+    def start(hosts=None, project=None, xdg=True):
+        n = len(guards)
+        state = d / f"proxy{n}"
+        state.mkdir()
+        data = d / f"data{n}"
+        keys = data / "forgejo-cli/keys.json"
+        keys.parent.mkdir(parents=True)
+        if hosts is not None:
+            write_keys(keys, hosts)
+        project_file = d / f"forgejo-tokens{n}.json"
+        if project is not None:
+            project_file.write_text(json.dumps(project))
+        env = base_env(
+            SSL_CERT_FILE=ca.file,
+            SANDBOX_TEST_UPSTREAM=upstream.address,
+            SANDBOX_POPUP_SOCKET=popups.path,
         )
-        out = json.dumps({"login": "someone", "path": self.path}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
+        if xdg:
+            env["XDG_DATA_HOME"] = str(data)
+        else:
+            home = d / f"home{n}"
+            (home / ".local").mkdir(parents=True)
+            (home / ".local/share").symlink_to(data)
+            env["HOME"] = str(home)
+        guards.append(
+            Guard(
+                "forgejo-api-proxy",
+                state,
+                project_file,
+                env=env,
+                ready=state / "proxy.json",
+            )
+        )
+        return ProxyInfo(state), keys, project_file
 
-    do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = answer
-
-
-class Confirm:
-    """Stands in for the popup: records each prompt, gives a fixed answer."""
-
-    def __init__(self, answer):
-        self.answer = answer
-        self.prompts = []
-
-    def __call__(self, description, cmdline):
-        self.prompts.append(description)
-        return self.answer
+    yield start
+    for guard in guards:
+        guard.stop()
 
 
 def write_keys(path, hosts):
     path.write_text(json.dumps({"hosts": hosts, "aliases": {}, "default_ssh": []}))
 
 
-# -- keys.json -----------------------------------------------------------------
+def app(token):
+    return {"type": "Application", "token": token}
 
 
-def test_tokens_come_from_every_login_type(tmp_path):
-    keys = tmp_path / "keys.json"
-    write_keys(
-        keys,
+def request(info, method, host, path, body=b""):
+    target = host if ":" in host else f"{host}:443"
+    status, _, out = https_send(info, target, raw_request(method, host, path, body))
+    return status, out
+
+
+def test_read_gets_the_hosts_token_without_a_prompt(start, world):
+    _, upstream, popups, _ = world
+    info, _, _ = start({HOST: app("real")})
+    status, _ = request(info, "GET", HOST, "/api/v1/user")
+    assert status == 200
+    [seen] = upstream.seen
+    assert seen["headers"]["Authorization"] == "token real"
+    assert seen["headers"]["Host"] == HOST
+    assert popups.requests == []
+
+
+def test_tokens_come_from_every_login_type(start, world):
+    _, upstream, _, _ = world
+    info, _, _ = start(
         {
-            "a.example": {"type": "Application", "token": "app"},
+            "a.example": app("app"),
             "b.example:3000/forgejo": {
                 "type": "OAuth",
                 "token": "oauth",
                 "refresh_token": "r",
                 "expires_at": "2030-01-01T00:00:00Z",
             },
-        },
+        }
     )
-    assert proxy.host_tokens(keys) == {"a.example": "app", "b.example:3000": "oauth"}
+    assert request(info, "GET", "a.example", "/x")[0] == 200
+    # A host with a port keeps it.
+    assert request(info, "GET", "b.example:3000", "/x")[0] == 200
+    assert [
+        (s["headers"]["Host"], s["headers"]["Authorization"]) for s in upstream.seen
+    ] == [
+        ("a.example", "token app"),
+        ("b.example:3000", "token oauth"),
+    ]
 
 
 @pytest.mark.parametrize(
-    "content", [None, "", "not json", "[]", '{"hosts": []}', '{"hosts": {"a": 1}}']
+    "content",
+    [None, "", "not json", "[]", '{"hosts": []}', '{"hosts": {"a.example": 1}}'],
 )
-def test_missing_or_odd_keys_file_means_no_hosts(tmp_path, content):
-    keys = tmp_path / "keys.json"
+def test_missing_or_odd_keys_file_means_no_hosts(start, world, content):
+    info, keys, _ = start()
     if content is not None:
         keys.write_text(content)
-    assert proxy.host_tokens(keys) == {}
+    assert request(info, "GET", "a.example", "/x")[0] == 403
+    assert world[1].seen == []
 
 
-def test_project_tokens_keep_only_well_formed_entries(tmp_path):
-    tokens = tmp_path / "forgejo-tokens.json"
-    assert proxy.api_proxy.read_tokens(tokens) == {}
-    tokens.write_text(
-        json.dumps({"A.example": "aaaaaaaa", "b.example": "bad token", "c": 1})
+def test_keys_file_is_under_home_without_xdg_data_home(start):
+    info, _, _ = start({HOST: app("real")}, xdg=False)
+    assert request(info, "GET", HOST, "/x")[0] == 200
+
+
+def test_project_tokens_win_and_keep_only_well_formed_entries(start, world):
+    _, upstream, _, _ = world
+    info, _, project = start({HOST: app("host-token")})
+    project.write_text(
+        json.dumps({"Forgejo.Example": "project1", "a.example": "bad token", "c": 1})
     )
-    assert proxy.api_proxy.read_tokens(tokens) == {"a.example": "aaaaaaaa"}
-    tokens.write_text("[]")
-    assert proxy.api_proxy.read_tokens(tokens) == {}
-
-
-def test_keys_path_follows_xdg_data_home(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    assert proxy.keys_path() == tmp_path / "forgejo-cli" / "keys.json"
-
-
-# -- server --------------------------------------------------------------------
-
-
-@pytest.fixture
-def upstream():
-    FakeForgejo.seen = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeForgejo)
-    threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
-    yield server
-    server.shutdown()
-
-
-@pytest.fixture
-def make_proxy(upstream):
-    servers = []
-
-    def make(tokens, answer=None):
-        confirm = Confirm(answer)
-        port = upstream.server_address[1]
-        server = serve(
-            proxy.ProxyServer(
-                tokens=lambda: dict(tokens),
-                upstream=lambda host: http.client.HTTPConnection(
-                    "127.0.0.1", port, timeout=10
-                ),
-                confirm=confirm,
-            )
-        )
-        servers.append(server)
-        return server, confirm
-
-    yield make
-    for server in servers:
-        server.shutdown()
-        server.server_close()
-
-
-def request(server, method, host, path, body=b"", headers=()):
-    """Send a request through a tunnel to host; return (status, body)."""
-    lines = [f"{method} {path} HTTP/1.1", f"Host: {host}", *headers]
-    if body or method not in ("GET", "HEAD"):
-        lines.append(f"Content-Length: {len(body)}")
-    raw = ("\r\n".join(lines) + "\r\n\r\n").encode() + body
-    target = host if ":" in host else f"{host}:443"
-    status, _, out = https_send(server, target, raw)
-    return status, out
-
-
-def test_read_gets_the_hosts_token_without_a_prompt(make_proxy):
-    path, confirm = make_proxy({HOST: "real"})
-    status, _ = request(
-        path, "GET", HOST, "/api/v1/user", headers=["Authorization: token fake"]
-    )
-    assert status == 200
-    [seen] = FakeForgejo.seen
-    assert seen["headers"]["Authorization"] == "token real"
-    assert seen["headers"]["Host"] == HOST
-    assert confirm.prompts == []
-
-
-def test_host_with_a_port_keeps_it(make_proxy):
-    path, _ = make_proxy({f"{HOST}:3000": "real"})
-    assert request(path, "GET", f"{HOST}:3000", "/api/v1/user")[0] == 200
-    assert FakeForgejo.seen[0]["headers"]["Host"] == f"{HOST}:3000"
+    assert request(info, "GET", HOST, "/x")[0] == 200
+    assert upstream.seen[-1]["headers"]["Authorization"] == "token project1"
+    assert request(info, "GET", "a.example", "/x")[0] == 403
+    project.write_text("[]")
+    assert request(info, "GET", HOST, "/x")[0] == 200
+    assert upstream.seen[-1]["headers"]["Authorization"] == "token host-token"
 
 
 @pytest.mark.parametrize("host", ["other.example", f"{HOST}:3000"])
-def test_hosts_not_logged_in_on_the_host_are_refused(make_proxy, host):
-    path, _ = make_proxy({HOST: "real"})
-    status, body = request(path, "GET", host, "/api/v1/user")
+def test_hosts_not_logged_in_are_refused_with_how_to_log_in(start, world, host):
+    info, _, _ = start({HOST: app("real")})
+    status, body = request(info, "GET", host, "/api/v1/user")
     assert status == 403
-    assert json.loads(body)["message"].startswith("forgejo-api-proxy:")
-    assert FakeForgejo.seen == []
+    message = json.loads(body)["message"]
+    assert message.startswith("forgejo-api-proxy:")
+    assert f"sandbox --fj-token {host}" in message
+    assert f"fj --host {host} auth add-token" in message
+    assert world[1].seen == []
 
 
-def test_nothing_is_tunneled_unread(make_proxy):
+def test_nothing_is_tunneled_unread(start):
     """Every host is intercepted, so one not logged in gets the refusal
     above rather than a tunnel to the host's own services."""
-    server, _ = make_proxy({HOST: "real"})
-    assert not server.tunnel_allowed("127.0.0.1:22")
-    sock, head = connect(server, "127.0.0.1:22")
-    sock.close()
-    assert " 200 " in head.split("\r\n", 1)[0]  # Then the TLS handshake.
+    info, _, _ = start({HOST: app("real")})
+    sock, head = proxy_connect(info, "127.0.0.1:22")
+    assert " 200 " in head.split("\r\n", 1)[0]
+    # The proxy's own certificate: intercepted.
+    tls_wrap(sock, info.ca_pem, "127.0.0.1").close()
 
 
-def test_refusal_says_how_to_log_in(make_proxy):
-    path, _ = make_proxy({})
-    _, body = request(path, "GET", HOST, "/api/v1/user")
-    assert f"fj --host {HOST} auth add-token" in json.loads(body)["message"]
-
-
-def test_a_login_on_the_host_applies_without_a_restart(make_proxy):
-    tokens = {}
-    path, _ = make_proxy(tokens)  # Read again on every request.
-    assert request(path, "GET", HOST, "/api/v1/user")[0] == 403
-    tokens[HOST] = "real"
-    assert request(path, "GET", HOST, "/api/v1/user")[0] == 200
+def test_a_login_on_the_host_applies_without_a_restart(start):
+    info, keys, project = start({})
+    assert request(info, "GET", HOST, "/x")[0] == 403
+    write_keys(keys, {HOST: app("real")})
+    assert request(info, "GET", HOST, "/x")[0] == 200
+    keys.unlink()
+    project.write_text(json.dumps({HOST: "project1"}))
+    assert request(info, "GET", HOST, "/x")[0] == 200
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
-def test_declined_write_never_reaches_upstream(make_proxy, method):
-    path, confirm = make_proxy({HOST: "real"})
+def test_declined_write_never_reaches_upstream(start, world, method):
+    _, upstream, popups, _ = world
+    info, _, _ = start({HOST: app("real")})
     status, body = request(
-        path, method, HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}'
+        info, method, HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}'
     )
     assert status == 403
     assert "declined by user" in json.loads(body)["message"]
-    assert FakeForgejo.seen == []
-    assert confirm.prompts == [f"{method} {HOST}/api/v1/repos/o/r/issues"]
+    assert upstream.seen == []
+    [asked] = popups.requests
+    assert asked["name"] == "forgejo-api-proxy"
+    assert asked["text"] == (
+        f"Allow sandboxed Forgejo API write?\n\n{method} {HOST}/api/v1/repos/o/r/issues\n"
+    )
 
 
-def test_approved_write_goes_through_with_its_body(make_proxy):
-    path, _ = make_proxy({HOST: "real"}, answer="once")
+def test_approved_write_goes_through_with_its_body(start, world):
+    _, upstream, popups, _ = world
+    popups.answer = b"once"
+    info, _, _ = start({HOST: app("real")})
     status, _ = request(
-        path, "POST", HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}'
+        info, "POST", HOST, "/api/v1/repos/o/r/issues", b'{"title":"x"}'
     )
     assert status == 200
-    [seen] = FakeForgejo.seen
+    [seen] = upstream.seen
     assert (seen["body"], seen["headers"]["Authorization"]) == (
         b'{"title":"x"}',
         "token real",

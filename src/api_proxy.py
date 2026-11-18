@@ -134,16 +134,43 @@ def peer_cmdline(pid):
     return shlex.join(parts) if parts else "unknown"
 
 
+# Where the tests' stand-in for every real host listens (host:port): upstream
+# connections go there instead, with TLS still verified for the real host's
+# name against SSL_CERT_FILE, which they point at their own CA. From the
+# guard's environment - the host launcher's, never the sandbox's.
+TEST_UPSTREAM_ENV = "SANDBOX_TEST_UPSTREAM"
+
+
+def upstream_address(name, port):
+    """(host, port) to connect to for the real host name:port."""
+    override = os.environ.get(TEST_UPSTREAM_ENV)
+    if not override:
+        return name, port
+    host, _, override_port = override.rpartition(":")
+    return host, int(override_port)
+
+
+class HTTPSConnection(http.client.HTTPSConnection):
+    """http.client's, connecting to upstream_address."""
+
+    def connect(self):
+        if not os.environ.get(TEST_UPSTREAM_ENV):
+            super().connect()
+            return
+        sock = socket.create_connection(
+            upstream_address(self.host, self.port), self.timeout
+        )
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
 def open_upstream(host):
     """A TLS connection to the real host ("name" or "name:port")."""
-    return http.client.HTTPSConnection(
-        host, timeout=300, context=ssl.create_default_context()
-    )
+    return HTTPSConnection(host, timeout=300, context=ssl.create_default_context())
 
 
 def open_tunnel(name, port):
     """A TCP connection to the real host, for a tunnel left alone."""
-    return socket.create_connection((name, port), timeout=300)
+    return socket.create_connection(upstream_address(name, port), timeout=300)
 
 
 def relay(client, upstream):

@@ -1018,9 +1018,9 @@ def exchange_args(volume_dir):
 # -- network ----------------------------------------------------------------
 
 
-def read_resolv_conf():
+def read_resolv_conf(path="/etc/resolv.conf"):
     try:
-        return Path("/etc/resolv.conf").read_text(encoding="utf-8")
+        return Path(path).read_text(encoding="utf-8")
     except OSError:
         return ""
 
@@ -1330,7 +1330,9 @@ def main(argv):
         if profile["claudeDir"]:
             args += ["--ro-bind", profile["claudeDir"], "/etc/claude-code"]
 
-        dns_resolver, resolv_conf = dns_forward(read_resolv_conf())
+        dns_resolver, resolv_conf = dns_forward(
+            read_resolv_conf(config.get("resolvConf", "/etc/resolv.conf"))
+        )
         if dns_resolver:
             path = os.path.join(guards.tempdir(), "resolv.conf")
             Path(path).write_text(resolv_conf, encoding="utf-8")

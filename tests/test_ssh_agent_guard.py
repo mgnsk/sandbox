@@ -1,347 +1,66 @@
-import base64
-import hashlib
+"""Black-box tests for src/ssh-agent-guard, run as a program between a client
+and a stand-in for the user's real agent: what reaches the agent, what's
+answered, and what the popup shows."""
+
 import os
-import shlex
 import socket
 import struct
+import subprocess
+import sys
 import threading
+import time
 
 import pytest
-from conftest import load_module
+from guards import FakePopups, Guard, base_env, short_dir
 
-ssh_agent_guard = load_module("ssh-agent-guard")
-
-
-@pytest.fixture
-def sock_pair():
-    a, b = socket.socketpair()
-    yield a, b
-    a.close()
-    b.close()
+REQUEST_IDENTITIES, IDENTITIES_ANSWER, SIGN_REQUEST, FAILURE = 11, 12, 13, 5
+SIGNATURE = bytes([14]) + b"signature-bytes"
+FAIL = bytes([FAILURE])
+MAX_MESSAGE_SIZE = 256 * 1024
 
 
-@pytest.fixture(autouse=True)
-def reset_identity_comments(monkeypatch):
-    monkeypatch.setattr(ssh_agent_guard, "IDENTITY_COMMENTS", {})
+def string(b):
+    return struct.pack(">I", len(b)) + b
 
 
-@pytest.fixture(autouse=True)
-def fresh_approvals(monkeypatch):
-    monkeypatch.setattr(
-        ssh_agent_guard, "APPROVALS", ssh_agent_guard.guard_popup.Approvals()
-    )
+def frame(payload):
+    return struct.pack(">I", len(payload)) + payload
 
 
-# -- framing helpers --------------------------------------------------------
+def recv_frame(sock):
+    """One frame, or None at EOF."""
+    head = b""
+    while len(head) < 4:
+        chunk = sock.recv(4 - len(head))
+        if not chunk:
+            return None
+        head += chunk
+    (length,) = struct.unpack(">I", head)
+    body = b""
+    while len(body) < length:
+        chunk = sock.recv(length - len(body))
+        if not chunk:
+            return None
+        body += chunk
+    return body
 
 
-def test_write_frame_read_frame_roundtrip(sock_pair):
-    a, b = sock_pair
-    ssh_agent_guard.write_frame(a, b"payload")
-    assert ssh_agent_guard.read_frame(b) == b"payload"
-
-
-def test_read_frame_returns_none_on_close_before_header(sock_pair):
-    a, b = sock_pair
-    a.close()
-    assert ssh_agent_guard.read_frame(b) is None
-
-
-def test_read_frame_returns_none_on_close_mid_payload(sock_pair):
-    a, b = sock_pair
-    a.sendall(struct.pack(">I", 10) + b"abc")
-    a.close()
-    assert ssh_agent_guard.read_frame(b) is None
-
-
-def test_recv_exact_returns_requested_bytes(sock_pair):
-    a, b = sock_pair
-    a.sendall(b"abcdef")
-    assert ssh_agent_guard.recv_exact(b, 6) == b"abcdef"
-
-
-def test_recv_exact_returns_none_on_early_close(sock_pair):
-    a, b = sock_pair
-    a.sendall(b"ab")
-    a.close()
-    assert ssh_agent_guard.recv_exact(b, 6) is None
-
-
-# -- read_uint32 / read_string --------------------------------------------------------
-
-
-def test_read_uint32():
-    buf = struct.pack(">I", 42) + b"rest"
-    value, offset = ssh_agent_guard.read_uint32(buf, 0)
-    assert value == 42
-    assert offset == 4
-
-
-def test_read_string():
-    buf = struct.pack(">I", 5) + b"hello" + b"tail"
-    value, offset = ssh_agent_guard.read_string(buf, 0)
-    assert value == b"hello"
-    assert offset == 9
-
-
-def test_read_string_length_exceeding_buffer_raises():
-    buf = struct.pack(">I", 100) + b"short"
-    with pytest.raises(struct.error):
-        ssh_agent_guard.read_string(buf, 0)
-
-
-# -- fingerprint --------------------------------------------------------
-
-
-def test_fingerprint_matches_manual_sha256_base64():
-    blob = b"fake-key-blob"
-    digest = hashlib.sha256(blob).digest()
-    expected = "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
-    assert ssh_agent_guard.fingerprint(blob) == expected
-
-
-# -- cache_identities --------------------------------------------------------
-
-
-def _identities_answer(pairs):
+def identities_answer(pairs):
     body = struct.pack(">I", len(pairs))
     for key_blob, comment in pairs:
-        body += struct.pack(">I", len(key_blob)) + key_blob
-        body += struct.pack(">I", len(comment)) + comment
-    return bytes([ssh_agent_guard.SSH_AGENT_IDENTITIES_ANSWER]) + body
+        body += string(key_blob) + string(comment)
+    return bytes([IDENTITIES_ANSWER]) + body
 
 
-def test_cache_identities_populates_by_fingerprint():
-    payload = _identities_answer([(b"key1", b"comment1"), (b"key2", b"comment2")])
-
-    ssh_agent_guard.cache_identities(payload)
-
-    assert (
-        ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key1")]
-        == "comment1"
-    )
-    assert (
-        ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key2")]
-        == "comment2"
-    )
-
-
-def test_cache_identities_malformed_payload_is_swallowed():
-    # Claims 5 keys but has no key/comment data to back that up.
-    ssh_agent_guard.cache_identities(
-        bytes([ssh_agent_guard.SSH_AGENT_IDENTITIES_ANSWER]) + struct.pack(">I", 5)
-    )
-
-    assert ssh_agent_guard.IDENTITY_COMMENTS == {}
-
-
-# -- peer_pid / peer_cwd / peer_cmdline / describe_peer ------------------------------------------
-
-
-def _own_cmdline():
-    with open(f"/proc/{os.getpid()}/cmdline", "rb") as f:
-        raw = f.read()
-    parts = raw.split(b"\0")
-    if parts and parts[-1] == b"":
-        parts.pop()
-    return " ".join(shlex.quote(p.decode("utf-8", "replace")) for p in parts)
-
-
-def test_peer_pid_returns_own_pid_over_same_process_socketpair(sock_pair):
-    a, _b = sock_pair
-    assert ssh_agent_guard.peer_pid(a) == os.getpid()
-
-
-def test_peer_cwd_returns_real_cwd():
-    assert ssh_agent_guard.peer_cwd(os.getpid()) == os.readlink(
-        f"/proc/{os.getpid()}/cwd"
-    )
-
-
-def test_peer_cwd_returns_unknown_for_dead_pid():
-    # PID 0 never has a /proc entry, so the readlink fails the same way it
-    # would for a peer that exited before we sampled it.
-    assert ssh_agent_guard.peer_cwd(0) == "unknown"
-
-
-def test_peer_cmdline_returns_real_cmdline():
-    assert ssh_agent_guard.peer_cmdline(os.getpid()) == _own_cmdline()
-
-
-def test_peer_cmdline_returns_unknown_on_oserror(monkeypatch):
-    def raise_oserror(*_args, **_kwargs):
-        raise OSError("boom")
-
-    monkeypatch.setattr(ssh_agent_guard, "open", raise_oserror, raising=False)
-
-    assert ssh_agent_guard.peer_cmdline(os.getpid()) == "unknown"
-
-
-def test_describe_peer_returns_connect_time_cwd_and_cmdline(sock_pair):
-    a, _b = sock_pair
-    assert ssh_agent_guard.describe_peer(a) == (
-        os.readlink(f"/proc/{os.getpid()}/cwd"),
-        _own_cmdline(),
-    )
-
-
-def test_describe_peer_returns_unknown_when_peercred_fails(sock_pair, monkeypatch):
-    a, _b = sock_pair
-
-    def raise_oserror(*_args, **_kwargs):
-        raise OSError("boom")
-
-    monkeypatch.setattr(ssh_agent_guard, "peer_pid", raise_oserror)
-
-    assert ssh_agent_guard.describe_peer(a) == ("unknown", "unknown")
-
-
-# -- clean() --------------------------------------------------------
-
-
-def test_clean_strips_nonprintable():
-    assert ssh_agent_guard.clean("\x1b[31mred\x1b[0m") == "?[31mred?[0m"
-
-
-def test_clean_truncates_long_strings():
-    assert ssh_agent_guard.clean("a" * 250) == "a" * 200 + "…"
-
-
-def test_clean_no_truncation_at_exact_limit():
-    s = "a" * 200
-    assert ssh_agent_guard.clean(s) == s
-
-
-# -- handle_client() --------------------------------------------------------
-
-
-def _sign_request(key_blob=b"fake-key", data=None):
-    payload = (
-        bytes([ssh_agent_guard.SSH_AGENTC_SIGN_REQUEST])
-        + struct.pack(">I", len(key_blob))
-        + key_blob
-    )
+def sign_request(key_blob=b"fake-key", data=None):
+    payload = bytes([SIGN_REQUEST]) + string(key_blob)
     if data is not None:
-        payload += struct.pack(">I", len(data)) + data
+        payload += string(data)
     return payload
 
 
-def _exchange(tmp_path, requests, upstream_replies=()):
-    """Drive handle_client with `requests`, against a one-shot fake upstream agent.
-
-    Returns (client_responses, upstream_seen). The fake upstream answers the
-    first len(upstream_replies) frames it receives and then reads once more;
-    that trailing read only returns - as None - when the guard tears the
-    connection down, so a trailing None in upstream_seen is positive evidence
-    that nothing further was forwarded to the real agent.
-
-    Both threads are joined before returning, so upstream_seen is final and
-    assertions run on the main thread.
-    """
-    upstream_path = str(tmp_path / "upstream.sock")
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(upstream_path)
-    server.listen(1)
-    upstream_seen = []
-
-    def fake_upstream():
-        conn, _ = server.accept()
-        try:
-            for reply in upstream_replies:
-                upstream_seen.append(ssh_agent_guard.read_frame(conn))
-                ssh_agent_guard.write_frame(conn, reply)
-            upstream_seen.append(ssh_agent_guard.read_frame(conn))
-        finally:
-            conn.close()
-
-    client, guard_side = socket.socketpair()
-    upstream_thread = threading.Thread(target=fake_upstream, daemon=True)
-    handler_thread = threading.Thread(
-        target=ssh_agent_guard.handle_client,
-        args=(guard_side, upstream_path),
-        daemon=True,
-    )
-    upstream_thread.start()
-    handler_thread.start()
-
-    responses = []
-    try:
-        for request in requests:
-            ssh_agent_guard.write_frame(client, request)
-            responses.append(ssh_agent_guard.read_frame(client))
-    finally:
-        client.close()
-        handler_thread.join(timeout=2)
-        upstream_thread.join(timeout=2)
-        server.close()
-
-    return responses, upstream_seen
-
-
-def test_handle_client_forwards_identities_request_and_caches_response(tmp_path):
-    request = bytes([ssh_agent_guard.SSH_AGENTC_REQUEST_IDENTITIES])
-    answer = _identities_answer([(b"key1", b"comment1")])
-
-    responses, upstream_seen = _exchange(tmp_path, [request], upstream_replies=[answer])
-
-    assert upstream_seen == [request, None]
-    assert responses == [answer]
-    assert (
-        ssh_agent_guard.IDENTITY_COMMENTS[ssh_agent_guard.fingerprint(b"key1")]
-        == "comment1"
-    )
-
-
-def test_handle_client_sign_request_approved_forwards_to_upstream(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(ssh_agent_guard, "confirm_via_popup", lambda *a, **k: "once")
-    signature = bytes([14]) + b"signature-bytes"
-
-    responses, upstream_seen = _exchange(
-        tmp_path, [_sign_request()], upstream_replies=[signature]
-    )
-
-    assert upstream_seen == [_sign_request(), None]
-    assert responses == [signature]
-
-
-def test_handle_client_sign_request_denied_never_reaches_upstream(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(ssh_agent_guard, "confirm_via_popup", lambda *a, **k: None)
-
-    responses, upstream_seen = _exchange(tmp_path, [_sign_request()])
-
-    assert responses == [bytes([ssh_agent_guard.SSH_AGENT_FAILURE])]
-    assert upstream_seen == [None]
-
-
-def test_handle_client_commit_signature_skips_popup(tmp_path, monkeypatch):
-    """A sign request whose data carries the SSHSIG magic (commit/tag
-    signing via `ssh-keygen -Y sign`) is forwarded without confirmation."""
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "confirm_via_popup",
-        lambda *a, **k: pytest.fail("commit signature reached the popup"),
-    )
-    request = _sign_request(data=_sshsig_blob(b"git"))
-    signature = bytes([14]) + b"signature-bytes"
-
-    responses, upstream_seen = _exchange(
-        tmp_path, [request], upstream_replies=[signature]
-    )
-
-    assert upstream_seen == [request, None]
-    assert responses == [signature]
-
-
-def _sshsig_blob(namespace):
+def sshsig(namespace):
     """Signed data as `ssh-keygen -Y sign -n <namespace>` hands it to the agent."""
-
-    def string(b):
-        return struct.pack(">I", len(b)) + b
-
     return (
         b"SSHSIG"
         + string(namespace)
@@ -351,66 +70,166 @@ def _sshsig_blob(namespace):
     )
 
 
+class FakeAgent:
+    """The user's real agent: records every frame it gets, answers
+    identities with .identities and anything else with SIGNATURE."""
+
+    def __init__(self, path):
+        self.seen = []
+        self.connections = 0
+        self.identities = identities_answer([(b"fake-key", b"me@laptop")])
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.bind(str(path))
+        self.sock.listen(8)
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.connections += 1
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn):
+        with conn:
+            while (payload := recv_frame(conn)) is not None:
+                self.seen.append(payload)
+                if payload[:1] == bytes([REQUEST_IDENTITIES]):
+                    conn.sendall(frame(self.identities))
+                else:
+                    conn.sendall(frame(SIGNATURE))
+
+    def close(self):
+        self.sock.close()
+
+
+@pytest.fixture
+def world():
+    d = short_dir()
+    agent = FakeAgent(d / "agent.sock")
+    popups = FakePopups(d / "popup.sock")
+    guards = []
+
+    def start(popup=True, upstream=None):
+        listen = d / f"guard{len(guards)}.sock"
+        env = base_env(SANDBOX_POPUP_SOCKET=popups.path if popup else None)
+        guard = Guard(
+            "ssh-agent-guard",
+            upstream or d / "agent.sock",
+            listen,
+            env=env,
+            ready=listen,
+        )
+        guards.append(guard)
+        return str(listen)
+
+    yield start, agent, popups
+    for guard in guards:
+        guard.stop()
+    popups.close()
+    agent.close()
+
+
+@pytest.fixture
+def guard(world):
+    start, agent, popups = world
+    return start(), agent, popups
+
+
+def exchange(path, *payloads):
+    """Send each payload on one connection, reading the answer to each."""
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(path)
+        sock.settimeout(10)
+        answers = []
+        for payload in payloads:
+            sock.sendall(frame(payload))
+            answers.append(recv_frame(sock))
+        return answers
+
+
+# -- forwarding ------------------------------------------------------------------
+
+
+def test_identities_are_forwarded(guard):
+    path, agent, popups = guard
+    assert exchange(path, bytes([REQUEST_IDENTITIES])) == [agent.identities]
+    assert agent.seen == [bytes([REQUEST_IDENTITIES])]
+    assert popups.requests == []
+
+
+def test_sign_request_approved_in_the_popup_is_forwarded(guard):
+    path, agent, popups = guard
+    popups.answer = b"once"
+    request = sign_request(data=b"session-id-and-packet-bytes")
+    assert exchange(path, request) == [SIGNATURE]
+    assert agent.seen == [request]
+    [asked] = popups.requests
+    assert asked["name"] == "ssh-agent-guard"
+    assert asked["text"].startswith("Allow SSH agent to sign?\n\n")
+
+
+def test_declined_sign_request_never_reaches_the_agent(guard):
+    path, agent, _ = guard
+    assert exchange(path, sign_request()) == [FAIL]
+    assert agent.seen == []
+
+
+def test_once_asks_again_and_always_stops_asking_for_this_guard(world):
+    start, agent, popups = world
+    popups.answer = b"once"
+    path = start()
+    assert exchange(path, sign_request(), sign_request()) == [SIGNATURE] * 2
+    assert len(popups.requests) == 2
+    popups.answer = b"always"
+    # Across connections: "always" outlives the one that answered it.
+    assert exchange(path, sign_request()) == [SIGNATURE]
+    popups.answer = b"no"
+    assert exchange(path, sign_request()) == [SIGNATURE]
+    assert len(popups.requests) == 3
+    # A new sandbox's guard asks again.
+    assert exchange(start(), sign_request()) == [FAIL]
+    assert len(popups.requests) == 4
+
+
+@pytest.mark.parametrize("answer", [b"no", b"", b"garbage", b"once" * 100])
+def test_anything_but_once_or_always_is_no(guard, answer):
+    path, agent, popups = guard
+    popups.answer = answer
+    assert exchange(path, sign_request()) == [FAIL]
+    assert agent.seen == []
+
+
+def test_without_a_popup_socket_sign_requests_are_refused(world):
+    start, agent, _ = world
+    assert exchange(start(popup=False), sign_request()) == [FAIL]
+    assert agent.seen == []
+
+
+def test_commit_signature_skips_the_popup(guard):
+    """A sign request whose data is an SSHSIG blob in git's namespace (commit
+    and tag signing via `ssh-keygen -Y sign`) is forwarded without asking."""
+    path, agent, popups = guard
+    request = sign_request(data=sshsig(b"git"))
+    assert exchange(path, request) == [SIGNATURE]
+    assert agent.seen == [request]
+    assert popups.requests == []
+
+
 @pytest.mark.parametrize(
     "data",
-    [
-        _sshsig_blob(b"file"),
-        _sshsig_blob(b"gitx"),
-        b"SSHSIG",
-        b"SSHSIG\xff\xff\xff\xffgit",
-    ],
-    ids=["file-namespace", "other-namespace", "truncated", "bad-length"],
+    [sshsig(b"file"), sshsig(b"gitx"), b"SSHSIG", b"SSHSIG\xff\xff\xff\xffgit", None],
+    ids=["file-namespace", "other-namespace", "truncated", "bad-length", "no-data"],
 )
-def test_handle_client_non_git_sshsig_still_prompts(tmp_path, monkeypatch, data):
+def test_other_sign_requests_ask(guard, data):
     """Only git's namespace skips the popup; other or malformed SSHSIG blobs
-    are prompted (here: declined) like any other sign request."""
-    prompted = []
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "confirm_via_popup",
-        lambda *a, **k: (prompted.append(True), None)[1],
-    )
-    responses, upstream_seen = _exchange(tmp_path, [_sign_request(data=data)])
-
-    assert prompted == [True]
-    assert upstream_seen == [None]
-    assert responses == [bytes([ssh_agent_guard.SSH_AGENT_FAILURE])]
-
-
-def test_read_frame_rejects_oversized_length_without_reading_payload(sock_pair):
-    a, b = sock_pair
-    a.sendall(struct.pack(">I", ssh_agent_guard.MAX_MESSAGE_SIZE + 1))
-    assert ssh_agent_guard.read_frame(b) is None
-
-
-def test_read_frame_accepts_message_at_the_size_limit(sock_pair):
-    a, b = sock_pair
-    payload = b"x" * ssh_agent_guard.MAX_MESSAGE_SIZE
-    threading.Thread(
-        target=ssh_agent_guard.write_frame, args=(a, payload), daemon=True
-    ).start()
-    assert ssh_agent_guard.read_frame(b) == payload
-
-
-def test_handle_client_non_sshsig_sign_request_still_prompts(tmp_path, monkeypatch):
-    """A sign request whose data isn't an SSHSIG blob (e.g. SSH transport
-    auth) still goes through the popup."""
-    prompted = []
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "confirm_via_popup",
-        lambda *a, **k: (prompted.append(True), "once")[1],
-    )
-    request = _sign_request(data=b"session-id-and-packet-bytes")
-    signature = bytes([14]) + b"signature-bytes"
-
-    responses, upstream_seen = _exchange(
-        tmp_path, [request], upstream_replies=[signature]
-    )
-
-    assert prompted == [True]
-    assert upstream_seen == [request, None]
-    assert responses == [signature]
+    are asked about (here: declined) like any other sign request."""
+    path, agent, popups = guard
+    assert exchange(path, sign_request(data=data)) == [FAIL]
+    assert len(popups.requests) == 1
+    assert agent.seen == []
 
 
 @pytest.mark.parametrize(
@@ -428,83 +247,174 @@ def test_handle_client_non_sshsig_sign_request_still_prompts(tmp_path, monkeypat
         27,  # EXTENSION
     ],
 )
-def test_handle_client_refuses_message_types_outside_the_allowlist(
-    tmp_path, msg_type, monkeypatch
-):
+def test_message_types_outside_the_allowlist_are_refused(guard, msg_type):
     """Only identity listing and (gated) signing may reach the real agent.
+    Everything else mutates agent state the sandbox has no business
+    touching - LOCK in particular would wedge the user's agent."""
+    path, agent, popups = guard
+    popups.answer = b"always"
+    assert exchange(path, bytes([msg_type]) + b"payload") == [FAIL]
+    assert agent.seen == []
+    assert popups.requests == []
 
-    Everything else mutates agent state the sandbox has no business touching -
-    LOCK in particular would wedge the user's agent outside the sandbox.
-    """
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "confirm_via_popup",
-        lambda *a, **k: pytest.fail("non-sign request reached the popup"),
+
+# -- what the popup shows ------------------------------------------------------------
+
+
+def test_popup_names_the_requester_and_the_key(guard, tmp_path):
+    path, _, popups = guard
+    # The comment comes from an identities answer earlier on any connection.
+    exchange(path, bytes([REQUEST_IDENTITIES]))
+    client = tmp_path / "client.py"
+    client.write_text(
+        "import socket, sys\n"
+        "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[2])\n"
+        f"s.sendall({frame(sign_request(data=b'session'))!r}); s.recv(64)\n"
     )
-
-    responses, upstream_seen = _exchange(tmp_path, [bytes([msg_type]) + b"payload"])
-
-    assert responses == [bytes([ssh_agent_guard.SSH_AGENT_FAILURE])]
-    assert upstream_seen == [None]
-
-
-def test_handle_client_samples_peer_once_at_connect(tmp_path, monkeypatch):
-    """/proc is read when the peer connects, not per sign request.
-
-    Sampling it later would let a peer that exited in the meantime have its
-    pid reused by an unrelated host process, whose command line would then be
-    what the popup blames the request on.
-    """
-    sampled = []
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "describe_peer",
-        lambda sock: (sampled.append(sock), ("/work", "git push"))[1],
+    subprocess.run(
+        [sys.executable, client, "marker-arg", path], cwd=tmp_path, check=True
     )
-    prompts = []
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "confirm_via_popup",
-        lambda cwd, cmdline, _comment: (prompts.append((cwd, cmdline)), "once")[1],
+    [text] = popups.texts
+    assert f"  cwd:      {tmp_path}\n" in text
+    assert f"  command:  {sys.executable} {client} marker-arg " in text
+    assert "  comment:  me@laptop\n" in text
+
+
+def test_popup_says_unknown_for_a_key_never_listed(guard):
+    path, _, popups = guard
+    exchange(path, bytes([REQUEST_IDENTITIES]), sign_request(b"other-key", b"session"))
+    assert "  comment:  unknown\n" in popups.texts[0]
+
+
+def test_popup_strips_escapes_and_truncates(guard):
+    path, agent, popups = guard
+    agent.identities = identities_answer([(b"fake-key", b"\x1b[31mred" + b"a" * 300)])
+    exchange(path, bytes([REQUEST_IDENTITIES]), sign_request(data=b"session"))
+    [text] = popups.texts
+    assert "\x1b" not in text
+    comment = text.split("  comment:  ", 1)[1].rstrip("\n")
+    assert comment == "?[31mred" + "a" * 192 + "…"
+
+
+def test_malformed_identities_answer_is_relayed_and_ignored(guard):
+    path, agent, popups = guard
+    # Claims 5 keys but has no key/comment data to back that up.
+    agent.identities = bytes([IDENTITIES_ANSWER]) + struct.pack(">I", 5)
+    assert exchange(path, bytes([REQUEST_IDENTITIES])) == [agent.identities]
+    exchange(path, sign_request(data=b"session"))
+    assert "  comment:  unknown\n" in popups.texts[0]
+
+
+def test_peer_is_sampled_once_at_connect(guard, tmp_path):
+    """The popup describes the process that connected, even when what sends
+    the request is something else by then - otherwise a peer that exited
+    could have its pid reused by an unrelated host process, which the popup
+    would then blame. Here the connecting process execs into another."""
+    path, _, popups = guard
+    sender = tmp_path / "sender.py"
+    sender.write_text(
+        "import socket, sys\n"
+        "s = socket.socket(fileno=int(sys.argv[2]))\n"
+        f"s.sendall({frame(sign_request(data=b'session'))!r}); s.recv(64)\n"
     )
-    signature = bytes([14]) + b"signature-bytes"
-
-    responses, _upstream_seen = _exchange(
-        tmp_path,
-        [_sign_request(), _sign_request()],
-        upstream_replies=[signature, signature],
+    connector = tmp_path / "connector.py"
+    connector.write_text(
+        "import os, socket, sys, time\n"
+        "s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[2])\n"
+        "time.sleep(0.3)\n"
+        "os.set_inheritable(s.fileno(), True)\n"
+        f"os.execv(sys.executable, [sys.executable, {str(sender)!r}, 'after-exec', str(s.fileno())])\n"
     )
-
-    assert responses == [signature, signature]
-    assert len(sampled) == 1
-    assert prompts == [("/work", "git push"), ("/work", "git push")]
-
-
-def test_handle_client_always_stops_asking_for_this_guard(tmp_path, monkeypatch):
-    """Across connections: "always" outlives the one that answered it."""
-    prompted = []
-    monkeypatch.setattr(
-        ssh_agent_guard,
-        "confirm_via_popup",
-        lambda *a, **k: (prompted.append(True), "always")[1],
+    subprocess.run(
+        [sys.executable, connector, "before-exec", path], check=True, timeout=20
     )
-    signature = bytes([14]) + b"signature-bytes"
-
-    for attempt in ("first", "second"):
-        (tmp_path / attempt).mkdir()
-        responses, _upstream_seen = _exchange(
-            tmp_path / attempt, [_sign_request()], upstream_replies=[signature]
-        )
-        assert responses == [signature]
-
-    assert prompted == [True]
+    [text] = popups.texts
+    assert "before-exec" in text
+    assert "after-exec" not in text
 
 
-def test_handle_client_upstream_connect_failure_closes_client(tmp_path):
-    client, guard_side = socket.socketpair()
-    nonexistent_path = str(tmp_path / "nope.sock")
+# -- framing ------------------------------------------------------------------------
 
-    ssh_agent_guard.handle_client(guard_side, nonexistent_path)
 
-    assert client.recv(1) == b""
-    client.close()
+def test_oversized_length_closes_the_connection_unread(guard):
+    path, agent, _ = guard
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(path)
+        sock.settimeout(10)
+        sock.sendall(struct.pack(">I", MAX_MESSAGE_SIZE + 1))
+        assert sock.recv(1) == b""
+    assert agent.seen == []
+
+
+def test_a_message_at_the_size_limit_is_forwarded(guard):
+    path, agent, _ = guard
+    payload = bytes([REQUEST_IDENTITIES]) + b"x" * (MAX_MESSAGE_SIZE - 1)
+    assert exchange(path, payload) == [agent.identities]
+    assert agent.seen == [payload]
+
+
+def test_close_mid_message_forwards_nothing(guard):
+    path, agent, _ = guard
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(path)
+        sock.sendall(struct.pack(">I", 10) + b"abc")
+    time.sleep(0.3)
+    assert agent.seen == []
+
+
+def test_empty_messages_are_skipped(guard):
+    path, agent, _ = guard
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(path)
+        sock.settimeout(10)
+        sock.sendall(frame(b"") + frame(bytes([REQUEST_IDENTITIES])))
+        assert recv_frame(sock) == agent.identities
+
+
+def test_unreachable_agent_closes_the_client(world):
+    start, _, _ = world
+    path = start(upstream=short_dir() / "nope.sock")
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(path)
+        sock.settimeout(10)
+        assert sock.recv(1) == b""
+
+
+def test_an_agent_that_hangs_up_closes_the_client(world):
+    start, _, _ = world
+    d = short_dir()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(d / "a.sock"))
+    server.listen(1)
+
+    def hang_up():
+        conn, _ = server.accept()
+        recv_frame(conn)
+        conn.close()
+
+    threading.Thread(target=hang_up, daemon=True).start()
+    path = start(upstream=d / "a.sock")
+    assert exchange(path, bytes([REQUEST_IDENTITIES])) == [None]
+    server.close()
+
+
+def test_a_stale_socket_is_replaced(world):
+    start, agent, _ = world
+    d = short_dir()
+    (d / "listen.sock").write_text("left over")
+    guard = Guard(
+        "ssh-agent-guard", agent.sock.getsockname(), d / "listen.sock", env=base_env()
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                assert exchange(str(d / "listen.sock"), bytes([REQUEST_IDENTITIES]))
+                break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            pytest.fail("never listened")
+    finally:
+        guard.stop()
+    assert os.path.exists(d / "listen.sock")
