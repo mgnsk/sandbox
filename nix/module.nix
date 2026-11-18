@@ -191,6 +191,26 @@ let
       nixpkgs = "${pkgs.path}";
       system = pkgs.stdenv.hostPlatform.system;
     };
+    # The user's ~/.config/sandbox/config.nix, built on the host by user.nix
+    # against this nixpkgs; only the flake's default package reads it.
+    userConfig =
+      if cfg.userConfig.enable then
+        {
+          # With src/, which packages.nix builds from.
+          eval = "${
+            lib.fileset.toSource {
+              root = ../.;
+              fileset = lib.fileset.unions [
+                ./.
+                ../src
+              ];
+            }
+          }/nix/user.nix";
+          nixpkgs = "${pkgs.path}";
+          system = pkgs.stdenv.hostPlatform.system;
+        }
+      else
+        null;
     init = {
       script = "${sandboxPkgs.src}/sandbox-init";
       nixProfile = cfg.nixProfile.enable;
@@ -442,6 +462,16 @@ in
       type = types.package;
       readOnly = true;
       internal = true;
+    };
+
+    userConfig.enable = mkOption {
+      type = types.bool;
+      default = false;
+      internal = true;
+      description = ''
+        Run with ~/.config/sandbox/config.nix when it exists, in place of
+        this configuration. On for the flake's default package only.
+      '';
     };
   };
 

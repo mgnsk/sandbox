@@ -361,6 +361,146 @@ def test_project_manifest_is_cached(tmp_path, monkeypatch):
     assert calls[-1][1:] == (str(project / "sandbox.nix"), f"{STORE}-claude")
 
 
+# -- unit: ~/.config/sandbox/config.nix ---------------------------------------
+
+
+def _user(tmp_path, monkeypatch, result=None):
+    """A home with a config.nix, a sandbox that takes one, and a fake build."""
+    home = tmp_path / "home"
+    (home / ".config/sandbox").mkdir(parents=True)
+    (home / ".config/sandbox/config.nix").write_text("{ ... }: { }\n")
+    (home / "p").mkdir()
+    baked = tmp_path / "baked.json"
+    config = {"userConfig": {"eval": "user.nix", "nixpkgs": "np", "system": "s"}}
+    baked.write_text(json.dumps(config))
+    out = tmp_path / "built.json"
+    out.write_text(json.dumps(result or {"userConfig": None, "stateDir": "x"}))
+    monkeypatch.setattr(sandbox, "is_store_path", lambda v: v == str(out))
+    calls = []
+
+    def build(user_config, file, link):
+        calls.append((user_config, file, link))
+        return str(out)
+
+    def load(reload=False, environ=None, config=config, project=home / "p"):
+        return sandbox.user_config(
+            config, str(baked), environ or {}, str(home), str(project), reload, build
+        )
+
+    return home, out, calls, load
+
+
+def test_user_config_is_built_and_cached(tmp_path, monkeypatch):
+    home, out, calls, load = _user(tmp_path, monkeypatch)
+    assert load() == (str(out), {"userConfig": None, "stateDir": "x"})
+    assert load()[0] == str(out)
+    assert len(calls) == 1
+    assert calls[0][1:] == (
+        str(home / ".config/sandbox/config.nix"),
+        str(home / ".local/state/sandbox/config"),
+    )
+    # A changed or new file in the dir, or --reload, builds it again.
+    (home / ".config/sandbox/config.nix").write_text("{ ... }: { env.A = 1; }\n")
+    load()
+    (home / ".config/sandbox/sub").mkdir()
+    (home / ".config/sandbox/sub/more.nix").write_text("{ }\n")
+    load()
+    load()
+    load(reload=True)
+    assert len(calls) == 4
+
+
+def test_user_config_is_rebuilt_for_another_sandbox(tmp_path, monkeypatch):
+    """An upgrade changes the baked config, and with it nixpkgs."""
+    _, _, calls, load = _user(tmp_path, monkeypatch)
+    load()
+    (tmp_path / "baked2.json").write_text("{}")
+    sandbox.user_config(
+        {"userConfig": {"eval": "user.nix"}},
+        str(tmp_path / "baked2.json"),
+        {},
+        str(tmp_path / "home"),
+        str(tmp_path / "home/p"),
+        False,
+        lambda *a: calls.append(a) or str(tmp_path / "built.json"),
+    )
+    assert len(calls) == 2
+
+
+def test_no_user_config(tmp_path, monkeypatch):
+    home, _, calls, load = _user(tmp_path, monkeypatch)
+    # A sandbox with a config of its own (mkSandbox, home-manager).
+    assert load(config={"userConfig": None})[1] == {"userConfig": None}
+    # No config.nix.
+    (home / ".config/sandbox/config.nix").unlink()
+    assert load()[0] == str(tmp_path / "baked.json")
+    assert not calls
+
+
+def test_user_config_follows_xdg_config_home(tmp_path, monkeypatch):
+    _, _, calls, load = _user(tmp_path, monkeypatch)
+    (tmp_path / "xdg/sandbox").mkdir(parents=True)
+    (tmp_path / "xdg/sandbox/config.nix").write_text("{ }\n")
+    load(environ={"XDG_CONFIG_HOME": str(tmp_path / "xdg")})
+    assert calls[0][1] == str(tmp_path / "xdg/sandbox/config.nix")
+
+
+def test_user_config_in_the_project_is_refused(tmp_path, monkeypatch):
+    """A dotfiles repo opened as a project: the sandbox could write what the
+    host then builds and runs."""
+    home, _, calls, load = _user(tmp_path, monkeypatch)
+    dotfiles = home / "dotfiles/sandbox"
+    dotfiles.mkdir(parents=True)
+    (dotfiles / "config.nix").write_text("{ }\n")
+    (home / ".config/sandbox/config.nix").unlink()
+    (home / ".config/sandbox/config.nix").symlink_to(dotfiles / "config.nix")
+    with pytest.raises(sandbox.SandboxError, match="in this project"):
+        load(project=home / "dotfiles")
+    # The whole dir linked in too.
+    (home / ".config/sandbox/config.nix").unlink()
+    (home / ".config/sandbox").rmdir()
+    (home / ".config/sandbox").symlink_to(dotfiles)
+    with pytest.raises(sandbox.SandboxError, match="in this project"):
+        load(project=home / "dotfiles")
+    assert not calls
+    # From another project it's fine.
+    load()
+    assert len(calls) == 1
+
+
+def test_user_config_result_must_not_take_one_itself(tmp_path, monkeypatch):
+    _, _, _, load = _user(tmp_path, monkeypatch, result={"userConfig": {"eval": "x"}})
+    with pytest.raises(sandbox.SandboxError, match="bad"):
+        load()
+
+
+def test_main_runs_with_the_user_config(tmp_path, monkeypatch):
+    """Its stateDir, among the rest, is the one used."""
+    home = tmp_path / "home"
+    (home / ".config/sandbox").mkdir(parents=True)
+    (home / ".config/sandbox/config.nix").write_text("{ }\n")
+    (home / "api").mkdir()
+    built = _api_key_config(tmp_path, home / "api")
+    data = json.loads(built.read_text())
+    data["stateDir"] = str(tmp_path / "user-state")
+    data["userConfig"] = None
+    built.write_text(json.dumps(data))
+    baked = tmp_path / "baked.json"
+    baked.write_text(
+        json.dumps({"userConfig": {"eval": "e", "nixpkgs": "n", "system": "s"}})
+    )
+    monkeypatch.setattr(sandbox, "is_store_path", lambda v: v == str(built))
+    monkeypatch.setattr(sandbox, "build_user_config", lambda *a: str(built))
+    monkeypatch.setattr(sandbox, "open_tty", lambda: _Tty(KEY + "\n"))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.delenv("SANDBOX_STATE_DIR", raising=False)
+    monkeypatch.chdir(home / "api")
+    assert sandbox.main(["sandbox", str(baked), "--claude-api-key"]) == 0
+    assert list((tmp_path / "user-state").glob("*/claude-api-key"))
+
+
 def test_project_file_must_not_be_a_symlink(tmp_path):
     """The launcher reads it on the host; a link would let the sandbox pick
     which host file."""

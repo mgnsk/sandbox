@@ -24,18 +24,7 @@
       # A `sandbox` package from configuration modules (see nix/module.nix
       # for the options), e.g.
       #   sandbox.lib.mkSandbox { inherit pkgs; modules = [ { guards.forgejo.enable = true; } ]; }
-      evalSandbox =
-        {
-          pkgs,
-          modules ? [ ],
-        }:
-        (lib.evalModules {
-          modules = [
-            ./nix/module.nix
-            { _module.args.pkgs = pkgs; }
-          ]
-          ++ modules;
-        }).config;
+      evalSandbox = import ./nix/eval.nix { inherit lib; };
       mkSandbox = args: (evalSandbox args).package;
     in
     {
@@ -45,13 +34,18 @@
       homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
 
       packages = forAllSystems (pkgs: {
-        default = mkSandbox { inherit pkgs; };
+        # Without a config of your own: ~/.config/sandbox/config.nix, if any.
+        default = mkSandbox {
+          inherit pkgs;
+          modules = [ { userConfig.enable = true; } ];
+        };
         inherit (pkgs.callPackage ./nix/packages.nix { }) gh forgejo-cli;
       });
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
         project = pkgs.callPackage ./nix/project-check.nix { };
+        user = pkgs.callPackage ./nix/user-check.nix { };
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       });
 

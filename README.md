@@ -61,8 +61,14 @@ nix profile add github:mgnsk/sandbox
 
 `sandbox` is one command for every project; a project brings its own tools
 through its dev shell (a flake or devenv, below). For gh, set up
-[authentication](#authentication) first. For home-manager and custom builds,
-see [Configuring the sandbox](#configuring-the-sandbox).
+[authentication](#authentication) first. Your own settings go in
+`~/.config/sandbox/config.nix`, see [Configuring the sandbox](#configuring-the-sandbox).
+
+To update, including the packages inside (Claude Code, gh, ...):
+
+```sh
+nix profile upgrade sandbox
+```
 
 ## Using it in a project
 
@@ -485,11 +491,46 @@ What to know:
 
 ## Configuring the sandbox
 
-Your sandbox config is a list of modules: `modules` passed to
-`sandbox.lib.mkSandbox` in your own flake, or `programs.sandbox.settings`
-with home-manager. Keep it in your system or user config, never in a
-sandboxed project. Its top level applies to every project; `profiles` narrow
-some settings to projects under given paths (see [Profiles](#profiles)).
+Your sandbox config is a list of modules with the options in
+[Configuration](#configuration). Its top level applies to every project;
+`profiles` narrow some settings to projects under given paths (see
+[Profiles](#profiles)). Keep it in your user config, never in a sandboxed
+project.
+
+With `nix profile add github:mgnsk/sandbox`, it's `~/.config/sandbox/config.nix`
+(`$XDG_CONFIG_HOME/sandbox`), a module that gets `pkgs`:
+
+```nix
+{ pkgs, ... }:
+{
+  packages = [ pkgs.neovim pkgs.direnv pkgs.nix-direnv ];
+  env.EDITOR = "nvim";
+  hostPorts = [ "5432" ];               # a host Postgres, always
+  guards.forgejo.enable = true;
+  profiles.work = {
+    paths = [ "~/work" ];
+    guards.claudeApiKey.enable = true;
+  };
+  # pkgs is the sandbox's own nixpkgs; claude-code is allowed either way.
+  # nixpkgs.config.allowUnfree = true;
+}
+```
+
+`sandbox` builds it on the host with `nix-build` the first time and whenever
+a file in `~/.config/sandbox` changes, or after `nix profile upgrade` - the
+packages come from the sandbox's nixpkgs, so upgrading updates them too. It
+can `imports` other files; ones outside `~/.config/sandbox` aren't watched,
+so run `sandbox --reload` after changing them. The build is kept as a GC
+root in `~/.local/state/sandbox`. `sandbox` refuses a config that is (or
+links into) the project it starts in: a sandbox can write its project, and
+the config is built and run on the host. The same goes for a dotfiles repo
+the config lives in - don't work on it in a sandbox while sandboxes run
+elsewhere.
+
+### Your own build: mkSandbox
+
+To pin your own nixpkgs, build the sandbox in your own flake. Its config
+then replaces `config.nix`, which it doesn't read:
 
 ```nix
 {
@@ -507,16 +548,7 @@ some settings to projects under given paths (see [Profiles](#profiles)).
     in {
       packages.x86_64-linux.default = sandbox.lib.mkSandbox {
         inherit pkgs;
-        modules = [{
-          packages = [ pkgs.neovim pkgs.direnv pkgs.nix-direnv ];
-          env.EDITOR = "nvim";
-          hostPorts = [ "5432" ];               # a host Postgres, always
-          guards.forgejo.enable = true;
-          profiles.work = {
-            paths = [ "~/work" ];
-            guards.claudeApiKey.enable = true;
-          };
-        }];
+        modules = [ ./config.nix ];       # the same module as above
       };
     };
 }
@@ -526,7 +558,12 @@ some settings to projects under given paths (see [Profiles](#profiles)).
 nix profile add ~/my-sandbox-config      # in place of github:mgnsk/sandbox
 ```
 
-With home-manager:
+Updating is then `nix flake update` in that flake, then `nix profile upgrade`.
+
+### With home-manager
+
+`programs.sandbox.settings` takes the same module, with your home-manager
+`pkgs`; `config.nix` isn't read:
 
 ```nix
 modules = [
@@ -591,10 +628,11 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `claude.lspServers.<name>` | `{ }` | `{ package; command; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. |
 | `claude.marketplaces.<name>` | `{ }` | Plugin marketplace directories (store paths); enable their plugins in `claude.settings.enabledPlugins`. |
 | `profiles.<name>` | | Per-project additions, see below. |
+| `nixpkgs.config` | `{ }` | `config.nix` only: nixpkgs config for its `pkgs`, e.g. `allowUnfree = true`. |
 
 ### Plugins and language servers
 
-Plugins come from marketplaces in the store, pinned by your flake.lock like
+Plugins come from marketplaces in the store, pinned like
 everything else, not from git checkouts that update themselves in each
 project's `$HOME`:
 
