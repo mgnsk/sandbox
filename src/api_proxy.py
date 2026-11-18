@@ -83,6 +83,38 @@ def clean(s):
     )
 
 
+# What `sandbox --gh-token` / `--fj-token` accept: no whitespace or control
+# characters, so a token can't smuggle a header into a request.
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_.~+/=-]{8,1024}$")
+
+
+def read_token(path):
+    """The project token in the file at path (written by the launcher, out of
+    the sandbox's reach), or None if it's missing or malformed. Read per
+    request, so setting one reaches running sandboxes."""
+    try:
+        token = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return token if TOKEN_RE.match(token) else None
+
+
+def read_tokens(path):
+    """{host: token} from the JSON file at path, keeping only well-formed
+    entries; empty if it's missing or unreadable."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        host.lower(): token
+        for host, token in data.items()
+        if isinstance(host, str) and isinstance(token, str) and TOKEN_RE.match(token)
+    }
+
+
 def peer_pid(sock):
     """PID of the process on the other end of a connected AF_UNIX socket."""
     creds = sock.getsockopt(

@@ -96,7 +96,9 @@ against a sandbox-writable repo.
 The sandbox's `gh` is upstream gh in a wrapper (`nix/packages.nix`) that sets
 `HTTPS_PROXY` to `src/gh-api-proxy` and `SSL_CERT_FILE` to a bundle with that
 proxy's CA, with `GH_TOKEN` set to a fixed placeholder. The proxy runs on the
-host and holds the host's real token. It listens on a free port of the host's
+host and holds the real token: the project's, if `sandbox --gh-token` set one
+(`github-token` in the volume dir, mode 0600, re-read every request), else the
+host gh's, read at start. It listens on a free port of the host's
 loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
 carrying a random per-launch secret (in the proxy URL inside, sent as Basic
 `Proxy-Authorization`), since anything on the host's loopback can reach the
@@ -135,10 +137,11 @@ CA, port and secret of its own) as its `HTTPS_PROXY`; the sandbox has no
 Forgejo token at all. The proxy intercepts every host, tunnels none, and per
 request:
 
-- forwards only to instances the host's `fj` is logged in to, over HTTPS,
-  dropping the client's `Authorization` and adding that instance's token from
-  the host's `keys.json` - re-read every request, so a login on the host
-  reaches running sandboxes;
+- forwards only to instances there's a token for, over HTTPS, dropping the
+  client's `Authorization` and adding that instance's token: the project's
+  (`sandbox --fj-token HOST`, in `forgejo-tokens.json` in the volume dir, mode
+  0600) if it has one, else the one from the host fj's `keys.json` - both
+  re-read every request, so a new token reaches running sandboxes;
 - forwards `GET`/`HEAD`, and holds everything else for a popup.
 
 ## Claude Code: a login inside, or an API key outside

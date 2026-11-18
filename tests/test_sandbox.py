@@ -250,15 +250,26 @@ def _manifest(**kw):
 
 
 def test_options_before_the_command():
+    none = {"claudeApiKey": False, "ghToken": False, "fjToken": None}
     assert sandbox.parse_options(["--reload", "ls", "--reload"]) == (
-        {"reload": True, "projectConfig": True, "claudeApiKey": False},
+        {"reload": True, "projectConfig": True, **none},
         ["ls", "--reload"],
     )
     assert sandbox.parse_options(["--no-project-config", "--", "--weird"]) == (
-        {"reload": False, "projectConfig": False, "claudeApiKey": False},
+        {"reload": False, "projectConfig": False, **none},
         ["--weird"],
     )
     assert sandbox.parse_options(["--claude-api-key"])[0]["claudeApiKey"] is True
+    assert sandbox.parse_options(["--gh-token"])[0]["ghToken"] is True
+    assert sandbox.parse_options(["--fj-token", "https://Code.example/x/"]) == (
+        {"reload": False, "projectConfig": True, **none, "fjToken": "code.example"},
+        [],
+    )
+    for bad in (["--fj-token"], ["--fj-token", "--reload"]):
+        with pytest.raises(sandbox.SandboxError, match="needs the Forgejo host"):
+            sandbox.parse_options(bad)
+    with pytest.raises(sandbox.SandboxError, match="not a Forgejo host"):
+        sandbox.parse_options(["--fj-token", "a b"])
     with pytest.raises(sandbox.SandboxError, match="unknown option"):
         sandbox.parse_options(["--nope"])
 
@@ -445,6 +456,44 @@ def test_claude_api_key_is_asked_once_and_kept_out_of_the_home(tmp_path):
         raise AssertionError("asked again")
 
     assert sandbox.claude_api_key(str(tmp_path), False, no_tty) == key_file
+
+
+TOKEN = "github_pat_" + "t" * 40
+
+
+def test_github_token_is_kept_out_of_the_home(tmp_path):
+    tty = _Tty(TOKEN + "\n")
+    sandbox.set_github_token(str(tmp_path), lambda: tty)
+
+    token_file = tmp_path / "github-token"
+    assert token_file.read_text() == TOKEN + "\n"
+    assert stat.S_IMODE(os.stat(token_file).st_mode) == 0o600
+    assert TOKEN not in tty.written
+
+    sandbox.set_github_token(str(tmp_path), lambda: _Tty("\n"))  # Kept.
+    sandbox.set_github_token(str(tmp_path), lambda: _Tty("has space\n"))  # Refused.
+    assert token_file.read_text() == TOKEN + "\n"
+
+
+def test_token_needs_a_terminal(tmp_path):
+    def no_tty():
+        raise OSError("no tty")
+
+    with pytest.raises(sandbox.SandboxError, match="needs a terminal"):
+        sandbox.set_github_token(str(tmp_path), no_tty)
+
+
+def test_forgejo_tokens_are_kept_per_host(tmp_path):
+    sandbox.set_forgejo_token(str(tmp_path), "a.example", lambda: _Tty("aaaaaaaa\n"))
+    sandbox.set_forgejo_token(str(tmp_path), "b.example", lambda: _Tty("bbbbbbbb\n"))
+    sandbox.set_forgejo_token(str(tmp_path), "a.example", lambda: _Tty("cccccccc\n"))
+
+    tokens_file = tmp_path / "forgejo-tokens.json"
+    assert json.loads(tokens_file.read_text()) == {
+        "a.example": "cccccccc",
+        "b.example": "bbbbbbbb",
+    }
+    assert stat.S_IMODE(os.stat(tokens_file).st_mode) == 0o600
 
 
 def test_claude_api_key_can_be_replaced_or_kept(tmp_path):
@@ -729,7 +778,9 @@ def test_https_proxy_guard_gives_its_url_port_and_ca(tmp_path):
         {"hostPath": "/x", "python": sys.executable, "src": str(BIN_DIR)}
     )
     try:
-        url = sandbox.https_proxy(guards, "forgejo-api-proxy")
+        url = sandbox.https_proxy(
+            guards, "forgejo-api-proxy", str(tmp_path / "forgejo-tokens.json")
+        )
         match = re.fullmatch(r"http://sandbox:([^@:]+)@127\.0\.0\.1:([0-9]+)", url)
         assert match, url
         assert guards.tcp_ports == [match[2]]

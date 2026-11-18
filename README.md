@@ -25,7 +25,7 @@ What you get, per project:
 - **Guarded host access**, each request (or "always, for this sandbox") behind
   a popup on the terminal the sandbox runs in:
   - your ssh agent (commit signing passes without a popup);
-  - GitHub through `gh`, with the host's token kept outside;
+  - GitHub through `gh`, with the token (the host's or the project's) kept outside;
   - Forgejo through `fj` (opt-in);
   - the Claude API on a per-project API key (opt-in);
   - opening http(s) URLs in the host's browser.
@@ -95,20 +95,37 @@ home or with other projects.
 
 ### Authentication
 
-**gh and fj** are logged in on the host, once, outside any sandbox:
+**gh and fj** talk to their APIs through host proxies that add a token to
+each request (writes behind a popup); the token itself never enters the
+sandbox. It comes from either place, the project's own winning:
 
-```sh
-gh auth login    # on the host
-fj auth login    # on the host, only with guards.forgejo.enable
-```
+- **Per project**, no gh or fj needed on the host. Run in the project, on the
+  host:
 
-Inside, `gh` and `fj` talk to their APIs through host proxies that add the
-host's token to each request (writes behind a popup); the token itself never
-enters the sandbox. Don't run `gh auth login` or `fj auth login` inside: there
-is nothing to log in to there, and a token stored inside would bypass the
-proxy and its popups. The gh proxy reads the host's token when the sandbox
-starts, so after logging in again on the host (or switching accounts) restart
-the sandbox; fj's proxy reads it per request.
+  ```sh
+  sandbox --gh-token                 # asks for a GitHub token
+  sandbox --fj-token codeberg.org    # asks for a token for that Forgejo instance
+  ```
+
+  The token is read on the terminal (hidden input) and kept in the project's
+  volume dir, outside the sandbox; running sandboxes pick it up. For GitHub,
+  use a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
+  limited to the project's repositories. Run it again to replace the token.
+
+- **The host's login**, shared by every project without a token of its own:
+
+  ```sh
+  gh auth login    # on the host
+  fj auth login    # on the host, only with guards.forgejo.enable
+  ```
+
+  The gh proxy reads the host's token when the sandbox starts, so after
+  logging in again on the host (or switching accounts) restart the sandbox;
+  fj's proxy reads it per request.
+
+Don't run `gh auth login` or `fj auth login` inside: a token stored inside
+would bypass the proxy and its popups. A request without any token is refused
+with a message saying which command to run.
 
 **Claude Code** is logged in per project, inside the sandbox, since its
 credentials live in the project's `~/.claude`. Code running in that sandbox
@@ -465,8 +482,8 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl | For prebuilt binaries. |
 | `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). See [1Password's SSH agent](#1passwords-ssh-agent). |
-| `guards.github.enable` | on | Needs `gh auth login` on the host. |
-| `guards.forgejo.enable` | off | Needs `fj auth login` on the host. |
+| `guards.github.enable` | on | Needs `sandbox --gh-token` per project, or `gh auth login` on the host. |
+| `guards.forgejo.enable` | off | Needs `sandbox --fj-token HOST` per project, or `fj auth login` on the host. |
 | `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | |
 | `guards.secretService.enable` | on | |

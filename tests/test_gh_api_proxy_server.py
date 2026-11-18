@@ -149,6 +149,33 @@ def test_read_is_forwarded_with_the_real_token(make_proxy):
     assert confirm.prompts == []
 
 
+def test_without_a_token_the_api_is_refused_with_how_to_get_one(upstream):
+    token = [None]  # Read per request: a token set later applies at once.
+    server = serve(proxy.ProxyServer(lambda: token[0], **to(upstream)))
+    try:
+        status, _, body = request(server, "GET", "api.github.com", "/user")
+        assert status == 403
+        assert "sandbox --gh-token" in json.loads(body)["message"]
+        assert FakeUpstream.seen == []
+
+        token[0] = "project-token"
+        assert request(server, "GET", "api.github.com", "/user")[0] == 200
+        auth = FakeUpstream.seen[0]["headers"]["Authorization"]
+        assert auth == "token project-token"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_project_token_file_is_read_per_request(tmp_path):
+    token_file = tmp_path / "github-token"
+    assert proxy.api_proxy.read_token(token_file) is None
+    token_file.write_text("github_pat_abcdefgh\n")
+    assert proxy.api_proxy.read_token(token_file) == "github_pat_abcdefgh"
+    token_file.write_text("bad token\r\nX-Injected: 1\n")
+    assert proxy.api_proxy.read_token(token_file) is None
+
+
 def test_download_host_is_tunneled_unread(make_proxy):
     """Plain HTTP here, as the tunnel never looks: the client's own
     Authorization arrives, and no token is added."""
