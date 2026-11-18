@@ -68,6 +68,9 @@ The address list is a snapshot: an address the host gains after the sandbox
 started stays reachable until the next start. Other machines on the LAN or
 tailnet are not restricted.
 
+The GitHub and Forgejo guards' proxies are mapped the same way, on ports
+picked at start; they take only requests carrying their per-launch secret.
+
 A listed port hands the sandbox whatever that service allows to any local
 client - an adb server gives a shell on every attached device - so list it
 only for the sandbox that needs it.
@@ -90,32 +93,47 @@ sandbox has.
 else a repo's `.git/` names run sandboxed. Nothing on the host runs git
 against a sandbox-writable repo.
 
-The sandbox's `gh` is patched (`nix/patches/gh-unix-socket.patch`) to send its API
-requests as plain HTTP over `GH_HTTP_UNIX_SOCKET`, with `GH_TOKEN` set to a
-fixed placeholder. On the other end, `src/gh-api-proxy` runs on the host,
-holds the host's real token, and per request:
+The sandbox's `gh` is upstream gh in a wrapper (`nix/packages.nix`) that sets
+`HTTPS_PROXY` to `src/gh-api-proxy` and `SSL_CERT_FILE` to a bundle with that
+proxy's CA, with `GH_TOKEN` set to a fixed placeholder. The proxy runs on the
+host and holds the host's real token. It listens on a free port of the host's
+loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
+carrying a random per-launch secret (in the proxy URL inside, sent as Basic
+`Proxy-Authorization`), since anything on the host's loopback can reach the
+port.
 
-- drops the client's `Authorization` and adds the real token for the two
-  API hosts (`TOKEN_HOSTS`) only;
+For the two API hosts (`TOKEN_HOSTS`), it answers the TLS handshake itself,
+with a certificate from a CA it generated at startup. The CA's key exists only
+in the proxy's memory and dies with it; its certificate is trusted only by the
+wrapped gh and fj (`SANDBOX_CA_FILE`), never sandbox-wide. Inside the tunnel,
+per request, it:
+
+- requires `Host` to be the `CONNECT` target;
+- drops the client's `Authorization` and adds the real token;
 - forwards REST `GET`/`HEAD` and GraphQL documents containing only queries;
 - holds everything else - REST writes, GraphQL mutations and subscriptions,
   anything it can't parse - for a popup (see "Popup answers");
-- refuses hosts outside a short allowlist (the API hosts plus the download
-  hosts gh gets redirected to), chunked request bodies, and requests with
-  more than one `Host` or `Content-Length`.
+- refuses chunked request bodies, and requests with more than one `Host` or
+  `Content-Length`.
 
-The gate is the proxy, not `gh`: anything in the sandbox can talk to the
-socket, and gets the same treatment. Reads are unprompted and cover whatever
+The download hosts gh gets redirected to, and `github.com` (for git under gh,
+which inherits `HTTPS_PROXY`), are tunneled unread, without a token: the
+sandbox can reach them directly anyway. Every other host is intercepted and
+refused, so the proxy can't be used to reach the host's own services.
+
+The gate is the proxy, not `gh`: anything in the sandbox can read the proxy
+URL from the environment and talk to it, and gets the same treatment. The
+popup can't name the requesting process, since the proxy's peer is pasta. Reads are unprompted and cover whatever
 the token can read. Pushes go over ssh through ssh-agent-guard (HTTPS git
 only has the placeholder).
 
 ## Forgejo: fj runs inside, the token stays outside
 
-The same arrangement for `fj` (forgejo-cli). Its `forgejo-api` crate is
-patched (`nix/patches/forgejo-api-unix-socket.patch`) to send requests as plain HTTP
-over `FJ_HTTP_UNIX_SOCKET`; the sandbox has no Forgejo token at all. On the
-other end, `src/forgejo-api-proxy` (sharing `src/api_proxy.py` with
-gh-api-proxy) runs on the host and per request:
+The same arrangement for `fj` (forgejo-cli): upstream fj, wrapped to use
+`src/forgejo-api-proxy` (sharing `src/api_proxy.py` with gh-api-proxy, with a
+CA, port and secret of its own) as its `HTTPS_PROXY`; the sandbox has no
+Forgejo token at all. The proxy intercepts every host, tunnels none, and per
+request:
 
 - forwards only to instances the host's `fj` is logged in to, over HTTPS,
   dropping the client's `Authorization` and adding that instance's token from

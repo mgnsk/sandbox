@@ -125,19 +125,24 @@ def test_graphql_description_lists_operations_and_variables():
 # -- hosts ---------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("host", ["api.github.com", "uploads.github.com"])
+def test_token_hosts_are_intercepted_not_tunneled(host):
+    assert proxy.host_allowed(host)
+    assert not proxy.tunnel_allowed(host)
+
+
 @pytest.mark.parametrize(
     "host",
     [
-        "api.github.com",
-        "uploads.github.com",
         "github.com",
         "codeload.github.com",
         "objects.githubusercontent.com",
         "productionresultssa0.blob.core.windows.net",
     ],
 )
-def test_allowed_hosts(host):
-    assert proxy.host_allowed(host)
+def test_download_hosts_are_tunneled_not_intercepted(host):
+    assert proxy.tunnel_allowed(host)
+    assert not proxy.host_allowed(host)
 
 
 @pytest.mark.parametrize(
@@ -149,11 +154,13 @@ def test_allowed_hosts(host):
         "api.github.com.",
         "API.GITHUB.COM",
         "api.github.com:8443",
+        "github.com:22",
         "api.github.com\r\nx",
     ],
 )
 def test_other_hosts_are_refused(host):
     assert not proxy.host_allowed(host)
+    assert not proxy.tunnel_allowed(host)
 
 
 def test_only_api_hosts_get_the_token():

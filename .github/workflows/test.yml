@@ -17,8 +17,8 @@ concurrency:
 
 jobs:
   # One job, so everything is built once into the same store; the store is
-  # cached across runs, so the patched gh and fj (not in cache.nixos.org)
-  # only rebuild when the nix files or the lock change.
+  # cached across runs, so only what changed with the nix files or the lock
+  # is fetched or built again.
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -26,7 +26,7 @@ jobs:
       - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', '**/*.nix', 'nix/patches/**', '.github/workflows/test.yml') }}
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', '**/*.nix', '.github/workflows/test.yml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
           gc-max-store-size-linux: 3G
           purge: true
@@ -37,8 +37,7 @@ jobs:
 
       # GC roots for what the cache should keep: cache-nix-action collects
       # garbage down to gc-max-store-size before saving, which otherwise
-      # deletes the patched gh and fj (the slow builds) along with their
-      # toolchains.
+      # deletes what the tests use.
       - name: Root cached outputs
         run: |
           mkdir -p "$RUNNER_TEMP/gcroots"

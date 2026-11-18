@@ -1,6 +1,9 @@
-"""End-to-end: the patched gh, through bin/gh-api-proxy, to a fake upstream.
+"""End-to-end: the sandbox's gh (upstream gh in nix/packages.nix's wrapper),
+through src/gh-api-proxy, to a fake upstream.
 
-GH_BIN points the tests at another gh build than the one on PATH.
+The wrapper has to win over a proxy and CA bundle already in the
+environment, so the tests set decoys for both. GH_BIN points the tests at
+another gh than the one on PATH - it has to be the wrapper.
 """
 
 import http.client
@@ -12,7 +15,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from conftest import load_module
+from conftest import load_module, serve
 
 proxy = load_module("gh-api-proxy")
 
@@ -100,19 +103,25 @@ def gh(tmp_path_factory, github):
     port = github.server_address[1]
 
     def run(*args, answer=None):
-        sock = str(tmp_path_factory.mktemp("p") / "s")
         confirm = Confirm(answer)
-        server = proxy.ProxyServer(
-            sock,
-            REAL_TOKEN,
-            upstream=lambda host: http.client.HTTPConnection(
-                "127.0.0.1", port, timeout=10
-            ),
-            confirm=confirm,
+        server = serve(
+            proxy.ProxyServer(
+                REAL_TOKEN,
+                upstream=lambda host: http.client.HTTPConnection(
+                    "127.0.0.1", port, timeout=10
+                ),
+                confirm=confirm,
+            )
         )
         servers.append(server)
-        threading.Thread(target=server.serve_forever, args=(0.02,), daemon=True).start()
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GH_")}
+        ca_file = tmp_path_factory.mktemp("ca") / "bundle.pem"
+        ca_file.write_bytes(server.ca.pem())
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("GH_", "SANDBOX_"))
+            and not k.lower().endswith("_proxy")
+        }
         result = subprocess.run(
             [GH, *args],
             cwd=home,
@@ -123,7 +132,12 @@ def gh(tmp_path_factory, github):
                 "XDG_CACHE_HOME": str(home / "cache"),
                 "XDG_STATE_HOME": str(home / "state"),
                 "GH_TOKEN": "placeholder",
-                "GH_HTTP_UNIX_SOCKET": sock,
+                "SANDBOX_GH_PROXY": server.proxy_url,
+                "SANDBOX_CA_FILE": str(ca_file),
+                # Decoys the wrapper has to override.
+                "HTTPS_PROXY": "http://127.0.0.1:1",
+                "https_proxy": "http://127.0.0.1:1",
+                "NO_PROXY": "*",
                 "GH_NO_UPDATE_NOTIFIER": "1",
                 "GH_TELEMETRY": "false",
             },

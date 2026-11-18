@@ -9,6 +9,7 @@
 let
   p = callPackage ./packages.nix { };
   python = python3.withPackages (ps: [
+    ps.cryptography
     ps.dbus-fast
     ps.graphql-core
     ps.pytest
@@ -27,7 +28,8 @@ runCommand "sandbox-tests"
     cp -r ${../tests} tests
     chmod -R u+w .
     export HOME=$TMPDIR/home
-    # fj loads the system's CA certificates even for a unix socket.
+    # rustls-platform-verifier wants a system bundle even when a test
+    # replaces it.
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
     mkdir -p $HOME
     python -m pytest -q -p no:cacheprovider tests

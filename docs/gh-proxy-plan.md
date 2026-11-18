@@ -1,6 +1,8 @@
 # Plan: run gh and git inside the sandbox, gate GitHub API requests on the host
 
-Status: done. gh-guard and gh-client are removed; sandbox-security.md describes the result. Kept as the design record.
+Status: done, and since superseded: gh and fj are no longer patched, but
+upstream builds wrapped to use the guards as intercepting `HTTPS_PROXY`s,
+with a per-sandbox CA (see SECURITY.md). gh-guard and gh-client are removed; sandbox-security.md describes the result. Kept as the design record.
 
 ## Why
 

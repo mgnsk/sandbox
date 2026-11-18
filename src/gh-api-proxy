@@ -1,24 +1,25 @@
 #!/bin/env python3
 """GitHub API proxy for the sandbox.
 
-Runs outside the sandbox, listening on a private socket that the sandbox launcher
-binds in. The sandbox's gh (patched to honour GH_HTTP_UNIX_SOCKET, see
-nix/patches/gh-unix-socket.patch) sends every API request here as plain HTTP, with
-only a placeholder token. This proxy holds the real token, which never enters
-the sandbox, and decides per request (the mechanics are api_proxy.py's):
+Runs outside the sandbox as an intercepting HTTPS_PROXY on the host's
+loopback, which the launcher maps into the sandbox. The sandbox's gh (upstream
+gh, wrapped to set HTTPS_PROXY and trust this proxy's CA) sends every API
+request through it, with only a placeholder token. This proxy holds the real
+token, which never enters the sandbox, and decides per request (the mechanics
+are api_proxy.py's):
 
   - REST GET/HEAD, and GraphQL documents containing only queries, are
     forwarded as-is;
   - everything else - REST writes, GraphQL mutations/subscriptions, and
     anything it can't parse - waits for the user's approval in a popup.
 
-The client's Authorization header is always dropped; the real token is added
-only for TOKEN_HOSTS. gh and git themselves run inside the sandbox, so nothing
+Only TOKEN_HOSTS are intercepted; the client's Authorization header is always
+dropped and the real token added. The download hosts gh is redirected to, and
+the web host for git under gh, are tunneled unread. gh and git themselves run inside the sandbox, so nothing
 here ever executes them against the sandbox's files.
 """
 
 import json
-import os
 import re
 import signal
 import subprocess
@@ -33,12 +34,14 @@ from api_proxy import clean  # noqa: F401 - also this module's API, for tests
 
 API_HOST = "api.github.com"
 
-# Hosts that get the real token.
+# Hosts that get the real token: intercepted, each request read.
 TOKEN_HOSTS = frozenset({API_HOST, "uploads.github.com"})
 
 # Hosts gh is redirected to for downloads (release assets, archives, run
-# logs/artifacts). Forwarded without a token - the sandbox could reach them
-# directly anyway; the list just keeps this from being an open proxy.
+# logs/artifacts), and github.com for git under gh (which inherits
+# HTTPS_PROXY). Tunneled as they are, without a token - the sandbox could
+# reach them directly anyway; the list just keeps this from being an open
+# proxy (which would also reach the host's own services).
 OTHER_HOSTS = frozenset({"github.com", "codeload.github.com"})
 OTHER_HOST_SUFFIXES = (".githubusercontent.com", ".blob.core.windows.net")
 
@@ -49,12 +52,15 @@ MAX_GRAPHQL_BODY = 10 * 1024 * 1024
 
 
 def host_allowed(host):
-    """Whether requests to host are forwarded at all."""
-    if not HOST_RE.match(host):
+    """Whether requests to host are intercepted and forwarded."""
+    return host in TOKEN_HOSTS
+
+
+def tunnel_allowed(host):
+    """Whether a CONNECT to host (port 443 only) is tunneled unread."""
+    if not HOST_RE.match(host) or host in TOKEN_HOSTS:
         return False
-    return (
-        host in TOKEN_HOSTS or host in OTHER_HOSTS or host.endswith(OTHER_HOST_SUFFIXES)
-    )
+    return host in OTHER_HOSTS or host.endswith(OTHER_HOST_SUFFIXES)
 
 
 def graphql_operations(body):
@@ -109,19 +115,22 @@ def describe_write(method, host, path, graphql_body=None):
     return "\n".join(lines)
 
 
-class ProxyServer(api_proxy.ProxyServer):
-    """gh-api-proxy's policy over api_proxy's server; upstream and confirm
-    are injectable for tests."""
+class ProxyServer(api_proxy.HttpsProxyServer):
+    """gh-api-proxy's policy over api_proxy's HTTPS proxy; the rest is
+    injectable for tests."""
 
     name = "gh-api-proxy"
     popup_title = "Allow sandboxed GitHub API write?"
 
-    def __init__(self, path, token, upstream=api_proxy.open_upstream, confirm=None):
-        super().__init__(path, upstream=upstream, confirm=confirm)
+    def __init__(self, token, **kwargs):
+        super().__init__(**kwargs)
         self.token = token
 
     def host_allowed(self, host):
         return host_allowed(host)
+
+    def tunnel_allowed(self, host):
+        return tunnel_allowed(host)
 
     def body_limit(self, host, path):
         """GraphQL bodies are read in full to classify them."""
@@ -138,25 +147,22 @@ class ProxyServer(api_proxy.ProxyServer):
 
 def host_token():
     """The host gh's token, for the proxy's lifetime only."""
-    env = {k: v for k, v in os.environ.items() if k != "GH_HTTP_UNIX_SOCKET"}
     result = subprocess.run(
-        ["gh", "auth", "token"], env=env, capture_output=True, text=True, check=False
+        ["gh", "auth", "token"], capture_output=True, text=True, check=False
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def main():
-    """Serve on argv[1] until killed."""
-    listen_path = sys.argv[1]
+    """Serve until killed, announcing the port, secret and CA in argv[1]."""
     token = host_token()
     if not token:
         sys.exit(
             "gh-api-proxy: `gh auth token` gave no token - run `gh auth login` on the host"
         )
-    if os.path.exists(listen_path):
-        os.unlink(listen_path)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    with ProxyServer(listen_path, token) as server:
+    with ProxyServer(token) as server:
+        server.announce(sys.argv[1])
         server.serve_forever()
 
 
