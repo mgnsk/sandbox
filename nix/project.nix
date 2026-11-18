@@ -21,29 +21,22 @@ let
     (lib.evalModules {
       modules = [
         {
-          # Not packages or env: the project's tools and variables come from
-          # its dev shell (a flake, devenv), entered through `command`.
-          options =
-            removeAttrs layer.options [
-              "packages"
-              "env"
-            ]
-            // {
-              hostPorts = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Host loopback ports reachable inside, like the top-level option.";
-              };
-              command = lib.mkOption {
-                type = lib.types.nullOr (lib.types.listOf lib.types.str);
-                default = null;
-                example = [
-                  "nix"
-                  "develop"
-                ];
-                description = "What `sandbox` with no command runs, in place of a login shell.";
-              };
+          options = layer.options // {
+            hostPorts = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Host loopback ports reachable inside, like the top-level option.";
             };
+            command = lib.mkOption {
+              type = lib.types.nullOr (lib.types.listOf lib.types.str);
+              default = null;
+              example = [
+                "nix"
+                "develop"
+              ];
+              description = "What `sandbox` with no command runs, in place of a login shell.";
+            };
+          };
         }
         { _module.args.pkgs = lib.mkDefault pkgs; }
         (if builtins.isPath file then file else /. + file)
