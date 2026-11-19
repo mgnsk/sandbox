@@ -30,8 +30,11 @@ type config struct {
 	FHS        struct {
 		Bin    string `json:"bin"`
 		UsrBin string `json:"usrBin"`
-		// bash-completion's share dir, bound at /usr/share/bash-completion.
+		// bash-completion's share dir, bound at /usr/share/bash-completion,
+		// and the managed /etc/bashrc and /etc/profile.
 		BashCompletion string `json:"bashCompletion"`
+		Bashrc         string `json:"bashrc"`
+		Profile        string `json:"profile"`
 		NixLd          string `json:"nixLd"`
 		LdPath         string `json:"ldPath"`
 		SSL            string `json:"ssl"`

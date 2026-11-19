@@ -129,15 +129,14 @@ sandbox nix develop -c claude          # Claude Code with the project's tools on
 sandbox nix develop -c go test ./...   # a one-off command
 ```
 
-**Shell startup and completion.** A project's `$HOME` without a `~/.bashrc`
-gets a default one, loading bash-completion in interactive shells, and a
-`~/.bash_profile` reading it, so the sandbox's login shell does too. That
-includes `nix develop`'s shells, which read `~/.bashrc`: completions for the
-dev shell's own tools are found through the `XDG_DATA_DIRS` it sets.
-They're written only where there's none: your home-manager files, a bind of
-your own (`binds = [ { src = "~/.bashrc"; } ];`) or your edits always win.
-Your own `.bashrc` can load completion from the fixed path
-`/usr/share/bash-completion/bash_completion`.
+**Shell startup and completion.** The sandbox has a managed, read-only
+`/etc/bashrc` and `/etc/profile`, which bash reads before your own files:
+every interactive shell loads bash-completion - `nix develop`'s too, finding
+the dev shell's completions through the `XDG_DATA_DIRS` it sets. Nothing is
+written into your `$HOME`: your `.bashrc`/`.bash_profile` - your own, a bind
+(`binds = [ { src = "~/.bashrc"; } ];`) or home-manager's - run after them and
+can override anything. bash-completion is also at the fixed path
+`/usr/share/bash-completion`.
 
 With direnv, `use flake` in `.envrc` does the same whenever you `cd` in.
 `direnv` and `nix-direnv` come from your `~/.nix-profile` or home-manager.

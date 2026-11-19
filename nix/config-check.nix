@@ -65,6 +65,8 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   for tool in claude curl python3 hello; do test ! -e "$bin/$tool"; done
   test -f "$(jq -r '.default.claudeDir' ${config})/managed-settings.json"
   test -f "$(jq -r '.fhs.bashCompletion' ${config})/bash_completion"
+  grep -q bash_completion "$(jq -r '.fhs.bashrc' ${config})"
+  grep -q /etc/bashrc "$(jq -r '.fhs.profile' ${config})"
   settings="$(jq -r '.default.claudeDir' ${withLsp})/managed-settings.json"
   jq -e \
     --arg gopls ${pkgs.gopls}/bin/gopls \

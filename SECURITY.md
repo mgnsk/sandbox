@@ -288,7 +288,8 @@ inside comes from the nix store: a fixed minimal set on `PATH` (bash, nix,
 git, ssh, terminfo and stdenv's basics - no configuration adds to it; other tools come
 from the project's dev shell or the user's profile),
 `/bin/sh`, `/bin/env`, `/usr/bin/env` and `/usr/bin/xdg-open` from a small
-store directory, and nix-ld at the dynamic loader's path for prebuilt
+store directory, a managed read-only `/etc/bashrc` and `/etc/profile` (loading
+bash-completion) from the store, and nix-ld at the dynamic loader's path for prebuilt
 binaries. From the host's `/etc` only identity and name resolution are bound
 (`passwd`, `group`, `hosts`, `resolv.conf`, `nsswitch.conf`, `localtime`);
 CA certificates come from the store too.

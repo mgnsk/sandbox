@@ -236,7 +236,6 @@ func Run(nixProfile, generation string, command []string) int {
 		return 1
 	}
 	writeGhConfig(home)
-	writeShellRC(home)
 	env, err := router.Start(os.Environ())
 	if err != nil {
 		warn("%v", err)
@@ -253,46 +252,4 @@ func Run(nixProfile, generation string, command []string) int {
 	}
 	warn("%v", err)
 	return 126
-}
-
-// The shell startup files written into a volume without any: bash-completion
-// for interactive shells - nix develop's included, which source ~/.bashrc;
-// it finds the completions of the dev shell's packages through the
-// XDG_DATA_DIRS nix develop sets - and a ~/.bash_profile so the sandbox's
-// login shell reads ~/.bashrc too.
-const (
-	defaultBashrc = `# Written by the sandbox into a home without a ~/.bashrc; yours to edit.
-if [[ $- == *i* ]] && [ -r /usr/share/bash-completion/bash_completion ]; then
-	. /usr/share/bash-completion/bash_completion
-fi
-`
-	defaultBashProfile = `# Written by the sandbox into a home without a login profile; yours to edit.
-[ -r ~/.bashrc ] && . ~/.bashrc
-`
-)
-
-// writeShellRC writes the default ~/.bashrc and ~/.bash_profile where
-// there's none of their kind: home-manager's (linked before this) and the
-// user's own are never touched.
-func writeShellRC(home string) {
-	write := func(path, content string) {
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			warn("not writing %s: %v", path, err)
-		}
-	}
-	if !lexists(filepath.Join(home, ".bashrc")) {
-		write(filepath.Join(home, ".bashrc"), defaultBashrc)
-	}
-	for _, name := range []string{".bash_profile", ".bash_login", ".profile"} {
-		if lexists(filepath.Join(home, name)) {
-			return
-		}
-	}
-	write(filepath.Join(home, ".bash_profile"), defaultBashProfile)
-}
-
-// lexists says whether path exists, a dangling link included.
-func lexists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
 }

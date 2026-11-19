@@ -243,13 +243,21 @@ func TestNoHostUserland(t *testing.T) {
 	}
 }
 
-// An interactive shell loads bash-completion from the default ~/.bashrc,
-// and finds a tool's completion through PATH (here git's, from the base
-// set; a dev shell's through the XDG_DATA_DIRS nix develop sets).
+// The managed /etc/bashrc loads bash-completion in every interactive shell -
+// one with --rcfile like nix develop's, and a login one through
+// /etc/profile - which finds a tool's completion through PATH (here git's,
+// from the base set; a dev shell's through the XDG_DATA_DIRS nix develop
+// sets). The files are read-only.
 func TestBashCompletion(t *testing.T) {
-	r := newProject(t).run(t, "bash -ic '_comp_load git; complete -p git' 2>/dev/null\n", nil).ok(t)
-	if !strings.Contains(r.stdout, "complete") || !strings.Contains(r.stdout, " git") {
-		t.Errorf("%q", r.stdout)
+	p := newProject(t)
+	for _, shell := range []string{"bash -i", "bash --rcfile /dev/null -i", "bash -l -i"} {
+		r := p.run(t, shell+" -c '_comp_load git; complete -p git' 2>/dev/null\n", nil).ok(t)
+		if !strings.Contains(r.stdout, "-F __git_wrap__git_main git") {
+			t.Errorf("%s: %q", shell, r.stdout)
+		}
+	}
+	if r := p.run(t, "echo x >> /etc/bashrc\n", nil); r.code == 0 {
+		t.Error("/etc/bashrc writable")
 	}
 }
 

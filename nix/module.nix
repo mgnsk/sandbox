@@ -99,6 +99,26 @@ let
   ++ pkgs.stdenv.initialPath
   ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
 
+  # bash's system-wide startup files, managed: every interactive shell -
+  # nix develop's too, which reads /etc/bashrc despite its --rcfile - loads
+  # bash-completion, which finds the completions of the dev shell's packages
+  # through the XDG_DATA_DIRS nix develop sets, and those of the base set
+  # through PATH. The user's own files run after these.
+  bashrc = pkgs.writeText "sandbox-bashrc" ''
+    # Managed by the sandbox, read-only; your ~/.bashrc runs after this.
+    if [[ $- == *i* ]] && [ -z "''${BASH_COMPLETION_VERSINFO-}" ]; then
+      . ${pkgs.bash-completion}/share/bash-completion/bash_completion
+    fi
+  '';
+  profile = pkgs.writeText "sandbox-profile" ''
+    # Managed by the sandbox, read-only; your ~/.bash_profile (or
+    # ~/.bash_login, ~/.profile) runs after this. Interactive login shells
+    # get /etc/bashrc too, as bash itself reads it only for non-login ones.
+    if [ -n "''${BASH_VERSION-}" ] && [[ $- == *i* ]]; then
+      . /etc/bashrc
+    fi
+  '';
+
   # The same for every profile.
   env = pkgs.buildEnv {
     name = "sandbox-env";
@@ -198,9 +218,13 @@ let
     fhs = {
       bin = "${sandboxPkgs.fhs}/bin";
       usrBin = "${sandboxPkgs.fhs}/usr/bin";
-      # At /usr/share/bash-completion: a path a ~/.bashrc in the volume can
-      # source across upgrades (see initcmd's default one).
+      # At /usr/share/bash-completion: a fixed path a user's own ~/.bashrc
+      # can source across upgrades.
       bashCompletion = "${pkgs.bash-completion}/share/bash-completion";
+      # The managed, read-only /etc/bashrc and /etc/profile bash reads
+      # before the user's files.
+      bashrc = "${bashrc}";
+      profile = "${profile}";
       nixLd = "${pkgs.nix-ld}/libexec/nix-ld";
       ldPath =
         if pkgs.stdenv.hostPlatform.isx86_64 then
