@@ -87,7 +87,7 @@ func newProject(t *testing.T) project {
 func testTools(t *testing.T) string {
 	t.Helper()
 	var dirs []string
-	for _, tool := range []string{"python3", "curl", "ip"} {
+	for _, tool := range []string{"python3", "curl", "ip", "getent"} {
 		path, err := exec.LookPath(tool)
 		if err == nil {
 			path, err = filepath.EvalSymlinks(path)
@@ -240,6 +240,16 @@ func TestNoHostUserland(t *testing.T) {
 		if !strings.HasPrefix(path, "/nix/store/") {
 			t.Errorf("%s not from the store", path)
 		}
+	}
+}
+
+// An interactive shell loads bash-completion from the default ~/.bashrc,
+// and finds a tool's completion through PATH (here git's, from the base
+// set; a dev shell's through the XDG_DATA_DIRS nix develop sets).
+func TestBashCompletion(t *testing.T) {
+	r := newProject(t).run(t, "bash -ic '_comp_load git; complete -p git' 2>/dev/null\n", nil).ok(t)
+	if !strings.Contains(r.stdout, "complete") || !strings.Contains(r.stdout, " git") {
+		t.Errorf("%q", r.stdout)
 	}
 }
 

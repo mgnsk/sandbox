@@ -64,6 +64,7 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   for tool in bash nix sed make tic git ssh ssh-keygen xdg-open; do test -x "$bin/$tool"; done
   for tool in claude curl python3 hello; do test ! -e "$bin/$tool"; done
   test -f "$(jq -r '.default.claudeDir' ${config})/managed-settings.json"
+  test -f "$(jq -r '.fhs.bashCompletion' ${config})/bash_completion"
   settings="$(jq -r '.default.claudeDir' ${withLsp})/managed-settings.json"
   jq -e \
     --arg gopls ${pkgs.gopls}/bin/gopls \

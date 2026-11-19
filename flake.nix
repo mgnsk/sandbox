@@ -56,6 +56,7 @@
             pkgs.python3
             pkgs.curl
             pkgs.iproute2
+            pkgs.getent
             # libseccomp for internal/seccomp, the one cgo package.
             pkgs.pkg-config
             pkgs.libseccomp

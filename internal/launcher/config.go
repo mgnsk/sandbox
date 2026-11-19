@@ -30,9 +30,11 @@ type config struct {
 	FHS        struct {
 		Bin    string `json:"bin"`
 		UsrBin string `json:"usrBin"`
-		NixLd  string `json:"nixLd"`
-		LdPath string `json:"ldPath"`
-		SSL    string `json:"ssl"`
+		// bash-completion's share dir, bound at /usr/share/bash-completion.
+		BashCompletion string `json:"bashCompletion"`
+		NixLd          string `json:"nixLd"`
+		LdPath         string `json:"ldPath"`
+		SSL            string `json:"ssl"`
 	} `json:"fhs"`
 	Tools struct {
 		Pasta string `json:"pasta"`

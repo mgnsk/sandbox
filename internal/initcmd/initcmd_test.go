@@ -288,3 +288,27 @@ func TestSkipsMountsOverTheVolume(t *testing.T) {
 		t.Error("not relinked")
 	}
 }
+
+// The default ~/.bashrc and ~/.bash_profile go only where there's none of
+// their kind: a home-manager link, a bind or the user's own file wins.
+func TestShellRC(t *testing.T) {
+	home := t.TempDir()
+	writeShellRC(home)
+	if rc, _ := os.ReadFile(filepath.Join(home, ".bashrc")); string(rc) != defaultBashrc {
+		t.Errorf("bashrc %q", rc)
+	}
+	if p, _ := os.ReadFile(filepath.Join(home, ".bash_profile")); string(p) != defaultBashProfile {
+		t.Errorf("bash_profile %q", p)
+	}
+
+	home = t.TempDir()
+	os.Symlink("/nix/store/x-home-manager-files/.bashrc", filepath.Join(home, ".bashrc")) // dangling here
+	os.WriteFile(filepath.Join(home, ".profile"), []byte("mine\n"), 0o644)
+	writeShellRC(home)
+	if target, err := os.Readlink(filepath.Join(home, ".bashrc")); err != nil || target != "/nix/store/x-home-manager-files/.bashrc" {
+		t.Errorf("bashrc replaced: %q %v", target, err)
+	}
+	if lexists(filepath.Join(home, ".bash_profile")) {
+		t.Error("bash_profile written next to a .profile")
+	}
+}

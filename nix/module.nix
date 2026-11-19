@@ -90,6 +90,7 @@ let
   # no configuration adds any.
   basePackages = [
     pkgs.bashInteractive
+    pkgs.bash-completion
     pkgs.nix
     pkgs.ncurses
     pkgs.git
@@ -197,6 +198,9 @@ let
     fhs = {
       bin = "${sandboxPkgs.fhs}/bin";
       usrBin = "${sandboxPkgs.fhs}/usr/bin";
+      # At /usr/share/bash-completion: a path a ~/.bashrc in the volume can
+      # source across upgrades (see initcmd's default one).
+      bashCompletion = "${pkgs.bash-completion}/share/bash-completion";
       nixLd = "${pkgs.nix-ld}/libexec/nix-ld";
       ldPath =
         if pkgs.stdenv.hostPlatform.isx86_64 then
