@@ -3,6 +3,8 @@ package launcher
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -27,6 +29,9 @@ type sandboxEnv struct {
 	GitUserName          string
 	GitUserEmail         string
 	GitSigningKey        string // An ssh public key, signing through the agent.
+	// Prints GitSigningKey on the host at start; approved like the token
+	// commands.
+	GitSigningKeyCommand string
 }
 
 const forgejoTokenCommandPrefix = "FORGEJO_TOKEN_COMMAND_"
@@ -94,12 +99,17 @@ func parseSandboxEnv(data []byte) (*sandboxEnv, error) {
 				return nil, fmt.Errorf("line %d: GIT_SIGNING_KEY must be an ssh public key (ssh-ed25519 AAAA...)", n)
 			}
 			env.GitSigningKey = value
+		case key == "GIT_SIGNING_KEY_COMMAND":
+			env.GitSigningKeyCommand = value
 		default:
 			return nil, fmt.Errorf("line %d: unknown key %s", n, key)
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
+	}
+	if env.GitSigningKey != "" && env.GitSigningKeyCommand != "" {
+		return nil, errors.New("GIT_SIGNING_KEY and GIT_SIGNING_KEY_COMMAND: set one")
 	}
 	hosts, err := forgejoHosts(forgejoTokenCommandPrefix+"<host>", env.ForgejoTokenCommands)
 	if err != nil {
@@ -134,6 +144,7 @@ func (env *sandboxEnv) overlay(m *manifest) {
 	if env.ClaudeAPIKeyCommand != "" {
 		m.ClaudeAPIKeyCommand = env.ClaudeAPIKeyCommand
 	}
+	m.GitSigningKeyCommand = env.GitSigningKeyCommand
 	if len(env.ForgejoTokenCommands) > 0 {
 		all := maps.Clone(m.ForgejoTokenCommands)
 		if all == nil {
@@ -171,4 +182,21 @@ func (env *sandboxEnv) setGit(inside map[string]string) {
 		count++
 	}
 	inside["GIT_CONFIG_COUNT"] = strconv.Itoa(count)
+}
+
+// resolveSigningKey runs the (approved) signing key command, if any, for
+// GitSigningKey: its output must be an ssh public key.
+func (env *sandboxEnv) resolveSigningKey(ctx context.Context, l *launcher) error {
+	if env.GitSigningKeyCommand == "" {
+		return nil
+	}
+	key, err := l.runHostCommand(ctx, "GIT_SIGNING_KEY_COMMAND", env.GitSigningKeyCommand)
+	if err != nil {
+		return err
+	}
+	if !isSSHPublicKey(key) || strings.Contains(key, "\n") {
+		return fmt.Errorf("GIT_SIGNING_KEY_COMMAND (%s) didn't print an ssh public key", env.GitSigningKeyCommand)
+	}
+	env.GitSigningKey = key
+	return nil
 }

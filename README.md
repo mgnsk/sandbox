@@ -462,7 +462,7 @@ CLAUDE_API_KEY_COMMAND=op read op://Employee/Claude/credential
 
 GIT_USER_NAME=Some One
 GIT_USER_EMAIL=some.one@example.com
-GIT_SIGNING_KEY=ssh-ed25519 AAAAC3Nza... some.one@example.com
+GIT_SIGNING_KEY_COMMAND=op read "op://Employee/GitHub SSH key/public key"
 ```
 
 ```gitignore
@@ -479,11 +479,15 @@ Every key is optional:
   project - so they're shown and approved like `sandbox.nix`'s, once and
   again when they change. Your own config's still win.
 - `GIT_USER_NAME`, `GIT_USER_EMAIL`: git's author and committer inside.
-- `GIT_SIGNING_KEY`: an ssh public key in your agent; commits and tags inside
-  are signed with it (`gpg.format = ssh`), through the ssh agent guard,
-  which doesn't ask for signatures.
+- `GIT_SIGNING_KEY`: an ssh public key in your agent (`ssh-ed25519 AAAA...`);
+  commits and tags inside are signed with it (`gpg.format = ssh`), through
+  the ssh agent guard, which doesn't ask for signatures.
+- `GIT_SIGNING_KEY_COMMAND`, instead: a command printing that public key,
+  e.g. from your secret manager. It runs on the host at each start, so it's
+  approved like the token commands.
 
-The git settings only affect the inside, so they apply without asking.
+The git settings only affect the inside, so they apply without asking
+(but a signing key command, which runs on the host, is approved).
 They're git config from the environment, so they override `~/.gitconfig`.
 
 ### Using devenv

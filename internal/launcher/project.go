@@ -28,6 +28,8 @@ type manifest struct {
 	GitHubTokenCommand   string            `json:"githubTokenCommand"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
+	// From .sandbox.env only.
+	GitSigningKeyCommand string `json:"-"`
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
@@ -159,6 +161,7 @@ type hostAccess struct {
 	GitHubTokenCommand   string            `json:"githubTokenCommand,omitempty"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand,omitempty"`
+	GitSigningKeyCommand string            `json:"gitSigningKeyCommand,omitempty"`
 }
 
 func (h hostAccess) String() string {
@@ -186,6 +189,9 @@ func (h hostAccess) String() string {
 	if h.ClaudeAPIKeyCommand != "" {
 		lines = append(lines, "  run on this host at each start, for Claude Code's API key:\n    "+h.ClaudeAPIKeyCommand)
 	}
+	if h.GitSigningKeyCommand != "" {
+		lines = append(lines, "  run on this host at each start, for git's signing key:\n    "+h.GitSigningKeyCommand)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -197,9 +203,9 @@ func (h hostAccess) String() string {
 func (l *launcher) approveProject(m *manifest) error {
 	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts,
 		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands,
-		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand}
+		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand, GitSigningKeyCommand: m.GitSigningKeyCommand}
 	if len(access.Binds) == 0 && len(access.HostPorts) == 0 && access.GitHubTokenCommand == "" &&
-		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" {
+		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" && access.GitSigningKeyCommand == "" {
 		return nil
 	}
 	approved := filepath.Join(l.volumeDir, "project-approved.json")
@@ -211,7 +217,8 @@ func (l *launcher) approveProject(m *manifest) error {
 		return nil
 	}
 	from := filepath.Join(l.project, projectFileName)
-	if access.GitHubTokenCommand != "" || len(access.ForgejoTokenCommands) > 0 || access.ClaudeAPIKeyCommand != "" {
+	if access.GitHubTokenCommand != "" || len(access.ForgejoTokenCommands) > 0 || access.ClaudeAPIKeyCommand != "" ||
+		access.GitSigningKeyCommand != "" {
 		from = fmt.Sprintf("%s (or %s)", from, sandboxEnvFileName)
 	}
 	t, err := openTTY()

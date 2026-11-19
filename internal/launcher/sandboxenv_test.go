@@ -43,6 +43,7 @@ GIT_SIGNING_KEY=` + signingKey + "\n"))
 		"GH_TOKEN_COMMAND=\n":                  "line 1: GH_TOKEN_COMMAND is empty",
 		"GIT_SIGNING_KEY=~/.ssh/id_ed25519\n":  "must be an ssh public key",
 		"FORGEJO_TOKEN_COMMAND_not a host=x\n": "not a Forgejo host",
+		"GIT_SIGNING_KEY=" + signingKey + "\nGIT_SIGNING_KEY_COMMAND=x\n": "set one",
 	} {
 		if _, err := parseSandboxEnv([]byte(content)); err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("%q: %v", content, err)

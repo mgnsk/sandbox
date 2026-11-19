@@ -79,6 +79,19 @@ func withProjectTokenCommands(prof profile, m *manifest) profile {
 // and terminal (so it can prompt); the token it prints. Nothing is written
 // anywhere: the token goes to its guard over a pipe.
 func (l *launcher) runTokenCommand(ctx context.Context, what, command string) (string, error) {
+	token, err := l.runHostCommand(ctx, what, command)
+	if err != nil {
+		return "", err
+	}
+	if !tokens.Valid(token) {
+		return "", fmt.Errorf("%s (%s) didn't print a token", what, command)
+	}
+	return token, nil
+}
+
+// runHostCommand runs command on the host as runTokenCommand does; its
+// output, trimmed.
+func (l *launcher) runHostCommand(ctx context.Context, what, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, l.cfg.Tools.Bash, "-c", command)
 	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 	var out bytes.Buffer
@@ -89,11 +102,7 @@ func (l *launcher) runTokenCommand(ctx context.Context, what, command string) (s
 		}
 		return "", fmt.Errorf("%s (%s): %w", what, command, err)
 	}
-	token := strings.TrimSpace(out.String())
-	if !tokens.Valid(token) {
-		return "", fmt.Errorf("%s (%s) didn't print a token", what, command)
-	}
-	return token, nil
+	return strings.TrimSpace(out.String()), nil
 }
 
 // claudeKeySettings binds a copy of claudeDir's managed settings with the

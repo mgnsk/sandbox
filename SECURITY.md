@@ -333,8 +333,9 @@ treated as untrusted input:
 
 `.sandbox.env` is in the project too, so it's untrusted like `sandbox.nix`:
 read on the host without following a symlink, parsed as plain `KEY=VALUE`
-lines (never by a shell), every key known. Its token commands go through
-the same approval as `sandbox.nix`'s; its git identity and signing key only
+lines (never by a shell), every key known. Its token commands and signing
+key command go through the same approval as `sandbox.nix`'s (the key
+command's output must be an ssh public key); its git identity and signing key only
 set git's environment inside. Being gitignored keeps it out of commits, not
 out of the sandbox's reach - and the sandbox can read it, which is fine:
 it holds commands and public data, not secrets.

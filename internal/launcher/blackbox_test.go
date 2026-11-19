@@ -618,6 +618,25 @@ func TestSandboxEnv(t *testing.T) {
 		t.Errorf("not .sandbox.env's: %d %q", r.code, r.stderr)
 	}
 
+	// The signing key from a command: approved like the token commands, its
+	// output the key.
+	write("GIT_SIGNING_KEY_COMMAND=echo ssh-ed25519 AAAAfromcmd\n")
+	p = h.pty(nil)
+	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "for git's signing key:") {
+		t.Errorf("not shown: %q", shown)
+	}
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAfromcmd" {
+		t.Errorf("signing key: %d %q", r.code, r.stdout)
+	}
+	write("GIT_SIGNING_KEY_COMMAND=echo not-a-key\n")
+	p = h.pty(nil)
+	p.expect("Allow? [y/N] ")
+	p.send("y\r")
+	if r := p.wait(); r.code == 0 || !strings.Contains(r.stdout, "didn't print an ssh public key") {
+		t.Errorf("bad key: %d %q", r.code, r.stdout)
+	}
+
 	// A bad file stops the start.
 	write("NOPE=1\n")
 	h.run("", nil).refused(t, ".sandbox.env: line 1: unknown key NOPE")
