@@ -46,16 +46,10 @@
           ];
         };
         inherit (pkgs.callPackage ./nix/packages.nix { }) gh forgejo-cli;
-        # The Go rewrite, until it replaces src/.
-        sandbox-go = pkgs.callPackage ./nix/go.nix { };
       });
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
-        # The same tests, with the Go binary's programs in place of src/'s.
-        tests-go = pkgs.callPackage ./nix/tests.nix {
-          sandbox-go = self.packages.${pkgs.stdenv.hostPlatform.system}.sandbox-go;
-        };
         project = pkgs.callPackage ./nix/project-check.nix { };
         user = pkgs.callPackage ./nix/user-check.nix { };
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -71,9 +65,7 @@
               (pkgs.python3.withPackages (ps: [
                 ps.cryptography
                 ps.dbus-fast
-                ps.graphql-core
                 ps.pytest
-                ps.pytest-cov
                 ps.pyte
               ]))
               p.gh

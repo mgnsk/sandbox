@@ -1,4 +1,4 @@
-"""Black-box tests for src/forgejo-api-proxy, run as a program: which hosts
+"""Black-box tests for forgejo-api-proxy, run as a program: which hosts
 and tokens it takes from the host fj's keys.json and the project's tokens
 file, and what it forwards, with a stand-in for every Forgejo instance. The
 shared mechanics (refusals, streaming) are covered through gh-api-proxy's

@@ -1,5 +1,4 @@
-"""Black-box tests for src/gh-api-proxy (and api_proxy's HTTPS proxy under
-it), run as a program: CONNECT and interception, which requests are reads
+"""Black-box tests for gh-api-proxy (and the HTTPS proxy under it), run as a program: CONNECT and interception, which requests are reads
 and which need a popup, forwarding, tokens, refusals and streaming, with
 every real host stood in for by one TLS upstream (see guards.py)."""
 
@@ -458,10 +457,7 @@ def test_malformed_requests_are_refused(proxy, world, raw, status):
          "too-many-headers", "header-too-long"],
 )  # fmt: skip
 def test_requests_it_cannot_read_are_refused(proxy, world, raw, status):
-    """Refused by status alone: the body is http.server's own page in the
-    Python implementation."""
-    assert https_send(proxy, "api.github.com:443", raw)[0] == status
-    assert world[2].seen == []
+    assert_refused(https_send(proxy, "api.github.com:443", raw), status, world[2])
 
 
 def test_a_network_path_target_is_a_plain_path(proxy, world):

@@ -1,4 +1,4 @@
-"""Black-box tests for src/ssh-agent-guard, run as a program between a client
+"""Black-box tests for ssh-agent-guard, run as a program between a client
 and a stand-in for the user's real agent: what reaches the agent, what's
 answered, and what the popup shows."""
 

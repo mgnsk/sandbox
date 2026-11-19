@@ -1,5 +1,5 @@
-"""Black-box tests for src/open-url-guard, run as a program with a stand-in
-for the host's xdg-open on its PATH, and for src/sandbox-xdg-open, the
+"""Black-box tests for open-url-guard, run as a program with a stand-in
+for the host's xdg-open on its PATH, and for sandbox-xdg-open, the
 client inside."""
 
 import json

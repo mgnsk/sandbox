@@ -1,11 +1,10 @@
-"""Black-box harness for the launcher (src/sandbox).
+"""Black-box harness for the launcher.
 
 The launcher is run as a program - `LAUNCHER CONFIG.json [OPTIONS] [--]
 [COMMAND...]`, as the nix wrapper runs it - and judged only by what it does
 from the outside: its exit status and output, the files it leaves in the
 state dir, what it asks on the terminal, and the command line it hands to
-pasta. Nothing here imports it, so the same tests run against any
-implementation: $SANDBOX_LAUNCHER (shell words) replaces the Python one.
+pasta.
 
 Everything the config names is a stand-in from a per-test tools dir:
 
@@ -27,7 +26,6 @@ import json
 import os
 import pty
 import select
-import shlex
 import shutil
 import signal
 import struct
@@ -40,11 +38,7 @@ from pathlib import Path
 
 from conftest import BIN_DIR
 
-LAUNCHER = (
-    shlex.split(os.environ["SANDBOX_LAUNCHER"])
-    if os.environ.get("SANDBOX_LAUNCHER")
-    else [sys.executable, "-E", "-s", str(BIN_DIR / "sandbox")]
-)
+LAUNCHER = [str(BIN_DIR / "sandbox")]
 
 FAKE_PASTA = """
 import json, os, signal, stat, subprocess, sys
@@ -292,9 +286,7 @@ class Launcher:
                 "bwrap": "/store/bwrap",
                 "shell": "/store/bash",
             },
-            "init": {"script": "/store/sandbox-init", "nixProfile": False, "homeManager": False},
-            "python": sys.executable,
-            "src": str(BIN_DIR),
+            "init": {"nixProfile": False, "homeManager": False},
             "hostPath": str(host_bin),
             "dbusDaemon": shutil.which("dbus-daemon") or "/nonexistent/dbus-daemon",
             "project": {"eval": "/store/project.nix", "nixpkgs": "/store/nixpkgs", "system": "x86_64-linux"},
@@ -312,11 +304,7 @@ class Launcher:
             # Leaks the launcher must keep out.
             "GH_TOKEN": "host-gh-token",
             # Coverage of the launcher and the guards, when measured.
-            **{
-                k: v
-                for k, v in os.environ.items()
-                if k.startswith("COVERAGE_") or k == "GOCOVERDIR"
-            },
+            **{k: v for k, v in os.environ.items() if k == "GOCOVERDIR"},
         }
 
     def close(self):

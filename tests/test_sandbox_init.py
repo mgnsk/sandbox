@@ -1,12 +1,11 @@
-"""Black-box tests for src/sandbox-init, run as a program against a fake
+"""Black-box tests for sandbox-init, run as a program against a fake
 $HOME and fake home-manager generations - it only touches $HOME, so most of
 this needs no real sandbox.
 
 What it reads from the mount namespace - the mounts over the volume, the
 managed Claude Code config at /etc/claude-code - is tested in one made with
 bwrap, so those tests need a host with unprivileged user namespaces and skip
-themselves elsewhere (e.g. inside a sandbox). $SANDBOX_GUARD_CMD (see
-guards.py) runs another implementation."""
+themselves elsewhere (e.g. inside a sandbox)."""
 
 import os
 import shutil

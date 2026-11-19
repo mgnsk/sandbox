@@ -1,4 +1,4 @@
-"""Black-box tests for src/claude-api-proxy, run as a program: which paths it
+"""Black-box tests for claude-api-proxy, run as a program: which paths it
 forwards, the key swap, and streaming, with a stand-in for the Claude API.
 The shared mechanics (refusals, hop-by-hop headers) are covered through
 gh-api-proxy's tests."""

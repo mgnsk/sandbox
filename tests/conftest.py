@@ -1,34 +1,29 @@
 """Shared test infra.
 
-Every test runs the programs in src/ as programs - see launcher.py for the
+Every test runs the programs as programs - see launcher.py for the
 launcher's harness (its terminal and popups included) and guards.py for the
-guards' and sandbox-init's - so another implementation can be put in their
-place. Nothing here imports them.
+guards' and sandbox-init's. They're the one binary, under each program's
+name, in $SANDBOX_BIN_DIR: the package's bin/ (as the nix check runs them),
+else what `make build` leaves in .build/go/bin.
 """
 
 import os
-import shlex
 from pathlib import Path
 
-BIN_DIR = Path(__file__).resolve().parent.parent / "src"
+import pytest
+
+BIN_DIR = Path(
+    os.environ.get("SANDBOX_BIN_DIR")
+    or Path(__file__).resolve().parent.parent / ".build/go/bin"
+)
 
 
 def pytest_report_header():
-    """Which implementation runs: with $SANDBOX_GUARD_CMD, the programs it
-    has (see guards.guard_argv); the rest are src/'s."""
-    lines = [
-        f"{var}={os.environ[var]}"
-        for var in ("SANDBOX_LAUNCHER", "SANDBOX_GUARD_CMD")
-        if os.environ.get(var)
-    ]
-    cmd = os.environ.get("SANDBOX_GUARD_CMD")
-    if cmd:
-        names = sorted(
-            p.name
-            for p in BIN_DIR.iterdir()
-            if p.is_file()
-            and p.suffix != ".py"
-            and os.path.exists(shlex.split(cmd.format(name=p.name))[0])
+    return [f"programs from {BIN_DIR}"]
+
+
+def pytest_sessionstart(session):
+    if not (BIN_DIR / "sandbox").exists():
+        raise pytest.UsageError(
+            f"no sandbox binary in {BIN_DIR}: run `make build` or set $SANDBOX_BIN_DIR"
         )
-        lines.append(f"$SANDBOX_GUARD_CMD runs: {', '.join(names) or 'nothing'}")
-    return lines

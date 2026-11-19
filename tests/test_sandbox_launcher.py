@@ -1,4 +1,4 @@
-"""Black-box tests for the launcher (src/sandbox): run as a program against
+"""Black-box tests for the launcher: run as a program against
 stand-in tools, see tests/launcher.py. What a real sandbox then makes of the
 command line is test_sandbox.py's business."""
 

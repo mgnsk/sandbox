@@ -1,4 +1,4 @@
-"""Black-box tests for src/secret-service-guard, run as a program on a
+"""Black-box tests for secret-service-guard, run as a program on a
 private D-Bus bus, as the launcher runs it, and spoken to over D-Bus like
 libsecret clients (gh's go-keyring, Python keyring, ...) do."""
 

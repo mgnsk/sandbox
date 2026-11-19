@@ -1,9 +1,7 @@
-# The unit tests, as a check. The tests that start a real sandbox skip
-# themselves: the nix build sandbox has no unprivileged user namespaces.
-# With sandbox-go, its programs run in place of src/'s.
+# The tests, as a check, against the built binary. The tests that start a
+# real sandbox skip themselves: the nix build sandbox has no unprivileged
+# user namespaces.
 {
-  lib,
-  sandbox-go ? null,
   cacert,
   callPackage,
   dbus,
@@ -15,12 +13,11 @@ let
   python = python3.withPackages (ps: [
     ps.cryptography
     ps.dbus-fast
-    ps.graphql-core
     ps.pytest
     ps.pyte
   ]);
 in
-runCommand (if sandbox-go == null then "sandbox-tests" else "sandbox-go-tests")
+runCommand "sandbox-tests"
   {
     nativeBuildInputs = [
       python
@@ -30,7 +27,6 @@ runCommand (if sandbox-go == null then "sandbox-tests" else "sandbox-go-tests")
     ];
   }
   ''
-    cp -r ${../src} src
     cp -r ${../tests} tests
     chmod -R u+w .
     export HOME=$TMPDIR/home
@@ -38,10 +34,7 @@ runCommand (if sandbox-go == null then "sandbox-tests" else "sandbox-go-tests")
     # replaces it.
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
     mkdir -p $HOME
-    ${lib.optionalString (sandbox-go != null) ''
-      export SANDBOX_GUARD_CMD='${sandbox-go}/bin/{name}'
-      export SANDBOX_LAUNCHER='${sandbox-go}/bin/sandbox'
-    ''}
+    export SANDBOX_BIN_DIR=${p.sandbox}/bin
     python -m pytest -q -p no:cacheprovider tests
     touch $out
   ''

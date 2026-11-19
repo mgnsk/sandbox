@@ -1,12 +1,11 @@
-# The Go rewrite: one binary that runs as the program it is started under
-# (argv[0]), with a link per program. Programs move here from src/ one at a
-# time; until the launcher does, the sandbox package still runs src/.
+# The launcher, sandbox-init and the guards: one binary that runs as the
+# program it is started under (argv[0]), with a link per program.
 {
   lib,
   buildGoModule,
 }:
 buildGoModule {
-  pname = "sandbox-go";
+  pname = "sandbox-bin";
   version = "0.1.0";
   src = lib.fileset.toSource {
     root = ../.;
