@@ -266,7 +266,7 @@ in
       # Claude Code registers a managed marketplace only partway through a
       # fresh volume's first session and installs nothing from it in that
       # one; listed already, every enabled plugin is installed at the first
-      # start. sandbox-init links ~/.claude/plugins/known_marketplaces.json
+      # start. sandbox-bin init links ~/.claude/plugins/known_marketplaces.json
       # here, read-only, so nothing Claude Code would add sticks.
       ++ lib.optional (values.known != { }) {
         name = "known_marketplaces.json";

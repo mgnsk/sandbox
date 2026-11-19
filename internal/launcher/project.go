@@ -104,7 +104,7 @@ func (l *launcher) projectManifest(ctx context.Context, base string) (*manifest,
 	}
 	key := cacheKey(realpath(l.configPath), base, content)
 	cache := filepath.Join(l.volumeDir, "project.json")
-	if !l.opts.reload {
+	if !l.opts.Reload {
 		if out := readCache(cache, key); out != "" {
 			return readManifest(out)
 		}
@@ -113,7 +113,7 @@ func (l *launcher) projectManifest(ctx context.Context, base string) (*manifest,
 	// sandbox.nix.
 	fmt.Fprintf(os.Stderr, "sandbox: evaluating %s\n", projectFile)
 	out, err := l.runCapturing(ctx, append(os.Environ(), quietEnv+"=1"),
-		l.self, l.configPath, "--no-project-config", "--",
+		l.self, "launch", "--config", l.configPath, "--no-project-config", "--",
 		"nix", "build", "--no-link", "--print-out-paths", "--file", l.cfg.Project.Eval,
 		"--argstr", "nixpkgs", l.cfg.Project.Nixpkgs,
 		"--argstr", "system", l.cfg.Project.System,

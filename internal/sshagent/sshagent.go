@@ -1,7 +1,7 @@
 // Package sshagent is ssh-agent-guard: an SSH agent proxy that gates every
 // signature behind a popup.
 //
-//	ssh-agent-guard UPSTREAM_SOCKET
+//	sandbox-bin ssh-agent-guard UPSTREAM_SOCKET
 //
 // It sits between a sandboxed client and the real SSH agent socket. Identity
 // listing is forwarded untouched; sign requests reach the real agent after
@@ -156,17 +156,15 @@ func (a *gated) Extension(string, []byte) ([]byte, error) {
 	return nil, agent.ErrExtensionUnsupported
 }
 
-// Main serves on the launcher's socket until stopped.
-func Main(argv []string) int {
-	return guard.Main(argv, "ssh-agent-guard UPSTREAM_SOCKET", 1, func(ctx context.Context, args []string) error {
-		ln, err := guard.Listener()
-		if err != nil {
-			return err
-		}
-		g := &Guard{Upstream: args[0]}
-		if err := guard.Ready(struct{}{}); err != nil {
-			return err
-		}
-		return guard.Serve(ctx, ln, g.Handle)
-	})
+// Run serves on the launcher's socket until stopped.
+func Run(ctx context.Context, upstream string) error {
+	ln, err := guard.Listener()
+	if err != nil {
+		return err
+	}
+	g := &Guard{Upstream: upstream}
+	if err := guard.Ready(struct{}{}); err != nil {
+		return err
+	}
+	return guard.Serve(ctx, ln, g.Handle)
 }

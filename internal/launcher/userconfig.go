@@ -75,7 +75,7 @@ func (l *launcher) userConfig(ctx context.Context) error {
 	}
 	cache := filepath.Join(state, "config.json")
 	out := ""
-	if !l.opts.reload {
+	if !l.opts.Reload {
 		out = readCache(cache, key)
 	}
 	fresh := out == ""

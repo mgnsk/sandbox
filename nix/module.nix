@@ -503,7 +503,7 @@ in
       ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli;
 
     package = pkgs.writeShellScriptBin "sandbox" ''
-      exec ${sandboxPkgs.sandbox}/bin/sandbox ${configFile} "$@"
+      exec ${lib.getExe sandboxPkgs.sandbox} launch --config ${configFile} "$@"
     '';
 
     claude.settings = lib.mkMerge [

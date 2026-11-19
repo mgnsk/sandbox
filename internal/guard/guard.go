@@ -18,7 +18,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 )
 
@@ -28,18 +27,14 @@ const (
 	ListenerFD = 4
 )
 
-// Main runs a guard: run gets the arguments after the program name and a
-// context that ends on SIGTERM or SIGINT, the launcher's way of stopping it.
-// It returns the exit status: 2 for usage, 1 for run's error.
-func Main(argv []string, usage string, nargs int, run func(ctx context.Context, args []string) error) int {
-	if len(argv) != nargs+1 {
-		fmt.Fprintf(os.Stderr, "usage: %s\n", usage)
-		return 2
-	}
+// Main runs the guard name: run gets a context that ends on SIGTERM or
+// SIGINT, the launcher's way of stopping it. It returns the exit status, 1
+// for run's error, which it reports under name.
+func Main(name string, run func(ctx context.Context) error) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	if err := run(ctx, argv[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Base(argv[0]), err)
+	if err := run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
 		return 1
 	}
 	return 0

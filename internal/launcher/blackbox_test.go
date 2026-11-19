@@ -265,12 +265,12 @@ func TestInsideEnvironment(t *testing.T) {
 	}
 }
 
-// sandbox-init first, then a login shell, which runs a given command after
+// sandbox-bin init first, then a login shell, which runs a given command after
 // its startup files.
 func TestLoginShellOrCommand(t *testing.T) {
 	h := newHarness(t)
 	inv := h.run("", nil).pasta(t)
-	if inv.command() != nil || filepath.Base(inv.init[0]) != "sandbox-init" || !slices.Equal(inv.init[3:], []string{"/store/bash", "--login"}) {
+	if inv.command() != nil || filepath.Base(inv.init[0]) != "sandbox-bin" || inv.init[1] != "init" || !slices.Equal(inv.init[4:], []string{"/store/bash", "--login"}) {
 		t.Errorf("%q", inv.init)
 	}
 	r := h.run("", nil, "echo", "hello there")
@@ -292,7 +292,12 @@ func TestLoginShellOrCommand(t *testing.T) {
 	if r := h.run("", nil, "sh", "-c", "exit 3"); r.code != 3 {
 		t.Errorf("exit %d", r.code)
 	}
-	h.run("", nil, "--nope").refused(t, "not defined: -nope")
+	h.run("", nil, "--nope").refused(t, "not defined: -nope (put -- before")
+	h.run("", nil, "--fj-token").refused(t, "needs an argument")
+	h.run("", nil, "--fj-token", "a b").refused(t, "not a Forgejo host: a b")
+	if r := h.run("", nil, "--help"); r.code != 0 || !strings.Contains(r.stdout, "--no-project-config") || len(r.calls("pasta")) != 0 {
+		t.Errorf("--help: exit %d, %q", r.code, r.stdout)
+	}
 }
 
 func TestInitGetsTheProfiles(t *testing.T) {
@@ -302,7 +307,7 @@ func TestInitGetsTheProfiles(t *testing.T) {
 	os.Symlink(target, filepath.Join(h.home, ".nix-profile"))
 	h.cfg.Init.NixProfile, h.cfg.Init.HomeManager = true, true
 	// The home-manager one doesn't exist.
-	if got := h.run("", nil).pasta(t).init[1:3]; !slices.Equal(got, []string{target, ""}) {
+	if got := h.run("", nil).pasta(t).init[2:4]; !slices.Equal(got, []string{target, ""}) {
 		t.Errorf("%q", got)
 	}
 }
@@ -738,6 +743,17 @@ func TestTokens(t *testing.T) {
 
 // -- guards --
 
+// program is what the process pid runs as: its sandbox-bin subcommand, or
+// its argv[0].
+func program(pid string) string {
+	cmdline, _ := os.ReadFile("/proc/" + pid + "/cmdline")
+	argv := strings.Split(string(cmdline), "\x00")
+	if filepath.Base(argv[0]) == "sandbox-bin" && len(argv) > 1 {
+		return argv[1]
+	}
+	return filepath.Base(argv[0])
+}
+
 // children are the pids of pid's child processes running as name.
 func children(pid int, name string) []int {
 	var found []int
@@ -748,9 +764,9 @@ func children(pid int, name string) []int {
 			continue
 		}
 		// pid (comm) state ppid ...
-		comm, rest, _ := strings.Cut(string(stat), ") ")
+		_, rest, _ := strings.Cut(string(stat), ") ")
 		fields := strings.Fields(rest)
-		if strings.HasSuffix(comm, "("+name) && len(fields) > 1 && fields[1] == strconv.Itoa(pid) {
+		if len(fields) > 1 && fields[1] == strconv.Itoa(pid) && program(e.Name()) == name {
 			child, _ := strconv.Atoi(e.Name())
 			found = append(found, child)
 		}
@@ -854,13 +870,13 @@ func TestHTTPSProxyGuards(t *testing.T) {
 	}
 }
 
-// openURL runs sandbox-xdg-open url inside, on a terminal, with a host
+// openURL runs sandbox-bin xdg-open url inside, on a terminal, with a host
 // xdg-open that logs what it's given.
 func (h *harness) openURL(url string) (*ptyRun, string) {
 	log := filepath.Join(h.tmp, "xdg.log")
 	os.WriteFile(filepath.Join(h.hostBin, "xdg-open"), []byte("#!/bin/sh\necho \"$*\" >> "+log+"\n"), 0o755)
 	h.cfg.Guards.OpenURL = true
-	return h.pty(nil, testbin.Program(h.t, "sandbox-xdg-open"), url), log
+	return h.pty(nil, testbin.Path(h.t), "xdg-open", url), log
 }
 
 // The guard runs the host's xdg-open, from the store's tools first on
@@ -907,7 +923,7 @@ func TestOpenURL(t *testing.T) {
 	// No one to ask: the guards answer no.
 	h = newHarness(t)
 	h.cfg.Guards.OpenURL = true
-	if r := h.run("", nil, testbin.Program(t, "sandbox-xdg-open"), "https://example.org/"); r.code != 4 || !strings.Contains(r.stderr, "denied") {
+	if r := h.run("", nil, testbin.Path(t), "xdg-open", "https://example.org/"); r.code != 4 || !strings.Contains(r.stderr, "denied") {
 		t.Errorf("%d %q", r.code, r.stderr)
 	}
 }

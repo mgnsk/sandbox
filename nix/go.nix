@@ -1,5 +1,5 @@
-# The launcher, sandbox-init and the guards: one binary that runs as the
-# program it is started under (argv[0]), with a link per program.
+# sandbox-bin: the launcher, init and the guards, as subcommands of one
+# binary.
 {
   lib,
   buildGoModule,
@@ -18,8 +18,8 @@ buildGoModule {
     ];
   };
   # Update with lib.fakeHash and the hash nix reports after a go.mod change.
-  vendorHash = "sha256-4RW1FCeXlDKqz1ji0yNEn3p9yY4Pef2QibvUL+UDZWg=";
-  subPackages = [ "cmd/sandbox" ];
+  vendorHash = "sha256-QXuXTQi0sHZkTfVkSSGm8dX6juF4sWJ+722X1JfcxnU=";
+  subPackages = [ "cmd/sandbox-bin" ];
   # The tests are a check of their own, see tests.nix.
   doCheck = false;
   env.CGO_ENABLED = 0;
@@ -27,14 +27,5 @@ buildGoModule {
     "-s"
     "-w"
   ];
-  # Each program it runs as, linked to the binary.
-  programs = lib.filter (p: p != "") (
-    lib.splitString "\n" (builtins.readFile ../cmd/sandbox/programs)
-  );
-  postInstall = ''
-    for p in $programs; do
-      [ "$p" = sandbox ] || ln -s sandbox $out/bin/$p
-    done
-  '';
-  meta.mainProgram = "sandbox";
+  meta.mainProgram = "sandbox-bin";
 }

@@ -1,4 +1,4 @@
-// Package xdgopen is sandbox-xdg-open, xdg-open inside a sandbox, at
+// Package xdgopen is sandbox-bin xdg-open, xdg-open inside a sandbox, at
 // /usr/bin/xdg-open.
 //
 // It sends the URL to open-url-guard on the host, which does all the
@@ -18,17 +18,13 @@ import (
 
 // xdg-open's own exit codes.
 const (
-	exitSyntax = 1
+	ExitSyntax = 1
 	exitFailed = 4
 )
 
-// Main runs sandbox-xdg-open with argv.
-func Main(argv []string) int {
-	if len(argv) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: xdg-open <http(s) URL>")
-		return exitSyntax
-	}
-	answer, err := ask(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "open-url.sock"), argv[1])
+// Run has url opened; the exit status.
+func Run(url string) int {
+	answer, err := ask(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "open-url.sock"), url)
 	switch {
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "xdg-open: %v\n", err)
