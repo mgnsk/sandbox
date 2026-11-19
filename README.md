@@ -6,9 +6,13 @@ inside and outside coming from nix - nothing from the host's `/usr`.
 
 ```sh
 cd ~/src/some-project
-sandbox          # a login shell in the sandbox (see Install for the command)
-sandbox claude   # or any command
+sandbox                         # a login shell in the sandbox (see Install for the command)
+sandbox nix develop -c claude   # Claude Code, from the project's dev shell
+sandbox nix develop -c make     # or any command
 ```
+
+The sandbox brings no tools of its own beyond a shell, nix and git: Claude
+Code and everything else come from the project's dev shell.
 
 What you get, per project:
 
