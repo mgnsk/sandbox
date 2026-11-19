@@ -164,6 +164,20 @@ limited to the project's repositories, with what gh needs there: typically
 read-only Contents and Actions, read-write Issues and Pull requests. Pushes
 go over ssh, so the token needn't write Contents.
 
+Any command that prints the token works, not only a secret manager's. If
+you're logged in with gh on the host, it can hand over that login's token:
+
+```nix
+guards.github.tokenCommand = "gh auth token";
+```
+
+That's gh on your host, run at each start like any token command; the
+sandbox doesn't otherwise touch it. Its token is your whole GitHub login,
+though - every repository and organization you can reach - so a
+fine-grained token limited to the project bounds what a misbehaving
+sandbox can do better. Put it in your own config rather than a project's
+`sandbox.nix`, since it depends on your host's gh.
+
 Don't run `gh auth login` or `fj auth login` inside: a token stored inside
 would bypass the proxy and its popups.
 
