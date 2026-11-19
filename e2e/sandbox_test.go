@@ -225,7 +225,7 @@ func TestNoHostUserland(t *testing.T) {
 
 func TestStoreAndClaudeConfigAreReadOnly(t *testing.T) {
 	p := newProject(t)
-	if r := p.run(t, `echo x > "$(command -v gh)"`+"\n", nil); r.code == 0 || !strings.Contains(r.stderr, "Read-only file system") {
+	if r := p.run(t, `echo x > "$(command -v git)"`+"\n", nil); r.code == 0 || !strings.Contains(r.stderr, "Read-only file system") {
 		t.Errorf("%d %q", r.code, r.stderr)
 	}
 	r := p.run(t, "cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n", nil)
