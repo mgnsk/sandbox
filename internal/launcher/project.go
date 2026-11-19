@@ -210,15 +210,18 @@ func (l *launcher) approveProject(m *manifest) error {
 	if have, err := os.ReadFile(approved); err == nil && bytes.Equal(bytes.TrimSpace(have), want) {
 		return nil
 	}
-	projectFile := filepath.Join(l.project, projectFileName)
+	from := filepath.Join(l.project, projectFileName)
+	if access.GitHubTokenCommand != "" || len(access.ForgejoTokenCommands) > 0 || access.ClaudeAPIKeyCommand != "" {
+		from = fmt.Sprintf("%s (or %s)", from, sandboxEnvFileName)
+	}
 	t, err := openTTY()
 	if err != nil {
-		return fmt.Errorf("%s asks for host access that isn't approved yet; start the sandbox from a terminal to approve it", projectFile)
+		return fmt.Errorf("%s asks for host access that isn't approved yet; start the sandbox from a terminal to approve it", from)
 	}
 	defer t.Close()
 	if !t.confirm(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
 		"Read it before allowing: the commands run on this host as you, outside the sandbox.\n"+
-		"This is asked once, and again only if it changes. Allow? [y/N] ", projectFile, access)) {
+		"This is asked once, and again only if it changes. Allow? [y/N] ", from, access)) {
 		return errors.New("host access not approved, not starting")
 	}
 	return writeJSON(approved, access)

@@ -564,6 +564,65 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 	}
 }
 
+// .sandbox.env: its token commands go over sandbox.nix's and are approved
+// like them, even without a sandbox.nix; its git settings apply inside
+// without asking; a Claude key from it gets the managed apiKeyHelper.
+func TestSandboxEnv(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Guards.GitHub = true
+	h.cfg.Default.ClaudeDir = filepath.Join(h.tmp, "claude")
+	os.MkdirAll(h.cfg.Default.ClaudeDir, 0o755)
+	os.WriteFile(filepath.Join(h.cfg.Default.ClaudeDir, "managed-settings.json"), []byte(`{"env": {"A": "1"}}`), 0o644)
+	mark := filepath.Join(h.tmp, "ran")
+	token := "github_pat_" + strings.Repeat("t", 30)
+	write := func(content string) {
+		os.WriteFile(filepath.Join(h.project, sandboxEnvFileName), []byte(content), 0o644)
+	}
+
+	// Git settings alone: nothing to approve.
+	write("GIT_USER_NAME=Some One\nGIT_USER_EMAIL=a@example.com\nGIT_SIGNING_KEY=ssh-ed25519 AAAAkey\n")
+	r := h.run("", nil)
+	env := r.pasta(t).setenv()
+	if r.code != 0 || env["GIT_AUTHOR_NAME"] != "Some One" || env["GIT_COMMITTER_EMAIL"] != "a@example.com" ||
+		env["GIT_CONFIG_KEY_0"] != "user.signingKey" || env["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAkey" {
+		t.Errorf("git: %d %q %v", r.code, r.stderr, env)
+	}
+
+	// A token command: asked first, naming both files.
+	write("GH_TOKEN_COMMAND=touch " + mark + "; echo " + token + "\nCLAUDE_API_KEY_COMMAND=echo " + claudeKey + "\n")
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "(or .sandbox.env) asks for host access") || exists(mark) {
+		t.Errorf("unapproved: %d %q", r.code, r.stderr)
+	}
+	p := h.pty(nil)
+	shown := p.expect("Allow? [y/N] ")
+	for _, want := range []string{"for the GitHub token:", "for Claude Code's API key:", "echo " + claudeKey} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("%q not in %q", want, shown)
+		}
+	}
+	p.send("y\r")
+	r = p.wait()
+	if r.code != 0 || !exists(mark) || strings.Contains(r.stdout, "no GitHub token") {
+		t.Errorf("approved: %d %q", r.code, r.stdout)
+	}
+	// The Claude key's settings (see TestClaudeKeySettings) over the managed
+	// ones.
+	if settings := r.pasta(t).bind(t, "/etc/claude-code/managed-settings.json"); filepath.Dir(settings) == h.cfg.Default.ClaudeDir {
+		t.Errorf("the managed settings as they are: %s", settings)
+	}
+
+	// Over sandbox.nix's: what's left is what was approved, so not asked.
+	os.Remove(mark)
+	h.withProject(manifest{GitHubTokenCommand: "echo theirs" + token}, "{ ... }: { }\n", "m.json")
+	if r := h.run("", nil); r.code != 0 || !exists(mark) {
+		t.Errorf("not .sandbox.env's: %d %q", r.code, r.stderr)
+	}
+
+	// A bad file stops the start.
+	write("NOPE=1\n")
+	h.run("", nil).refused(t, ".sandbox.env: line 1: unknown key NOPE")
+}
+
 // -- secrets --
 
 const claudeKey = "sk-ant-api03-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"

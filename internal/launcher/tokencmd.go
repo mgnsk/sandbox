@@ -3,11 +3,13 @@ package launcher
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/mgnsk/sandbox/internal/hostname"
@@ -92,4 +94,40 @@ func (l *launcher) runTokenCommand(ctx context.Context, what, command string) (s
 		return "", fmt.Errorf("%s (%s) didn't print a token", what, command)
 	}
 	return token, nil
+}
+
+// claudeKeySettings binds a copy of claudeDir's managed settings with the
+// apiKeyHelper placeholder over the original, when they lack it: a key
+// command from .sandbox.env comes with no managed config of its own (one
+// from the user's config or sandbox.nix already has it). Without it Claude
+// Code would ask to log in.
+func claudeKeySettings(g *guards, a *bwrapArgs, claudeDir string) error {
+	path := filepath.Join(claudeDir, "managed-settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	settings := map[string]any{}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	if _, ok := settings["apiKeyHelper"]; ok {
+		return nil
+	}
+	settings["apiKeyHelper"] = "echo sandbox-placeholder"
+	dir, err := g.tempdir()
+	if err != nil {
+		return err
+	}
+	out := filepath.Join(dir, "managed-settings.json")
+	if data, err = json.Marshal(settings, json.Deterministic(true)); err != nil {
+		return err
+	}
+	if err := os.WriteFile(out, data, 0o644); err != nil {
+		return err
+	}
+	a.roBind(out, "/etc/claude-code/managed-settings.json")
+	return nil
 }

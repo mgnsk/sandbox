@@ -138,7 +138,9 @@ start - typically your secret manager - and it's handed to the proxy in
 memory. gh or fj on the host, and any login they have, are never used.
 
 The project can declare its commands in its `sandbox.nix`, so everyone
-working on it is set up by starting the sandbox:
+working on it is set up by starting the sandbox (or each user in their own
+[.sandbox.env](#per-user-project-settings-sandboxenv), when the commands
+differ per user):
 
 ```nix
 guards.github.tokenCommand = "op read op://Employee/GitHub/token";
@@ -444,6 +446,45 @@ can edit `flake.nix`, and that `nix run` would run whatever it put there on
 the host. See [In a project's flake](#in-a-projects-flake). The same goes for
 a clone of this repo: run `github:mgnsk/sandbox`, not a checkout you work on
 in a sandbox.
+
+### Per-user project settings: .sandbox.env
+
+`sandbox.nix` is the project's, committed. What differs per user - the
+token commands' secret-manager items, the git identity - goes in a
+`.sandbox.env` next to it, which the project gitignores (ship a
+`.sandbox.env.example` for reference):
+
+```sh
+# .sandbox.env - mine, not committed
+GH_TOKEN_COMMAND=op read op://Employee/GitHub/token
+FORGEJO_TOKEN_COMMAND_codeberg.org=op read op://Employee/Codeberg/token
+CLAUDE_API_KEY_COMMAND=op read op://Employee/Claude/credential
+
+GIT_USER_NAME=Some One
+GIT_USER_EMAIL=some.one@example.com
+GIT_SIGNING_KEY=ssh-ed25519 AAAAC3Nza... some.one@example.com
+```
+
+```gitignore
+.sandbox.env
+```
+
+It's `KEY=VALUE` lines (`#` comments, an optional `export `, values
+optionally quoted), never run by a shell; an unknown key stops the start.
+Every key is optional:
+
+- `GH_TOKEN_COMMAND`, `FORGEJO_TOKEN_COMMAND_<host>`, `CLAUDE_API_KEY_COMMAND`:
+  token commands, over `sandbox.nix`'s. They're still the project's to the
+  sandbox - sandboxed code can write this file like any other in the
+  project - so they're shown and approved like `sandbox.nix`'s, once and
+  again when they change. Your own config's still win.
+- `GIT_USER_NAME`, `GIT_USER_EMAIL`: git's author and committer inside.
+- `GIT_SIGNING_KEY`: an ssh public key in your agent; commits and tags inside
+  are signed with it (`gpg.format = ssh`), through the ssh agent guard,
+  which doesn't ask for signatures.
+
+The git settings only affect the inside, so they apply without asking.
+They're git config from the environment, so they override `~/.gitconfig`.
 
 ### Using devenv
 

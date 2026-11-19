@@ -329,6 +329,16 @@ treated as untrusted input:
   where the sandbox can't write; without a terminal the sandbox doesn't
   start.
 
+## Per-user project settings (.sandbox.env)
+
+`.sandbox.env` is in the project too, so it's untrusted like `sandbox.nix`:
+read on the host without following a symlink, parsed as plain `KEY=VALUE`
+lines (never by a shell), every key known. Its token commands go through
+the same approval as `sandbox.nix`'s; its git identity and signing key only
+set git's environment inside. Being gitignored keeps it out of commits, not
+out of the sandbox's reach - and the sandbox can read it, which is fine:
+it holds commands and public data, not secrets.
+
 ## Where the configuration comes from
 
 The configuration the launcher runs with is built on the host, so it must
