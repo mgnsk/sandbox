@@ -252,6 +252,9 @@ func TestOutputIsHeldBackUnderAPopup(t *testing.T) {
 	s := newSession(t)
 	flag := filepath.Join(t.TempDir(), "flag")
 	s.typeKeys("later " + flag + "\r")
+	// Echoed: the sandbox has the line. Asked any sooner, the popup could
+	// take the keys instead.
+	s.expect(flag + "\r\n")
 	answer := s.ask("question")
 	s.expect("question")
 	os.WriteFile(flag, nil, 0o600)
