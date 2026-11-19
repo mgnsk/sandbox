@@ -188,9 +188,6 @@ func TestTokens(t *testing.T) {
 		}
 		return resp.StatusCode, ""
 	}
-	if status, _ := auth(""); status != 403 {
-		t.Errorf("no token: %d", status)
-	}
 	if _, got := auth(projectToken); got != "token "+projectToken {
 		t.Errorf("token: %q", got)
 	}

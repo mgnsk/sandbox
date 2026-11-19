@@ -151,7 +151,7 @@ only has the placeholder).
 
 ## The router
 
-`sandbox-bin init` starts the router
+With a GitHub or Forgejo token command set, `sandbox-bin init` starts the router
 inside, before the command, in a session of its own (so a Ctrl-C to the
 command doesn't stop it). It listens on the sandbox's loopback, and every
 process gets it as `HTTPS_PROXY`, with a random per-start secret in the URL:

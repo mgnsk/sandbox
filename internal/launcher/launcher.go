@@ -319,19 +319,17 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 			return err
 		}
 	}
-	{
-		token := ""
-		if command := prof.GitHubTokenCommand; command != "" {
-			var err error
-			if token, err = l.runTokenCommand(ctx, "guards.github.tokenCommand", command); err != nil {
-				return err
-			}
+	// The API guards hold tokens: without a token command there's nothing
+	// for one to do, and requests go straight out.
+	if command := prof.GitHubTokenCommand; command != "" {
+		token, err := l.runTokenCommand(ctx, "guards.github.tokenCommand", command)
+		if err != nil {
+			return err
 		}
 		if err := g.github(ctx, a, token); err != nil {
 			fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
 		}
 	}
-	// Forgejo's guard has nothing to do without a host with a token.
 	if len(prof.ForgejoTokenCommands) > 0 {
 		commands, err := forgejoHosts("guards.forgejo.tokenCommands", prof.ForgejoTokenCommands)
 		if err != nil {

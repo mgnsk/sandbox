@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 
@@ -55,10 +54,6 @@ var (
 	tunnelHostSuffixes = []string{".githubusercontent.com", ".blob.core.windows.net"}
 )
 
-var errNoToken = errors.New("no GitHub token - set guards.github.tokenCommand, in the project's" +
-	" sandbox.nix or your sandbox config, to a command printing one (e.g. `op read op://...`)," +
-	" and restart the sandbox")
-
 // tunnel says whether a CONNECT to hostport passes through unread.
 func tunnel(hostport string) bool {
 	host, port, err := net.SplitHostPort(hostport)
@@ -79,9 +74,6 @@ func New(token string) *apiproxy.Proxy {
 			if !slices.Contains(TokenHosts, host) {
 				return apiproxy.Route{}, fmt.Errorf("host not allowed: %s", host)
 			}
-			if token == "" {
-				return apiproxy.Route{}, errNoToken
-			}
 			return apiproxy.Route{Host: host, Header: http.Header{"Authorization": {"token " + token}}}, nil
 		},
 		Describe: describe,
@@ -96,9 +88,7 @@ func Run(ctx context.Context) error {
 		return err
 	}
 	token := strings.TrimSpace(string(secret))
-	if token == "" {
-		fmt.Fprintf(os.Stderr, "sandbox: %v\n", errNoToken)
-	} else if !tokens.Valid(token) {
+	if !tokens.Valid(token) {
 		return errors.New("the launcher's token isn't one")
 	}
 	proxy, err := apiproxy.NewHTTPS(New(token))

@@ -618,14 +618,13 @@ and runs them only once you say yes - asked the first time, and again only
 if they change (sandboxed code can edit `sandbox.nix`). The same options in your own
 sandbox config are trusted: they run without asking, and win over the
 project's. There, a [profile](#profiles) can set them for the projects it
-matches. The GitHub and Forgejo guards have no switch: they always run, and
-the token commands decide which hosts get a token.
+matches. The GitHub and Forgejo guards have no switch: each runs once it
+has a token command.
 
 The command runs from `/`, with your terminal, so `op` can ask you to unlock
 it, and your `PATH`. If it fails or prints no token, the sandbox doesn't
-start. Without a command, GitHub API requests from inside are refused with a
-message naming the option, and a Forgejo host without one is reached
-without a token. A new token takes a restart.
+start. Without a command the guard doesn't run: requests to GitHub's API,
+or to a Forgejo host without one, go out without a token. A new token takes a restart.
 
 For GitHub, use a
 [fine-grained token](https://github.com/settings/personal-access-tokens/new)
@@ -652,8 +651,8 @@ would bypass the proxy and its popups.
 
 **How gh and fj reach the proxies.** The sandbox ships neither: bring them
 like any other tool, in the project's dev shell, `~/.nix-profile` or
-home-manager. Whichever one runs reaches the guards the same way. Every
-process inside gets `HTTPS_PROXY`
+home-manager. Whichever one runs reaches the guards the same way. With a
+GitHub or Forgejo token command set, every process inside gets `HTTPS_PROXY`
 pointing at a small router on the sandbox's own loopback, started before
 your command. It sends `CONNECT`s for the GitHub API hosts to gh-api-proxy,
 for Forgejo instances with a token to forgejo-api-proxy, and everything else

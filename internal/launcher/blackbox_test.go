@@ -254,13 +254,6 @@ func TestInsideEnvironment(t *testing.T) {
 		"PATH": "/env/bin:" + h.home + "/.nix-profile/bin", "B": h.home + "/x", "E": h.runtime + "/e",
 		"SANDBOX_EXCHANGE": filepath.Join(h.volume(), "exchange"),
 	}
-	// The GitHub guard, which always runs, adds its own.
-	for _, name := range []string{"GH_TOKEN", "SANDBOX_GH_PROXY", "SANDBOX_CA_FILE"} {
-		if got[name] == "" {
-			t.Errorf("no %s", name)
-		}
-		delete(got, name)
-	}
 	if !maps.Equal(got, want) {
 		t.Errorf("got  %v\nwant %v", got, want)
 	}
@@ -615,7 +608,7 @@ func TestLocalConfig(t *testing.T) {
 	}
 	p.send("y\r")
 	r = p.wait()
-	if r.code != 0 || !exists(mark) || strings.Contains(r.stdout, "no GitHub token") {
+	if r.code != 0 || !exists(mark) {
 		t.Errorf("approved: %d %q", r.code, r.stdout)
 	}
 	// The Claude key's settings (see TestClaudeKeySettings) over the managed
@@ -746,18 +739,19 @@ func TestClaudeAPIKey(t *testing.T) {
 func TestTokenCommands(t *testing.T) {
 	h := newHarness(t)
 	token := "github_pat_" + strings.Repeat("t", 30)
-	noToken := "no GitHub token"
+	const proxy = "SANDBOX_GH_PROXY"
 
 	h.cfg.Default.GitHubTokenCommand = "echo " + token
-	if r := h.run("", nil); r.code != 0 || strings.Contains(r.stderr, noToken) {
+	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()[proxy] == "" {
 		t.Errorf("config: %d %q", r.code, r.stderr)
 	}
 	h.cfg.Default.GitHubTokenCommand = "exit 3"
 	h.run("", nil).refused(t, "guards.github.tokenCommand (exit 3): exit status 3")
 	h.cfg.Default.GitHubTokenCommand = "echo 'not a token'"
 	h.run("", nil).refused(t, "didn't print a token")
+	// Without a command the guard doesn't run.
 	h.cfg.Default.GitHubTokenCommand = ""
-	if r := h.run("", nil); r.code != 0 || !strings.Contains(r.stderr, noToken) {
+	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()[proxy] != "" {
 		t.Errorf("none: %d %q", r.code, r.stderr)
 	}
 
@@ -780,7 +774,7 @@ func TestTokenCommands(t *testing.T) {
 		}
 	}
 	p.send("y\r")
-	if r := p.wait(); r.code != 0 || !ran() || strings.Contains(r.stdout, noToken) {
+	if r := p.wait(); r.code != 0 || !ran() {
 		t.Errorf("approved: %d %q", r.code, r.stdout)
 	}
 	if r := h.run("", nil); r.code != 0 || !ran() {
@@ -914,6 +908,8 @@ func TestHTTPSProxyGuards(t *testing.T) {
 			h := newHarness(t)
 			if name == "forgejo" {
 				h.cfg.Default.ForgejoTokenCommands = map[string]string{"forgejo.example": "echo forgejo-token"}
+			} else {
+				h.cfg.Default.GitHubTokenCommand = "echo github_pat_" + strings.Repeat("t", 30)
 			}
 			h.cfg.HostPorts = []string{"5037"}
 			r := h.run("", map[string]string{"VAR": variable}, h.tool("proxy-check"))
@@ -930,6 +926,10 @@ func TestHTTPSProxyGuards(t *testing.T) {
 				t.Errorf("%v", env)
 			}
 		})
+	}
+	h := newHarness(t)
+	if _, ok := h.run("", nil).pasta(t).setenv()["SANDBOX_CA_FILE"]; ok {
+		t.Error("a CA bundle without intercepting guards")
 	}
 }
 

@@ -25,15 +25,15 @@ let
     });
   };
 
-  # The API guards' switches are gone too: they always run, and the token
-  # commands decide what they do.
+  # The API guards' switches are gone too: a guard runs once it has a token
+  # command.
   goneSwitch = mkOption {
     type = types.unspecified;
     visible = false;
   };
   withoutGuardSwitches =
     lib.throwIf (options.guards.github.enable.isDefined || options.guards.forgejo.enable.isDefined)
-      "guards.github.enable and guards.forgejo.enable are gone: both guards are always on, and a host gets a token once a token command is set for it";
+      "guards.github.enable and guards.forgejo.enable are gone: each guard runs once a token command is set for it";
 
   layer' = import ./layer.nix { inherit lib pkgs; };
   layerOptions = layer'.options;
@@ -432,8 +432,8 @@ in
           the guard in memory: never written to disk, never inside the
           sandbox. Trusted, as your config: run without asking. It wins over
           a project's sandbox.nix, whose command is run only once you
-          approve it. Without either, GitHub API requests from inside are
-          refused.
+          approve it. Without either the guard doesn't run, and GitHub API
+          requests from inside go out without a token.
         '';
       };
       forgejo.tokenCommands = mkOption {
