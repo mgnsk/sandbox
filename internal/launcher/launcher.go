@@ -143,7 +143,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		}
 	}
 	if m != nil {
-		projectTokenCommands(l.cfg, prof, m)
+		projectTokenCommands(prof, m)
 		if err := l.approveProject(m); err != nil {
 			return nil, nil, err
 		}
@@ -319,19 +319,18 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 			return err
 		}
 	}
-	if gc.GitHub {
-		token := ""
-		if command := prof.GitHubTokenCommand; command != "" {
-			var err error
-			if token, err = l.runTokenCommand(ctx, "guards.github.tokenCommand", command); err != nil {
-				return err
-			}
+	// The API guards hold tokens: without a token command there's nothing
+	// for one to do, and requests go straight out.
+	if command := prof.GitHubTokenCommand; command != "" {
+		token, err := l.runTokenCommand(ctx, "guards.github.tokenCommand", command)
+		if err != nil {
+			return err
 		}
 		if err := g.github(ctx, a, token); err != nil {
 			fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
 		}
 	}
-	if gc.Forgejo {
+	if len(prof.ForgejoTokenCommands) > 0 {
 		commands, err := forgejoHosts("guards.forgejo.tokenCommands", prof.ForgejoTokenCommands)
 		if err != nil {
 			return err

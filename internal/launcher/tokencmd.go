@@ -36,19 +36,15 @@ func forgejoHosts(from string, commands map[string]string) (map[string]string, e
 }
 
 // projectTokenCommands drops from m the token commands that wouldn't run -
-// for a guard that's off, or one the user's config already sets - so
-// they're neither asked about nor run.
-func projectTokenCommands(cfg *config, prof profile, m *manifest) {
-	if !cfg.Guards.GitHub || prof.GitHubTokenCommand != "" {
+// those the user's config already sets - so they're neither asked about
+// nor run.
+func projectTokenCommands(prof profile, m *manifest) {
+	if prof.GitHubTokenCommand != "" {
 		m.GitHubTokenCommand = ""
 	}
 	// Without Claude Code in the sandbox (no managed config), no key.
 	if prof.ClaudeDir == "" || prof.ClaudeAPIKeyCommand != "" {
 		m.ClaudeAPIKeyCommand = ""
-	}
-	if !cfg.Guards.Forgejo {
-		m.ForgejoTokenCommands = nil
-		return
 	}
 	for host := range m.ForgejoTokenCommands {
 		if _, ok := prof.ForgejoTokenCommands[host]; ok {

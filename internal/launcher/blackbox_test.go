@@ -239,7 +239,7 @@ func TestNamespacesAndTheBaseFilesystem(t *testing.T) {
 	if inv.bwrap != "/store/bwrap" || inv.bash != h.cfg.Tools.Bash || inv.seccomp != h.cfg.Seccomp {
 		t.Errorf("%+v", inv)
 	}
-	if !slices.Contains(inv.pasta, "--config-net") || !slices.Contains(inv.pasta, "--host-lo-to-ns-lo") || inv.pastaOpt("-T") != "none" {
+	if !slices.Contains(inv.pasta, "--config-net") || !slices.Contains(inv.pasta, "--host-lo-to-ns-lo") || inv.tcpPorts() != "none" {
 		t.Errorf("%q", inv.pasta)
 	}
 }
@@ -319,7 +319,7 @@ func TestHostPortsAndDNS(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.HostPorts = []string{"5037", "9000-9010"}
 	inv := h.run("", map[string]string{"SANDBOX_HOST_PORTS": "8080/udp, 22/tcp 7"}).pasta(t)
-	if inv.pastaOpt("-T") != "5037,9000-9010,22,7" || inv.pastaOpt("-U") != "8080" {
+	if inv.tcpPorts() != "5037,9000-9010,22,7" || inv.pastaOpt("-U") != "8080" {
 		t.Errorf("%q", inv.pasta)
 	}
 	h.run("", map[string]string{"SANDBOX_HOST_PORTS": "22/sctp"}).refused(t, "SANDBOX_HOST_PORTS")
@@ -551,7 +551,7 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 	p.send("y\r")
 	r := p.wait()
 	inv := r.pasta(t)
-	if r.code != 0 || !slices.Contains(inv.mounts(), "--bind "+h.home+"/d "+h.home+"/d") || !slices.Contains(inv.mounts(), "--ro-bind-try /srv/x /x") || inv.pastaOpt("-T") != "5432" {
+	if r.code != 0 || !slices.Contains(inv.mounts(), "--bind "+h.home+"/d "+h.home+"/d") || !slices.Contains(inv.mounts(), "--ro-bind-try /srv/x /x") || inv.tcpPorts() != "5432" {
 		t.Errorf("%d %q", r.code, inv.mounts())
 	}
 	// Not again, even without a terminal.
@@ -576,7 +576,6 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 // without asking; a Claude key from it gets the managed apiKeyHelper.
 func TestLocalConfig(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Guards.GitHub = true
 	h.cfg.Default.ClaudeDir = filepath.Join(h.tmp, "claude")
 	os.MkdirAll(h.cfg.Default.ClaudeDir, 0o755)
 	os.WriteFile(filepath.Join(h.cfg.Default.ClaudeDir, "managed-settings.json"), []byte(`{"env": {"A": "1"}}`), 0o644)
@@ -609,7 +608,7 @@ func TestLocalConfig(t *testing.T) {
 	}
 	p.send("y\r")
 	r = p.wait()
-	if r.code != 0 || !exists(mark) || strings.Contains(r.stdout, "no GitHub token") {
+	if r.code != 0 || !exists(mark) {
 		t.Errorf("approved: %d %q", r.code, r.stdout)
 	}
 	// The Claude key's settings (see TestClaudeKeySettings) over the managed
@@ -739,20 +738,20 @@ func TestClaudeAPIKey(t *testing.T) {
 // start.
 func TestTokenCommands(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Guards.GitHub = true
 	token := "github_pat_" + strings.Repeat("t", 30)
-	noToken := "no GitHub token"
+	const proxy = "SANDBOX_GH_PROXY"
 
 	h.cfg.Default.GitHubTokenCommand = "echo " + token
-	if r := h.run("", nil); r.code != 0 || strings.Contains(r.stderr, noToken) {
+	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()[proxy] == "" {
 		t.Errorf("config: %d %q", r.code, r.stderr)
 	}
 	h.cfg.Default.GitHubTokenCommand = "exit 3"
 	h.run("", nil).refused(t, "guards.github.tokenCommand (exit 3): exit status 3")
 	h.cfg.Default.GitHubTokenCommand = "echo 'not a token'"
 	h.run("", nil).refused(t, "didn't print a token")
+	// Without a command the guard doesn't run.
 	h.cfg.Default.GitHubTokenCommand = ""
-	if r := h.run("", nil); r.code != 0 || !strings.Contains(r.stderr, noToken) {
+	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()[proxy] != "" {
 		t.Errorf("none: %d %q", r.code, r.stderr)
 	}
 
@@ -775,7 +774,7 @@ func TestTokenCommands(t *testing.T) {
 		}
 	}
 	p.send("y\r")
-	if r := p.wait(); r.code != 0 || !ran() || strings.Contains(r.stdout, noToken) {
+	if r := p.wait(); r.code != 0 || !ran() {
 		t.Errorf("approved: %d %q", r.code, r.stdout)
 	}
 	if r := h.run("", nil); r.code != 0 || !ran() {
@@ -907,7 +906,11 @@ func TestHTTPSProxyGuards(t *testing.T) {
 	for name, variable := range map[string]string{"github": "SANDBOX_GH_PROXY", "forgejo": "SANDBOX_FJ_PROXY"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
-			h.cfg.Guards.GitHub, h.cfg.Guards.Forgejo = name == "github", name == "forgejo"
+			if name == "forgejo" {
+				h.cfg.Default.ForgejoTokenCommands = map[string]string{"forgejo.example": "echo forgejo-token"}
+			} else {
+				h.cfg.Default.GitHubTokenCommand = "echo github_pat_" + strings.Repeat("t", 30)
+			}
 			h.cfg.HostPorts = []string{"5037"}
 			r := h.run("", map[string]string{"VAR": variable}, h.tool("proxy-check"))
 			fields := strings.Fields(r.stdout)
@@ -915,7 +918,7 @@ func TestHTTPSProxyGuards(t *testing.T) {
 				t.Fatalf("%d %q %q", r.code, r.stdout, r.stderr)
 			}
 			inv := r.pasta(t)
-			if inv.pastaOpt("-T") != "5037,"+fields[0] || fields[1] == "407" || fields[2] != "407" {
+			if inv.tcpPorts() != "5037" || !strings.Contains(inv.pastaOpt("-T"), fields[0]) || fields[1] == "407" || fields[2] != "407" {
 				t.Errorf("%q %q", inv.pastaOpt("-T"), fields)
 			}
 			env := inv.setenv()

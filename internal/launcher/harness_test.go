@@ -401,6 +401,22 @@ func (inv *invocation) pastaOpt(flag string) string {
 	return inv.pasta[slices.Index(inv.pasta, flag)+1]
 }
 
+// tcpPorts is pasta's -T without the API guards' own ports, which every
+// sandbox maps in.
+func (inv *invocation) tcpPorts() string {
+	env := inv.setenv()
+	var ports []string
+	for _, port := range strings.Split(inv.pastaOpt("-T"), ",") {
+		if !strings.HasSuffix(env["SANDBOX_GH_PROXY"], ":"+port) && !strings.HasSuffix(env["SANDBOX_FJ_PROXY"], ":"+port) {
+			ports = append(ports, port)
+		}
+	}
+	if len(ports) == 0 {
+		return "none"
+	}
+	return strings.Join(ports, ",")
+}
+
 func (inv *invocation) setenv() map[string]string {
 	env := map[string]string{}
 	a := inv.mountArgs

@@ -52,10 +52,12 @@ assert fails [ { packages = [ pkgs.hello ]; } ];
 assert fails [ { basePackages = [ ]; } ];
 assert fails [ { claude.package = pkgs.hello; } ];
 assert fails [ { env.EDITOR = "nvim"; } ];
+# The API guards have no switch.
+assert fails [ { guards.github.enable = false; } ];
+assert fails [ { guards.forgejo.enable = true; } ];
 runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
-    .guards.forgejo == true
-    and .hostPorts == ["5432"]
+    .hostPorts == ["5432"]
     and .default.claudeApiKeyCommand == null
     and ([.profiles[] | {name, paths, claudeApiKeyCommand}]
          == [{name: "work", paths: ["~/work"], claudeApiKeyCommand: "op read op://v/claude/key"}])

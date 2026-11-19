@@ -151,7 +151,7 @@ only has the placeholder).
 
 ## The router
 
-With the GitHub or Forgejo guard on, `sandbox-bin init` starts the router
+With a GitHub or Forgejo token command set, `sandbox-bin init` starts the router
 inside, before the command, in a session of its own (so a Ctrl-C to the
 command doesn't stop it). It listens on the sandbox's loopback, and every
 process gets it as `HTTPS_PROXY`, with a random per-start secret in the URL:
@@ -196,7 +196,7 @@ it to its guard over a pipe, and nothing else keeps it.
 A command is code run on the host as the user, outside the sandbox, so where
 it comes from is the boundary:
 
-- **The user's config** (home-manager, a flake with `mkSandbox`, a profile):
+- **The user's config** (home-manager, a profile in it):
   trusted like the rest of it, run without asking. It wins over the
   project's for the same guard or host.
 - **The project's `sandbox.nix`** (or `.sandbox.yml`, below): sandboxed code can edit it, so its

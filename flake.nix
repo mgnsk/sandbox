@@ -16,21 +16,19 @@
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
       # A `sandbox` package from configuration modules (see nix/module.nix
-      # for the options), e.g.
-      #   sandbox.lib.mkSandbox { inherit pkgs; modules = [ { guards.forgejo.enable = true; } ]; }
+      # for the options). Not exported: a sandbox config of one's own comes
+      # through the home-manager module only.
       evalSandbox = import ./nix/eval.nix { inherit lib; };
       mkSandbox = args: (evalSandbox args).package;
     in
     {
-      lib = { inherit mkSandbox evalSandbox; };
-
       # programs.sandbox for home-manager.
       homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
 
       # The sandbox with default settings, run from this flake's remote:
       #   nix run github:mgnsk/sandbox[/REV] -- COMMAND...
       # It reads no user config; settings of your own come from home-manager
-      # (homeManagerModules) or a flake with mkSandbox (see the README).
+      # (homeManagerModules), a project's from its sandbox.nix.
       packages = forAllSystems (pkgs: {
         default = mkSandbox { inherit pkgs; };
       });
