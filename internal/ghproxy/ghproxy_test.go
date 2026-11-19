@@ -205,10 +205,11 @@ func TestTokens(t *testing.T) {
 	}
 }
 
-// -- end to end, through the sandbox's gh --
+// -- end to end, with a real gh --
 
-// gh runs the wrapped gh (nix/packages.nix) on PATH, through a fresh
-// gh-api-proxy to a stand-in for GitHub; its output, stderr and popups.
+// gh runs gh from PATH, through a fresh gh-api-proxy to a stand-in for
+// GitHub, with the proxy settings the sandbox's router hands it on to; its
+// output, stderr and popups.
 func gh(t *testing.T, upstream *apiproxytest.Upstream, answer popup.Answer, args ...string) (stdout, stderr string, asked []popup.Request, err error) {
 	t.Helper()
 	dir := t.TempDir()
@@ -234,13 +235,8 @@ func gh(t *testing.T, upstream *apiproxytest.Upstream, answer popup.Answer, args
 		"GH_TOKEN=placeholder",
 		"GH_NO_UPDATE_NOTIFIER=1",
 		"GH_TELEMETRY=false",
-		"SANDBOX_GH_PROXY=" + u.String(),
-		"SANDBOX_CA_FILE=" + bundle,
-		// Decoys the wrapper has to override.
-		"HTTPS_PROXY=http://127.0.0.1:1",
-		"https_proxy=http://127.0.0.1:1",
-		"NO_PROXY=*",
-		"SSL_CERT_FILE=/nonexistent",
+		"HTTPS_PROXY=" + u.String(),
+		"SSL_CERT_FILE=" + bundle,
 	}
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -275,7 +271,7 @@ func github(w http.ResponseWriter, r *http.Request) {
 
 func TestGh(t *testing.T) {
 	if _, err := exec.LookPath("gh"); err != nil {
-		t.Skip("needs gh (the sandbox's wrapper) on PATH")
+		t.Skip("needs gh on PATH")
 	}
 	newUpstream := func() *apiproxytest.Upstream {
 		u := apiproxytest.NewUpstream(t)

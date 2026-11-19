@@ -29,8 +29,9 @@ What you get, per project:
   behalf waits for a popup on the terminal the sandbox runs in (answer once,
   or "always, for this sandbox"):
   - your ssh agent: logins and pushes ask, commit signing doesn't;
-  - GitHub through `gh` (the host's or the project's token): writes ask, reads don't;
-  - Forgejo through `fj` (opt-in): the same;
+  - the GitHub API (the host's or the project's token), from `gh` or any
+    other client: writes ask, reads don't;
+  - Forgejo APIs (opt-in): the same;
   - the Claude API on a per-project API key (opt-in): never asks;
   - opening http(s) URLs in the host's browser: asks.
 - **A Secret Service** per project, so tools storing credentials via libsecret
@@ -604,17 +605,22 @@ What makes this safe is where it runs from, so:
 `sandbox.nix` still works on top, for settings the project's code may
 change; this flake is for what must stay out of its reach.
 
-**gh or fj in `~/.nix-profile`?** Inside, `gh` and `fj` must be this flake's
-wrappers: upstream gh and fj pointed at their guard's proxy and trusting its
-per-sandbox CA. The sandbox puts its own first on `PATH`, but a login shell
-that prepends `~/.nix-profile/bin` brings the profile's copy first, and that
-one fails with 401 (it only has the placeholder token). Either:
+**gh and fj** aren't provided: bring them like any other tool, in the
+project's dev shell, `~/.nix-profile` or home-manager. Whichever one runs
+reaches the guards the same way, through the router (below), so no wrapper
+or `PATH` order matters.
 
-- don't keep `gh`/`fj` in `~/.nix-profile`: the sandbox brings its own, and
-  with [per-project tokens](#authentication) the host doesn't need gh at all;
-- or use the home-manager module, which installs the wrappers at high
-  priority and builds them from your own nixpkgs (outside a sandbox they're
-  plain gh and fj).
+**The router.** With the GitHub or Forgejo guard on, every process inside
+gets `HTTPS_PROXY` pointing at a small router on the sandbox's own loopback,
+started before your command. It sends `CONNECT`s for the GitHub API hosts to
+gh-api-proxy, for Forgejo instances with a token to forgejo-api-proxy, and
+everything else straight out over the sandbox's network, as without a
+proxy. `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
+`REQUESTS_CA_BUNDLE` add the guards' CAs, so clients complete TLS with them
+(code calling a pip-installed `certifi.where()` itself still won't); `NO_PROXY` keeps loopback
+direct, for dev servers. Clients that ignore `HTTPS_PROXY` simply bypass it
+(and reach the APIs without a token). A host `HTTPS_PROXY` passed in with
+`passEnv` is replaced: the router dials out directly.
 
 ## Configuration
 

@@ -8,8 +8,9 @@
 //   - HTTPS.Serve: an HTTPS_PROXY on the host's loopback, which pasta maps
 //     into the sandbox. A client CONNECTs (with the per-launch secret in
 //     Proxy-Authorization), the proxy answers the TLS handshake itself with
-//     a certificate from its own throwaway CA (mitmca), which only the
-//     sandbox's gh and fj wrappers trust, and reads the requests inside.
+//     a certificate from its own throwaway CA (mitmca), which clients inside
+//     trust, and reads the requests inside. Inside, clients reach it
+//     through the sandbox's router (internal/router).
 //
 // Either way, per request, the proxy:
 //
@@ -43,6 +44,10 @@ import (
 // Each read of a client's request head.
 const headerTimeout = 60 * time.Second
 
+// StatusNotHandled answers a CONNECT to a host the guard doesn't take (see
+// Guard.Handles).
+const StatusNotHandled = http.StatusNotFound
+
 // Guard is what an API guard decides; the proxy does the rest.
 type Guard struct {
 	// Name names the guard in refusals and popups.
@@ -58,6 +63,11 @@ type Guard struct {
 	// read; it may read the body with ReadBody. Unset, everything but GET
 	// and HEAD is a write.
 	Describe func(r *http.Request, host string) (string, error)
+	// Handles, if set, says which hosts (lowercase, without ":443") this
+	// guard takes at all. A CONNECT to any other is answered
+	// StatusNotHandled before anything is read, so the sandbox's router
+	// sends it straight to the host instead. Checked per CONNECT.
+	Handles func(host string) bool
 	// Tunnel, if set, says which CONNECT targets (host:port) are passed
 	// through as they are, unread: hosts that get no credentials, which the
 	// client's children (git under gh) may reach too.

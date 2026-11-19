@@ -157,7 +157,7 @@ func ServeHTTPS(t testing.TB, p *apiproxy.Proxy) (*apiproxy.HTTPS, *url.URL) {
 }
 
 // Client is an HTTP client through the proxy at proxyURL, trusting its CA
-// alone, as the sandbox's gh and fj do.
+// alone.
 func Client(h *apiproxy.HTTPS, proxyURL *url.URL) *http.Client {
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM([]byte(h.Info().CA))

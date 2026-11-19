@@ -20,6 +20,7 @@ import (
 	"github.com/mgnsk/sandbox/internal/initcmd"
 	"github.com/mgnsk/sandbox/internal/launcher"
 	"github.com/mgnsk/sandbox/internal/openurl"
+	"github.com/mgnsk/sandbox/internal/router"
 	"github.com/mgnsk/sandbox/internal/secretservice"
 	"github.com/mgnsk/sandbox/internal/sshagent"
 	"github.com/mgnsk/sandbox/internal/xdgopen"
@@ -81,6 +82,7 @@ func root() *cli.Command {
 		Commands: []*cli.Command{
 			launch(),
 			initCommand(),
+			routerCommand(),
 			xdgOpen(),
 			guardCommand("ssh-agent-guard", "gate SSH agent signatures behind a popup",
 				[]string{"UPSTREAM_SOCKET"}, func(ctx context.Context, a []string) error {
@@ -159,6 +161,20 @@ func initCommand() *cli.Command {
 				return cli.Exit("sandbox-bin init: usage: sandbox-bin init NIX_PROFILE HM_GENERATION COMMAND...", 2)
 			}
 			return status(initcmd.Run(args[0], args[1], args[2:]))
+		},
+	}
+}
+
+func routerCommand() *cli.Command {
+	return &cli.Command{
+		Name:   "router",
+		Usage:  "the HTTPS_PROXY inside, in front of the API guards (started by init)",
+		Hidden: true,
+		Action: func(context.Context, *cli.Command) error {
+			if err := router.Main(); err != nil {
+				return cli.Exit("sandbox-bin router: "+err.Error(), 1)
+			}
+			return nil
 		},
 	}
 }

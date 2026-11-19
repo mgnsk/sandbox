@@ -40,10 +40,6 @@ in
 
   config = lib.mkIf cfg.enable {
     programs.sandbox.package = sandbox.package;
-    # The linked profile's bin/ can end up before the sandbox's own on PATH
-    # inside (e.g. targets.genericLinux sources nix.sh, which prepends it);
-    # an unwrapped gh or fj there would send the placeholder token straight
-    # to the API. High priority, so these win over the profile's own.
-    home.packages = [ cfg.package ] ++ map lib.hiPrio sandbox.clientPackages;
+    home.packages = [ cfg.package ];
   };
 }

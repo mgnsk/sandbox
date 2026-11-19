@@ -100,22 +100,27 @@ sandbox has.
 else a repo's `.git/` names run sandboxed. Nothing on the host runs git
 against a sandbox-writable repo.
 
-The sandbox's `gh` is upstream gh in a wrapper (`nix/packages.nix`) that sets
-`HTTPS_PROXY` to gh-api-proxy (`internal/ghproxy`) and `SSL_CERT_FILE` to a bundle with that
-proxy's CA, with `GH_TOKEN` set to a fixed placeholder. The proxy runs on the
-host and holds the real token: the project's, if `sandbox --gh-token` set one
+Inside, `GH_TOKEN` is a fixed placeholder, and every process's
+`HTTPS_PROXY` is the router (`internal/router`, see "The router" below),
+which chains `CONNECT`s for the GitHub API hosts to gh-api-proxy
+(`internal/ghproxy`). Any `gh` works, wherever it comes from; the sandbox
+ships none. The proxy runs on the host and holds the real token: the project's, if `sandbox --gh-token` set one
 (`github-token` in the volume dir, mode 0600, re-read every request), else the
 host gh's, read at start. It listens on a free port of the host's
 loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
-carrying a random per-launch secret (in the proxy URL inside, sent as Basic
+carrying a random per-launch secret (`SANDBOX_GH_PROXY`, handed to the
+router and left out of the command's environment, sent as Basic
 `Proxy-Authorization`), since anything on the host's loopback can reach the
 port.
 
 For the two API hosts (`TOKEN_HOSTS`), it answers the TLS handshake itself,
 with a certificate from a CA it generated at startup. The CA's key exists only
-in the proxy's memory and dies with it; its certificate is trusted only by the
-wrapped gh and fj (`SANDBOX_CA_FILE`), never sandbox-wide. Inside the tunnel,
-per request, it:
+in the proxy's memory and dies with it. Its certificate is trusted
+sandbox-wide (`SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
+`REQUESTS_CA_BUNDLE` all name `SANDBOX_CA_FILE`, the system bundle plus the guards' CAs), so any
+client completes TLS with the guard. That trust can't be used to read other
+traffic: nothing inside can mint a certificate, and only connections the
+router sends to a guard ever meet one. Inside the tunnel, per request, it:
 
 - requires `Host` to be the `CONNECT` target;
 - drops the client's `Authorization` and adds the real token;
@@ -125,24 +130,49 @@ per request, it:
 - refuses chunked request bodies, and requests with more than one `Host` or
   `Content-Length`.
 
-The download hosts gh gets redirected to, and `github.com` (for git under gh,
-which inherits `HTTPS_PROXY`), are tunneled unread, without a token: the
-sandbox can reach them directly anyway. Every other host is intercepted and
-refused, so the proxy can't be used to reach the host's own services.
+The router sends only the two API hosts here; `github.com`, the download
+hosts and everything else it dials itself. The proxy still tunnels the
+download hosts and `github.com` unread, without a token, for a client that
+talks to it directly, and intercepts and refuses every other host, so it
+can't be used to reach the host's own services.
 
-The gate is the proxy, not `gh`: anything in the sandbox can read the proxy
-URL from the environment and talk to it, and gets the same treatment. The
+The gate is the proxy, not `gh`: anything in the sandbox that honors
+`HTTPS_PROXY` - curl, a script, an npm package - reaches it through the
+router and gets the same treatment, as does anything that finds the guard's
+URL (the router's environment is readable inside). The
 popup can't name the requesting process, since the proxy's peer is pasta. Reads are unprompted and cover whatever
 the token can read. Pushes go over ssh through ssh-agent-guard (HTTPS git
 only has the placeholder).
 
+## The router
+
+With the GitHub or Forgejo guard on, `sandbox-bin init` starts the router
+inside, before the command, in a session of its own (so a Ctrl-C to the
+command doesn't stop it). It listens on the sandbox's loopback, and every
+process gets it as `HTTPS_PROXY`, with a random per-start secret in the URL:
+ports bound inside are forwarded to the host's loopback, so without it any
+host process could use the guards' tokens through the router.
+
+It only answers `CONNECT`, and opens the tunnel one of three ways: chained
+to gh-api-proxy (the GitHub API hosts), chained to forgejo-api-proxy (hosts
+that guard takes), or dialed by itself, from inside, over the sandbox's own
+network. The guards still see only their own hosts, so routing every client
+through it adds no way out to the host: what it dials, the client could have
+dialed itself.
+
+It runs as the sandbox's user, so code inside can kill or replace it; that
+breaks the GitHub and Forgejo APIs for proxy-aware clients until the next
+start, and gains nothing a client couldn't already do with the guards' URLs.
+
 ## Forgejo: fj runs inside, the token stays outside
 
-The same arrangement for `fj` (forgejo-cli): upstream fj, wrapped to use
-forgejo-api-proxy (`internal/forgejoproxy`, sharing `internal/apiproxy` with gh-api-proxy, with a
-CA, port and secret of its own) as its `HTTPS_PROXY`; the sandbox has no
-Forgejo token at all. The proxy intercepts every host, tunnels none, and per
-request:
+The same arrangement for Forgejo, with forgejo-api-proxy
+(`internal/forgejoproxy`, sharing `internal/apiproxy` with gh-api-proxy, with a
+CA, port and secret of its own); the sandbox has no Forgejo token at all. The
+router doesn't know the instances: it offers every `CONNECT` the GitHub
+proxy didn't take to this one first. The proxy answers 404 at once, unread,
+for a host it has no token for (the router then dials it itself), and
+intercepts the rest; it tunnels none, and per request:
 
 - forwards only to instances there's a token for, over HTTPS, dropping the
   client's `Authorization` and adding that instance's token: the project's

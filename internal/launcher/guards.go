@@ -43,8 +43,8 @@ type guards struct {
 	dirs   []string
 	popups *net.UnixListener // Where the guards ask, if anywhere.
 
-	// Host loopback ports pasta maps in (-T), and CA certificates the gh/fj
-	// wrappers trust, from the HTTPS-intercepting guards.
+	// Host loopback ports pasta maps in (-T), and CA certificates clients
+	// inside trust, from the HTTPS-intercepting guards.
 	tcpPorts []string
 	caCerts  []string
 }
@@ -287,8 +287,9 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, run
 // It listens on a free port of the host's loopback, which pasta maps to the
 // same port inside. The URL carries a per-launch secret the guard checks,
 // since anything on the host's loopback can connect to that port. Its CA
-// certificate (the key stays in the guard) goes into the bundle the gh/fj
-// wrappers trust, see caBundle.
+// certificate (the key stays in the guard) goes into the bundle clients
+// inside trust, see caBundle. The URL goes to the router (internal/router),
+// which init starts inside and every client reaches the guards through.
 func (g *guards) httpsProxy(ctx context.Context, name string, args ...string) (string, error) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -309,9 +310,8 @@ func (g *guards) httpsProxy(ctx context.Context, name string, args ...string) (s
 	return "http://sandbox:" + info.Secret + "@127.0.0.1:" + port, nil
 }
 
-// github: gh inside (upstream gh, wrapped to use SANDBOX_GH_PROXY as its
-// HTTPS_PROXY) has just a placeholder token; gh-api-proxy, out here,
-// intercepts its requests, swaps in the real token - the project's
+// github: gh inside (any gh, through the router) has just a placeholder
+// token; gh-api-proxy, out here, intercepts its requests, swaps in the real token - the project's
 // (`sandbox --gh-token`) or else the host's - and gates writes behind a
 // popup. Never a per-sandbox OAuth login: those hit GitHub's cap on
 // simultaneously valid tokens.
@@ -339,8 +339,9 @@ func (g *guards) forgejo(ctx context.Context, a *bwrapArgs, volumeDir string) er
 }
 
 // caBundle: the system CA bundle plus the HTTPS-intercepting guards' CAs,
-// as SANDBOX_CA_FILE, which the gh/fj wrappers make their SSL_CERT_FILE.
-// Nothing else inside trusts these CAs.
+// as SANDBOX_CA_FILE, which init makes every client's SSL_CERT_FILE (and
+// NIX_SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE). Only connections the router
+// sends to a guard meet these CAs' certificates.
 func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 	if len(g.caCerts) == 0 {
 		return nil

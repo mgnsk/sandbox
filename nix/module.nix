@@ -54,8 +54,6 @@ let
   basePackages =
     cfg.basePackages
     ++ lib.optional (cfg.claude.enable && cfg.claude.package != null) cfg.claude.package
-    ++ lib.optional cfg.guards.github.enable sandboxPkgs.gh
-    ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli
     ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
 
   # The same for every profile: packages and env are the top level's alone.
@@ -380,12 +378,12 @@ in
       github.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "gh inside, its API requests intercepted by a host proxy (HTTPS_PROXY, with a per-sandbox CA only gh trusts) that holds the token (the project's from `sandbox --gh-token`, else the host gh's) and gates writes.";
+        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the token (the project's from `sandbox --gh-token`, else the host gh's) and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
       };
       forgejo.enable = mkOption {
         type = types.bool;
         default = false;
-        description = "fj (forgejo-cli) inside, its API requests intercepted by a host proxy (as for gh) holding the tokens (the project's from `sandbox --fj-token HOST`, else the host fj's).";
+        description = "Forgejo API requests from inside, to instances with a token, routed to a host proxy (as for GitHub) holding the tokens (the project's from `sandbox --fj-token HOST`, else the host fj's). fj itself isn't provided.";
       };
       claudeApiKey.enable = mkOption {
         type = types.bool;
@@ -429,17 +427,6 @@ in
       description = "The `sandbox` command.";
     };
 
-    clientPackages = mkOption {
-      type = types.listOf types.package;
-      readOnly = true;
-      description = ''
-        The wrapped clients the guards rely on (gh, fj), for putting first in
-        a profile whose PATH entry can come before the sandbox's own inside.
-        They're upstream gh and fj, which the wrappers point at the guards'
-        proxies; without the sandbox's variables they behave as usual.
-      '';
-    };
-
     configFile = mkOption {
       type = types.package;
       readOnly = true;
@@ -449,10 +436,6 @@ in
 
   config = {
     inherit configFile;
-
-    clientPackages =
-      lib.optional cfg.guards.github.enable sandboxPkgs.gh
-      ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli;
 
     package = pkgs.writeShellScriptBin "sandbox" ''
       exec ${lib.getExe sandboxPkgs.sandbox} launch --config ${configFile} "$@"
