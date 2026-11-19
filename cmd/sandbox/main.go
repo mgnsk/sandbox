@@ -15,6 +15,7 @@ import (
 	"github.com/mgnsk/sandbox/internal/forgejoproxy"
 	"github.com/mgnsk/sandbox/internal/ghproxy"
 	"github.com/mgnsk/sandbox/internal/initcmd"
+	"github.com/mgnsk/sandbox/internal/launcher"
 	"github.com/mgnsk/sandbox/internal/openurl"
 	"github.com/mgnsk/sandbox/internal/secretservice"
 	"github.com/mgnsk/sandbox/internal/sshagent"
@@ -23,6 +24,7 @@ import (
 
 // Each also listed in the programs file, which the package links by.
 var programs = map[string]func(args []string) int{
+	"sandbox":              launcher.Main,
 	"sandbox-init":         initcmd.Main,
 	"open-url-guard":       openurl.Main,
 	"sandbox-xdg-open":     xdgopen.Main,

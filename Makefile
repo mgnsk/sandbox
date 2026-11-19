@@ -29,20 +29,20 @@ coverage:
 
 # The whole suite, with the Go binary's programs in place of src/'s.
 test-go: go-build
-	SANDBOX_GUARD_CMD='$(CURDIR)/$(GO_BIN)/{name}' \
+	SANDBOX_GUARD_CMD='$(CURDIR)/$(GO_BIN)/{name}' SANDBOX_LAUNCHER='$(CURDIR)/$(GO_BIN)/sandbox' \
 		$(DEV) pytest -q -rs -p no:cacheprovider $(if $(K),-k '$(K)') tests
 
 # Line coverage of the Go code by the same suite.
 coverage-go: GO_COVER = -cover -covermode=atomic
 coverage-go: go-build
 	rm -rf .build/go/cover && mkdir -p .build/go/cover
-	GOCOVERDIR=$(CURDIR)/.build/go/cover SANDBOX_GUARD_CMD='$(CURDIR)/$(GO_BIN)/{name}' \
+	GOCOVERDIR=$(CURDIR)/.build/go/cover SANDBOX_GUARD_CMD='$(CURDIR)/$(GO_BIN)/{name}' SANDBOX_LAUNCHER='$(CURDIR)/$(GO_BIN)/sandbox' \
 		$(DEV) pytest -q -p no:cacheprovider $(if $(K),-k '$(K)') tests
 	$(DEV) sh -c 'go tool covdata textfmt -i=.build/go/cover -o=.build/go/cover.txt && go tool cover -func=.build/go/cover.txt'
 
 go-build:
 	$(DEV) go build $(GO_COVER) -o $(GO_BIN)/sandbox ./cmd/sandbox
-	for p in $(GO_PROGRAMS); do ln -sf sandbox $(GO_BIN)/$$p; done
+	for p in $(filter-out sandbox,$(GO_PROGRAMS)); do ln -sf sandbox $(GO_BIN)/$$p; done
 
 lint:
 	$(DEV) sh -c 'ruff check . && ruff format --check .'

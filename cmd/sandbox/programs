@@ -6,3 +6,4 @@ secret-service-guard
 claude-api-proxy
 forgejo-api-proxy
 gh-api-proxy
+sandbox

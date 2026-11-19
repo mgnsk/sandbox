@@ -257,10 +257,10 @@ def test_user_and_runtime_dir_fallbacks(launcher):
 def test_login_shell_or_command(launcher):
     """sandbox-init first, then a login shell, which runs a given command
     after its startup files."""
-    init = launcher.config["init"]["script"]
     inv = launcher.run().pasta
     assert inv.command is None
-    assert inv.init[inv.init.index(init) + 3 :] == ["/store/bash", "--login"]
+    assert os.path.basename(inv.init_program[-1]) == "sandbox-init"
+    assert inv.shell == ["/store/bash", "--login"]
     result = launcher.run("echo", "hello there")
     assert result.pasta.command == ["echo", "hello there"]
     assert result.stdout == "hello there\n"
@@ -271,13 +271,10 @@ def test_init_gets_the_nix_profile_and_home_manager_generation(launcher):
     target.mkdir()
     (launcher.home / ".nix-profile").symlink_to(target)
     launcher.config["init"].update(nixProfile=True, homeManager=True)
-    init = launcher.run().pasta.init
-    i = init.index(launcher.config["init"]["script"])
     # The home-manager one doesn't exist.
-    assert init[i + 1 : i + 3] == [str(target), ""]
+    assert launcher.run().pasta.init_paths == [str(target), ""]
     launcher.config["init"].update(nixProfile=False)
-    init = launcher.run().pasta.init
-    assert init[i + 1 : i + 3] == ["", ""]
+    assert launcher.run().pasta.init_paths == ["", ""]
 
 
 def test_exit_status_is_the_sandbox_s(launcher):

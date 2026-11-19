@@ -38,7 +38,10 @@ runCommand (if sandbox-go == null then "sandbox-tests" else "sandbox-go-tests")
     # replaces it.
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
     mkdir -p $HOME
-    ${lib.optionalString (sandbox-go != null) "export SANDBOX_GUARD_CMD='${sandbox-go}/bin/{name}'"}
+    ${lib.optionalString (sandbox-go != null) ''
+      export SANDBOX_GUARD_CMD='${sandbox-go}/bin/{name}'
+      export SANDBOX_LAUNCHER='${sandbox-go}/bin/sandbox'
+    ''}
     python -m pytest -q -p no:cacheprovider tests
     touch $out
   ''

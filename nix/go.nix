@@ -18,7 +18,7 @@ buildGoModule {
     ];
   };
   # Update with lib.fakeHash and the hash nix reports after a go.mod change.
-  vendorHash = "sha256-YHVlL6pUokcwO+mLj+QwqXjTqPjtO/KnvbxOnHD9Wuc=";
+  vendorHash = "sha256-KOaiEQl3htqD9gXHNb/Kd5hGGTYna5qb806v6OZCj94=";
   env.CGO_ENABLED = 0;
   ldflags = [
     "-s"
@@ -30,7 +30,7 @@ buildGoModule {
   );
   postInstall = ''
     for p in $programs; do
-      ln -s sandbox $out/bin/$p
+      [ "$p" = sandbox ] || ln -s sandbox $out/bin/$p
     done
   '';
   meta.mainProgram = "sandbox";

@@ -155,7 +155,12 @@ class Invocation:
         chdir = self.args.index("--chdir")
         self.mount_args = self.args[:chdir]
         self.chdir = self.args[chdir + 1]
+        # sandbox-init (however it's started) PROFILE GENERATION SHELL --login ...
         self.init = self.args[chdir + 2 :]
+        login = self.init.index("--login")
+        self.init_program = self.init[: login - 3]
+        self.init_paths = self.init[login - 3 : login - 1]
+        self.shell = self.init[login - 1 :]
 
     def pasta_opt(self, flag):
         return self.pasta[self.pasta.index(flag) + 1]
@@ -307,7 +312,11 @@ class Launcher:
             # Leaks the launcher must keep out.
             "GH_TOKEN": "host-gh-token",
             # Coverage of the launcher and the guards, when measured.
-            **{k: v for k, v in os.environ.items() if k.startswith("COVERAGE_")},
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if k.startswith("COVERAGE_") or k == "GOCOVERDIR"
+            },
         }
 
     def close(self):
