@@ -5,9 +5,6 @@ updates:
     directory: /
     schedule:
       interval: monthly
-    # Skip releases younger than two weeks.
-    cooldown:
-      default-days: 14
     groups:
       actions:
         patterns: ["*"]
@@ -19,3 +16,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Direct Go dependencies only; indirect ones follow through go.mod.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: direct
+    groups:
+      go:
+        patterns: ["*"]
