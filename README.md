@@ -63,7 +63,7 @@ program on the host, not just the sandbox.
 
 ## Install
 
-Pick one of three ways to get a `sandbox` command:
+Pick one of two ways to get a `sandbox` command:
 
 - **From this repo, with default settings** - nothing to install:
 
@@ -78,27 +78,47 @@ Pick one of three ways to get a `sandbox` command:
   [Using it in a project](#using-it-in-a-project)) - or it's in your
   `~/.nix-profile` or home-manager.
 
-  Pin it to a commit with `github:mgnsk/sandbox/<rev>` (and optionally
-  `?narHash=sha256-...`, see [Pinning](#pinning)). An alias in your shell
-  config makes it `sandbox`:
+  An alias in your shell config makes it `sandbox`:
 
   ```sh
   alias sandbox='nix run github:mgnsk/sandbox --'
   ```
 
-  It reads no config of yours; the repo you work on can still adjust what
-  applies inside through its [sandbox.nix](#the-projects-sandboxnix).
+  It reads no config of yours; the repo you work on adjusts what applies
+  inside through its [sandbox.nix](#the-projects-sandboxnix), and you through
+  your [.sandbox.yml](#per-user-project-settings-sandboxyml) there. It can
+  be [pinned](#pinning) to a commit.
 - **Your home-manager config**, with settings of your own for every
-  project: `programs.sandbox`, see [With home-manager](#with-home-manager).
-- **The flake of the repo you work on**, so everyone working on it gets the
-  same settings - only needed for settings `sandbox.nix` can't change (those
-  that apply on the host: which guards run, `passEnv`, ...). Run it from the
-  repo's remote, never from your local clone, which the sandbox can write;
-  see [In a project's flake](#in-a-projects-flake).
+  project: `programs.sandbox`, see [Your sandbox config](#your-sandbox-config).
+  The only way to change what applies on the host: which guards run,
+  `passEnv`, the ssh agent socket, profiles, ...
 
 `sandbox` in the rest of this README is whichever of these you use. The repo
 you work on brings its own tools through its dev shell (a flake or devenv,
 below). For gh, set up [authentication](#authentication) first.
+
+### Pinning
+
+`github:mgnsk/sandbox` follows this repo's default branch, cached for up to
+an hour (`tarball-ttl`; `nix run --refresh` fetches it now). To update only
+when you choose to, pin a commit you reviewed, and optionally its hash:
+
+```sh
+alias sandbox='nix run github:mgnsk/sandbox/<rev> --'
+alias sandbox="nix run 'github:mgnsk/sandbox/<rev>?narHash=sha256-...' --"
+```
+
+```sh
+nix flake metadata --json github:mgnsk/sandbox/<rev> | jq -r .locked.narHash
+```
+
+A `github:` ref is fetched as a tarball from GitHub, which nix doesn't check
+against the rev; with `narHash` nix refuses anything else ("NAR hash
+mismatch"). Keep the alias in your shell config, outside every project.
+
+Always run the remote, never a clone of this repo that a sandbox can write:
+the launcher runs on the host, and a checkout holds whatever sandboxed code
+put there.
 
 ## Using it in a project
 
@@ -268,9 +288,9 @@ What to know:
 
 | Where | What it can set | Trust |
 | --- | --- | --- |
-| **Your sandbox config**: home-manager's `programs.sandbox.settings`, or the `modules` of a flake's `mkSandbox` | Every [option](#options), including `profiles`; the only place for everything `sandbox.nix` can't set (which guards run, the ssh agent socket, `passEnv`, `stateDir`, ...) | Trusted: applies without asking, and wins over the project's settings |
-| **The project's [`sandbox.nix`](#the-projects-sandboxnix)**, committed | `command`, `claude.*`, `hostPorts`, `binds`, the guards' token commands, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: binds, host ports and commands run on the host need your yes on the terminal |
-| **The project's [`.sandbox.yml`](#per-user-project-settings-sandboxyml)**, gitignored, each user's own | The guards' token commands and `git.*` (identity, signing, `fromHost`) | As `sandbox.nix`, which it overrides |
+| **Your sandbox config**: home-manager's `programs.sandbox.settings` | Every [option](#options), including `profiles`; the only place for everything `sandbox.nix` can't set (which guards run, the ssh agent socket, `passEnv`, `stateDir`, ...) | Trusted: applies without asking, and wins over the project's settings |
+| **The project's [`sandbox.nix`](#the-projects-sandboxnix)**, committed | `command`, `claude.*`, `hostPorts`, `binds`, the guards' token commands, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: binds, host ports and commands run on the host need your yes on the terminal, asked the first time and again only if they change |
+| **The project's [`.sandbox.yml`](#per-user-project-settings-sandboxyml)**, gitignored, each user's own | The guards' token commands and `git.*` (identity, signing, `fromHost`) | As `sandbox.nix`; its token commands and git settings override `sandbox.nix`'s |
 | **The project's dev shell** (a flake's `devShells`, devenv) | Tools - Claude Code, gh, fj, linters - and the project's environment variables | Runs inside |
 
 `nix run github:mgnsk/sandbox` has no config of yours, only the defaults;
@@ -292,7 +312,7 @@ project, on top of your config - like `devenv.nix`, a module that gets
     extensionToLanguage.".go" = "go";
   };
   claude.settings.permissions.allow = [ "Bash(go test:*)" ];
-  hostPorts = [ "5432" ];                 # needs your approval, see below
+  hostPorts = [ "5432" ];                 # asked on the terminal the first time, see below
   binds = [ { src = "~/datasets"; } ];    # likewise
 }
 ```
@@ -323,23 +343,24 @@ A full example, with every option it can set:
   command = [ "nix" "develop" ];
 
   # Host ports reachable at 127.0.0.1 inside (port, port/udp or a range).
-  # Needs your approval on the terminal.
+  # Asked on the terminal the first time.
   hostPorts = [ "5432" "9000-9010" ];
 
   # Commands printing the API tokens, run on the host at each start.
-  # Need your approval on the terminal; your own config's win.
+  # Asked on the terminal the first time. Each user's .sandbox.yml
+  # overrides them, and their own sandbox config's win over both.
   guards.github.tokenCommand = "op read op://Employee/GitHub/token";
   guards.forgejo.tokenCommands."codeberg.org" = "op read op://Employee/Codeberg/token";
   guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
 
   # Git inside: identity and signing key from each user's host git config,
-  # and/or a signing key (or a command printing it, approved like the token
-  # commands). Each user's .sandbox.yml overrides these.
+  # and/or a signing key (or a command printing it, asked the first time
+  # like the token commands). Each user's .sandbox.yml overrides these too.
   git.fromHost = true;
   git.signingKeyCommand = ''op read "op://Employee/GitHub SSH key/public key"'';
 
   # Host paths bound in, over whatever the project's $HOME has there.
-  # Needs your approval on the terminal.
+  # Asked on the terminal the first time.
   binds = [
     { src = "~/datasets"; }                                  # read-only, same path
     { src = "~/src/shared-lib"; hideGit = true; }            # for reference, without its history
@@ -393,7 +414,7 @@ How it stays a sandbox, though the sandbox can edit the file:
   bwrap, pasta, seccomp, the guards and their settings come from your
   sandbox config, never from the project.
 - **Binds, host ports and commands run on the host need a yes on the
-  terminal**, the first time and whenever they change. Everything else only
+  terminal**, asked once: the first time, and again only if they change. Everything else only
   affects the inside and applies without asking.
 
 ### Per-user project settings: .sandbox.yml
@@ -430,15 +451,15 @@ A field it doesn't know (a typo) stops the start.
 
 - **Token commands** go over `sandbox.nix`'s. They're still the project's
   to the sandbox - sandboxed code can write this file like any other in
-  the project - so they're shown and approved like `sandbox.nix`'s, once
-  and again when they change. Your own config's still win.
+  the project - so they're shown and approved like `sandbox.nix`'s, the
+  first time and again only if they change. Your own config's still win.
 - **`git.userName`, `git.userEmail`**: git's author and committer inside.
   Only here: they're each user's.
 - **`git.signingKey`**: an ssh public key in your agent; commits and tags
   inside are signed with it (`gpg.format = ssh`), through the ssh agent
   guard, which doesn't ask for signatures. **`git.signingKeyCommand`**,
   instead, prints that public key on the host at each start, so it's
-  approved like the token commands. Set one; either replaces both of
+  approved the first time, like the token commands. Set one; either replaces both of
   `sandbox.nix`'s.
 - **`git.fromHost`**: fill in what isn't set from your global git config on
   the host - `git config --global` for `user.name`, `user.email` and, with
@@ -447,7 +468,8 @@ A field it doesn't know (a typo) stops the start.
   also turn `sandbox.nix`'s `git.fromHost` off.
 
 The git settings only affect the inside, so they apply without asking
-(but a signing key command, which runs on the host, is approved). They're
+(but a signing key command, which runs on the host, is approved the first
+time). They're
 git config from the environment, so they override `~/.gitconfig` inside.
 
 ### Your sandbox config
@@ -455,11 +477,7 @@ git config from the environment, so they override `~/.gitconfig` inside.
 Your own sandbox config is a list of modules with the [options](#options)
 below. Its top level applies to every project; `profiles` narrow some
 settings to projects under given paths (see [Profiles](#profiles)). It
-comes from your home-manager config or from a flake run from its remote -
-never from a checkout a sandbox can write.
-
-#### With home-manager
-
+comes from your home-manager config, never from a project:
 `programs.sandbox.settings` takes the module, with your home-manager `pkgs`:
 
 ```nix
@@ -485,88 +503,6 @@ then switching.
 The home-manager module also links your current home-manager generation into
 each project's `$HOME` at every start (`homeManager.enable`), so your shell
 config, git config, etc. apply inside.
-
-#### In a project's flake
-
-When the defaults don't fit a repo and `sandbox.nix` can't change what's
-needed, the repo's flake can build its own sandbox with `mkSandbox`, the same
-for everyone working on it. Each user runs it from the repo's remote, either
-following its default branch or pinned to a commit:
-
-```nix
-{
-  inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-  inputs.sandbox.url = "github:mgnsk/sandbox";
-  inputs.sandbox.inputs.nixpkgs.follows = "nixpkgs";
-
-  outputs = { nixpkgs, sandbox, ... }:
-    let
-      pkgs = import nixpkgs {
-        system = "x86_64-linux";
-        # For the dev shell's claude-code, which is unfree.
-        config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";
-      };
-    in {
-      packages.x86_64-linux.sandbox = sandbox.lib.mkSandbox {
-        inherit pkgs;
-        modules = [ { guards.forgejo.enable = true; } ];
-      };
-      devShells.x86_64-linux.default = pkgs.mkShell { packages = [ pkgs.claude-code /* ... */ ]; };
-    };
-}
-```
-
-```sh
-cd ~/src/myproject
-
-# The default branch: updates arrive with merges.
-nix run github:owner/myproject#sandbox -- nix develop -c claude
-
-# A commit you reviewed: updates only when you change the rev.
-nix run github:owner/myproject/<rev>#sandbox -- nix develop -c claude
-
-# The same, also checking what GitHub serves against a hash you recorded.
-nix run 'github:owner/myproject/<rev>?narHash=sha256-...#sandbox' -- nix develop -c claude
-```
-
-What makes this safe is where it runs from, so:
-
-- **Always the remote, never a checkout.** Not `nix run .#sandbox`, not
-  `nix run ~/src/myproject#sandbox`: a sandbox can write its project, `.git`
-  included, so a checkout holds whatever sandboxed code put there, and the
-  launcher runs on the host. A short alias for the remote URL helps. The
-  same goes for this repo: run `github:mgnsk/sandbox`, not a clone you work
-  on in a sandbox.
-- **Review what runs.** Following the default branch, that's everything
-  merged into it: protect the branch, so changes need review like any code
-  that runs unsandboxed. Pinned, it's the commit you pin; read the diff
-  before moving the pin. Pushes from inside go over ssh, behind the agent
-  popup.
-- **Updates.** The default branch is cached for up to an hour
-  (`tarball-ttl`; `nix run --refresh` fetches it now). A pinned commit never
-  changes; bump the rev (and `narHash`) to update.
-- **One configuration for everyone.** Per user there's only `.sandbox.yml`;
-  other personal settings (binds, your ssh agent socket) need the
-  home-manager module instead. `homeManager.enable = true` still links each
-  user's own home-manager files (shell, git config) into their project
-  `$HOME`.
-
-`sandbox.nix` still works on top, for settings the project's code may
-change; this flake is for what must stay out of its reach.
-
-#### Pinning
-
-Pinning works the same for `github:mgnsk/sandbox`. The `narHash` of a commit,
-to pin it with:
-
-```sh
-nix flake metadata --json github:owner/myproject/<rev> | jq -r .locked.narHash
-```
-
-A `github:` ref is fetched as a tarball from GitHub, which nix doesn't check
-against the rev; with `narHash` nix refuses anything else ("NAR hash
-mismatch"). Keep the pinned ref in your shell config (e.g. an alias), outside
-every project.
 
 ### Options
 
@@ -642,7 +578,7 @@ token commands (`guards.github.tokenCommand`, `guards.forgejo.tokenCommands`,
 `guards.claudeApiKey.tokenCommand`). Everything else is top-level only.
 
 ```nix
-programs.sandbox.settings = { lib, pkgs, ... }: {   # or a mkSandbox module
+programs.sandbox.settings = { lib, pkgs, ... }: {
   profiles.flake = {
     projectFiles = [ "flake.nix" ];
     claude.mcpServers.mcp-nixos = { type = "stdio"; command = lib.getExe pkgs.mcp-nixos; };
@@ -677,8 +613,8 @@ guards.forgejo.tokenCommands."codeberg.org" = "op read op://Employee/Codeberg/to
 ```
 
 These run on your host, as you, so the sandbox shows them on the terminal
-and runs them only once you say yes - asked once, and again only if they
-change (sandboxed code can edit `sandbox.nix`). The same options in your own
+and runs them only once you say yes - asked the first time, and again only
+if they change (sandboxed code can edit `sandbox.nix`). The same options in your own
 sandbox config are trusted: they run without asking, and win over the
 project's. There, a [profile](#profiles) can set them for the projects it
 matches. The Forgejo guard is off by default: turn it on with
@@ -750,7 +686,8 @@ volume. Other projects, and Claude Code on the host, keep their own logins.
 **On an API key**: with a key command, the key stays on the host, and a
 proxy adds it to Claude Code's requests. It works like the GitHub token
 command: printed at each start, held in memory, from your sandbox config
-(trusted) or the project's `sandbox.nix` or `.sandbox.yml` (approved once):
+(trusted) or the project's `sandbox.nix` or `.sandbox.yml` (approved the
+first time):
 
 ```nix
 guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
@@ -759,7 +696,8 @@ guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
 1. Create a key for the project at
    [platform.claude.com](https://platform.claude.com/settings/keys), ideally
    in a workspace with a spend limit, and store it in your secret manager.
-2. Set the command; start the sandbox (approving it, if it's the project's).
+2. Set the command; start the sandbox (approving it the first time, if it's the
+   project's).
 3. Run `claude` inside as usual - no login.
 
 Deleting the key in the Console cuts off just that project. A subscription

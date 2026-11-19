@@ -1,4 +1,4 @@
-# Options for one `sandbox` command, evaluated by lib.mkSandbox (flake.nix).
+# Options for one `sandbox` command, evaluated by mkSandbox (flake.nix).
 # config.package is the result.
 {
   config,

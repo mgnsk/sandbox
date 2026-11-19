@@ -196,7 +196,7 @@ it to its guard over a pipe, and nothing else keeps it.
 A command is code run on the host as the user, outside the sandbox, so where
 it comes from is the boundary:
 
-- **The user's config** (home-manager, a flake with `mkSandbox`, a profile):
+- **The user's config** (home-manager, a profile in it):
   trusted like the rest of it, run without asking. It wins over the
   project's for the same guard or host.
 - **The project's `sandbox.nix`** (or `.sandbox.yml`, below): sandboxed code can edit it, so its
