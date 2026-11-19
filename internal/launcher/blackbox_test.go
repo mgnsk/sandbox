@@ -26,7 +26,6 @@ import (
 
 	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/testbin"
-	"github.com/mgnsk/sandbox/internal/tokens"
 )
 
 // -- helpers run inside --
@@ -293,8 +292,6 @@ func TestLoginShellOrCommand(t *testing.T) {
 		t.Errorf("exit %d", r.code)
 	}
 	h.run("", nil, "--nope").refused(t, "not defined: -nope (put -- before")
-	h.run("", nil, "--fj-token").refused(t, "needs an argument")
-	h.run("", nil, "--fj-token", "a b").refused(t, "not a Forgejo host: a b")
 	if r := h.run("", nil, "--help"); r.code != 0 || !strings.Contains(r.stdout, "--no-project-config") || len(r.calls("pasta")) != 0 {
 		t.Errorf("--help: exit %d, %q", r.code, r.stdout)
 	}
@@ -383,10 +380,20 @@ func TestClaudeDirAndExchange(t *testing.T) {
 
 // -- sandbox.nix --
 
-// manifestJSON is m as project.nix writes it: null for no command or
-// Claude config.
+// manifestJSON is m as project.nix writes it: null for no command, Claude
+// config or GitHub token command.
 func manifestJSON(t *testing.T, m manifest) string {
-	v := map[string]any{"claudeDir": nil, "binds": []bind{}, "hostPorts": []string{}, "command": nil}
+	v := map[string]any{"claudeDir": nil, "binds": []bind{}, "hostPorts": []string{}, "command": nil,
+		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil}
+	if m.ClaudeAPIKeyCommand != "" {
+		v["claudeApiKeyCommand"] = m.ClaudeAPIKeyCommand
+	}
+	if m.GitHubTokenCommand != "" {
+		v["githubTokenCommand"] = m.GitHubTokenCommand
+	}
+	if m.ForgejoTokenCommands != nil {
+		v["forgejoTokenCommands"] = m.ForgejoTokenCommands
+	}
 	if m.ClaudeDir != "" {
 		v["claudeDir"] = m.ClaudeDir
 	}
@@ -561,92 +568,107 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 
 const claudeKey = "sk-ant-api03-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 
+// A Claude API key command puts Claude Code on the proxy: from the user's
+// config (here a profile's, for this project only) or, approved, from
+// sandbox.nix; without one, Claude Code logs in inside as usual.
 func TestClaudeAPIKey(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Profiles = []profile{{Name: "api", Paths: []string{h.home + "/api"}, ClaudeAPIKey: true}}
-	h.run("", nil, "--claude-api-key").refused(t, "needs guards.claudeApiKey.enable for this project's profile (default)")
+	h.cfg.Default.ClaudeDir = "/store/claude"
+	onKey := func(r *result) bool {
+		env := r.pasta(t).setenv()
+		return env["ANTHROPIC_UNIX_SOCKET"] == h.runtime+"/claude-api.sock" && env["ANTHROPIC_BASE_URL"] == "http://api.anthropic.com"
+	}
+	if r := h.run("", nil); r.code != 0 || onKey(r) {
+		t.Errorf("without a command: %d %q", r.code, r.stderr)
+	}
 
-	h.cfg.Profiles[0].Paths = []string{h.project}
-	// Without a terminal, it starts anyway.
+	h.cfg.Profiles = []profile{{Name: "api", Paths: []string{h.project}, ClaudeDir: "/store/claude",
+		ClaudeAPIKeyCommand: "echo " + claudeKey}}
 	r := h.run("", nil)
-	if r.code != 0 || !strings.Contains(r.stderr, "run `sandbox --claude-api-key` from a terminal") || lexists(filepath.Join(h.volume(), "claude-api-key")) {
-		t.Errorf("%d %q", r.code, r.stderr)
+	if r.code != 0 || !onKey(r) || !strings.HasSuffix(r.pasta(t).bind(t, h.runtime+"/claude-api.sock"), "/claude-api.sock") {
+		t.Errorf("profile: %d %q", r.code, r.stderr)
 	}
-	inv := r.pasta(t)
-	env := inv.setenv()
-	if env["ANTHROPIC_UNIX_SOCKET"] != h.runtime+"/claude-api.sock" || env["ANTHROPIC_BASE_URL"] != "http://api.anthropic.com" ||
-		!strings.HasSuffix(inv.bind(t, h.runtime+"/claude-api.sock"), "/claude-api.sock") {
-		t.Errorf("%v", env)
-	}
+	h.cfg.Profiles[0].ClaudeAPIKeyCommand = "echo 'x y'"
+	h.run("", nil).refused(t, "guards.claudeApiKey.tokenCommand (echo 'x y') didn't print a token")
 
+	// From sandbox.nix: approved first.
+	h.cfg.Profiles = nil
+	h.withProject(manifest{ClaudeAPIKeyCommand: "echo " + claudeKey}, "{ ... }: { }\n", "m.json")
 	p := h.pty(nil)
-	if shown := p.expect("API key (Enter to skip): "); !strings.Contains(shown, "https://platform.claude.com/settings/keys") {
-		t.Errorf("%q", shown)
+	if !strings.Contains(p.expect("Allow? [y/N] "), "for Claude Code's API key:") {
+		t.Error("not shown")
 	}
-	time.Sleep(300 * time.Millisecond)
-	p.send(claudeKey + "\r")
-	if r := p.wait(); r.code != 0 || strings.Contains(r.stdout, claudeKey) {
-		t.Errorf("%d, echoed: %v", r.code, strings.Contains(r.stdout, claudeKey))
-	}
-	keyFile := filepath.Join(h.volume(), "claude-api-key")
-	if tokens.Read(keyFile) != claudeKey {
-		t.Error("not saved")
-	}
-	// Kept on Enter, replaced, not replaced by a malformed one.
-	set := func(answer string) string {
-		p := h.pty(nil, "--claude-api-key")
-		p.typeSecret("API key (Enter to skip): ", answer)
-		r := p.wait()
-		if r.code != 0 || len(r.calls("pasta")) != 0 {
-			t.Errorf("%d", r.code)
-		}
-		return r.stdout
-	}
-	set("")
-	other := "sk-ant-api03-oooooooooooooooooooooooooooooooooooooooo"
-	set(other)
-	if !strings.Contains(set("x y"), "doesn't look like an API key") || tokens.Read(keyFile) != other {
-		t.Errorf("key %q", tokens.Read(keyFile))
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 || !onKey(r) {
+		t.Errorf("sandbox.nix: %d %q", r.code, r.stdout)
 	}
 }
 
-func TestTokens(t *testing.T) {
+// Token commands: the user's config's run as they are; sandbox.nix's only
+// once approved on the terminal, asked once and again when they change.
+// Either way the token reaches the guard, and a failing command stops the
+// start.
+func TestTokenCommands(t *testing.T) {
 	h := newHarness(t)
-	h.run("", nil, "--gh-token").refused(t, "needs guards.github.enable")
-	h.run("", nil, "--fj-token", "a.example").refused(t, "needs guards.forgejo.enable")
-	h.cfg.Guards.GitHub, h.cfg.Guards.Forgejo = true, true
-	h.run("", nil, "--gh-token").refused(t, "setting a token needs a terminal")
-	// Inside a sandbox it would land in that sandbox's volume.
-	h.run("", map[string]string{"SANDBOX_EXCHANGE": "/x/exchange"}, "--gh-token").refused(t, "inside a sandbox - set the token on the host")
+	h.cfg.Guards.GitHub = true
+	token := "github_pat_" + strings.Repeat("t", 30)
+	noToken := "no GitHub token"
 
-	token := "github_pat_" + strings.Repeat("t", 40)
-	set := func(prompt string, args ...string) func(string) string {
-		return func(answer string) string {
-			p := h.pty(nil, args...)
-			p.typeSecret(prompt, answer)
-			r := p.wait()
-			if r.code != 0 || len(r.calls("pasta")) != 0 {
-				t.Errorf("%d %q", r.code, r.stdout)
-			}
-			return r.stdout
+	h.cfg.Default.GitHubTokenCommand = "echo " + token
+	if r := h.run("", nil); r.code != 0 || strings.Contains(r.stderr, noToken) {
+		t.Errorf("config: %d %q", r.code, r.stderr)
+	}
+	h.cfg.Default.GitHubTokenCommand = "exit 3"
+	h.run("", nil).refused(t, "guards.github.tokenCommand (exit 3): exit status 3")
+	h.cfg.Default.GitHubTokenCommand = "echo 'not a token'"
+	h.run("", nil).refused(t, "didn't print a token")
+	h.cfg.Default.GitHubTokenCommand = ""
+	if r := h.run("", nil); r.code != 0 || !strings.Contains(r.stderr, noToken) {
+		t.Errorf("none: %d %q", r.code, r.stderr)
+	}
+
+	mark := filepath.Join(h.tmp, "ran")
+	ran := func() bool {
+		defer os.Remove(mark)
+		return exists(mark)
+	}
+	m := manifest{GitHubTokenCommand: "touch " + mark + "; echo " + token}
+	h.withProject(m, "{ ... }: { }\n", "m.json")
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "start the sandbox from a terminal to approve it") || ran() {
+		t.Errorf("unapproved: %d %q", r.code, r.stderr)
+	}
+	p := h.pty(nil)
+	shown := p.expect("Allow? [y/N] ")
+	for _, want := range []string{"run on this host at each start, for the GitHub token:", "    " + m.GitHubTokenCommand,
+		"the commands run on this host as you, outside the sandbox", "This is asked once, and again only if it changes"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("%q not in %q", want, shown)
 		}
 	}
-	gh := set("GitHub token (Enter to keep the current one): ", "--gh-token")
-	if strings.Contains(gh(token), token) {
-		t.Error("echoed")
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 || !ran() || strings.Contains(r.stdout, noToken) {
+		t.Errorf("approved: %d %q", r.code, r.stdout)
 	}
-	file := filepath.Join(h.volume(), tokens.GitHubFile)
-	if tokens.Read(file) != token {
-		t.Error("not saved")
+	if r := h.run("", nil); r.code != 0 || !ran() {
+		t.Errorf("asked again: %d %q", r.code, r.stderr)
 	}
-	if !strings.Contains(gh(""), "nothing changed") || !strings.Contains(gh("has space"), "doesn't look like a token") || tokens.Read(file) != token {
-		t.Error("replaced")
+
+	// Changed: asked again, and declined, not run.
+	m.GitHubTokenCommand = "touch " + mark + "; echo other" + token
+	h.withProject(m, "{ ... }: { x = 1; }\n", "m2.json")
+	p = h.pty(nil)
+	if !strings.Contains(p.expect("Allow? [y/N] "), m.GitHubTokenCommand) {
+		t.Error("change not shown")
 	}
-	for _, s := range [][2]string{{"https://A.example/x/", "aaaaaaaa"}, {"b.example", "bbbbbbbb"}, {"a.example:443", "cccccccc"}} {
-		set("(Enter to keep the current one): ", "--fj-token", s[0])(s[1])
+	p.send("n\r")
+	if r := p.wait(); r.code != 1 || ran() {
+		t.Errorf("declined: %d %q", r.code, r.stdout)
 	}
-	if got := tokens.ReadHosts(filepath.Join(h.volume(), tokens.ForgejoFile)); !maps.Equal(got, map[string]string{"a.example": "cccccccc", "b.example": "bbbbbbbb"}) {
-		t.Errorf("%v", got)
+
+	// The user's config wins: sandbox.nix's is neither asked about nor run.
+	h.cfg.Default.GitHubTokenCommand = "echo " + token
+	if r := h.run("", nil); r.code != 0 || ran() {
+		t.Errorf("config over sandbox.nix: %d %q", r.code, r.stderr)
 	}
 }
 

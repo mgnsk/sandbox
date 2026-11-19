@@ -15,16 +15,20 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
-// The inherited files, as the launcher passes them in ExtraFiles.
+// The inherited files, as the launcher passes them in ExtraFiles. SecretFD
+// is a pipe with a secret for the guard (an API guard's tokens), when it
+// takes one.
 const (
 	ReadyFD    = 3
 	ListenerFD = 4
+	SecretFD   = 5
 )
 
 // Main runs the guard name: run gets a context that ends on SIGTERM or
@@ -48,6 +52,20 @@ func Listener() (net.Listener, error) {
 	}
 	defer f.Close()
 	return net.FileListener(f)
+}
+
+// Secret reads the secret the launcher piped in, if any; nil without one.
+// Read once, at start: it's kept in memory only.
+func Secret() ([]byte, error) {
+	f := os.NewFile(SecretFD, "secret")
+	if f == nil {
+		return nil, nil
+	}
+	defer f.Close()
+	if _, err := f.Stat(); err != nil {
+		return nil, nil
+	}
+	return io.ReadAll(io.LimitReader(f, 1<<20))
 }
 
 // Ready tells the launcher the guard serves, with info for it.

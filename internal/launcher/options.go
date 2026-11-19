@@ -6,9 +6,4 @@ type Options struct {
 	Reload bool
 	// Ignore sandbox.nix.
 	NoProjectConfig bool
-	// Set this project's Claude API key, GitHub token or token for the
-	// Forgejo host FJToken, and exit.
-	ClaudeAPIKey bool
-	GHToken      bool
-	FJToken      string
 }

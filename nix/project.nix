@@ -36,6 +36,27 @@ let
               ];
               description = "What `sandbox` with no command runs, in place of a login shell.";
             };
+            guards.github.tokenCommand = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "op read op://Employee/GitHub/token";
+              description = ''
+                A shell command printing the GitHub token, run on the host at
+                each start once the user approves it on the terminal (asked
+                once, and again whenever it changes). The user's own config
+                wins.
+              '';
+            };
+            guards.forgejo.tokenCommands = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = { };
+              description = "Shell commands printing each Forgejo host's token, approved like guards.github.tokenCommand.";
+            };
+            guards.claudeApiKey.tokenCommand = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "A shell command printing a Claude API key for Claude Code inside, approved like guards.github.tokenCommand.";
+            };
           };
         }
         { _module.args.pkgs = lib.mkDefault pkgs; }
@@ -54,13 +75,23 @@ let
     // {
       # A server the project defines replaces the profile's of that name,
       # rather than both claiming its files.
-      settings = lib.recursiveUpdate v.settings {
-        enabledPlugins = lib.mapAttrs' (n: _: lib.nameValuePair "${n}@sandbox" false) cfg.claude.lspServers;
-      };
+      settings = lib.recursiveUpdate v.settings (
+        {
+          enabledPlugins = lib.mapAttrs' (n: _: lib.nameValuePair "${n}@sandbox" false) cfg.claude.lspServers;
+        }
+        // lib.optionalAttrs (cfg.guards.claudeApiKey.tokenCommand != null) {
+          # As for a key from the user's config (module.nix): Claude Code
+          # neither logs in nor asks about the key claude-api-proxy swaps in.
+          apiKeyHelper = "echo sandbox-placeholder";
+        }
+      );
     };
 in
 layer.json.generate "sandbox-project.json" {
   inherit (cfg) hostPorts command;
+  githubTokenCommand = cfg.guards.github.tokenCommand;
+  claudeApiKeyCommand = cfg.guards.claudeApiKey.tokenCommand;
+  forgejoTokenCommands = cfg.guards.forgejo.tokenCommands;
   binds = map (b: {
     inherit (b)
       src

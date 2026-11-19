@@ -59,14 +59,18 @@ type nixEvaluation struct {
 }
 
 type profile struct {
-	Name         string            `json:"name"`
-	Env          map[string]string `json:"env"`
-	Binds        []bind            `json:"binds"`
-	ClaudeDir    string            `json:"claudeDir"`
-	ClaudeAPIKey bool              `json:"claudeApiKey"`
-	Paths        []string          `json:"paths"`
-	ProjectFiles []string          `json:"projectFiles"`
-	Priority     int               `json:"priority"`
+	Name      string            `json:"name"`
+	Env       map[string]string `json:"env"`
+	Binds     []bind            `json:"binds"`
+	ClaudeDir string            `json:"claudeDir"`
+	// Shell commands run on the host at start, printing the guards' tokens;
+	// a Claude API key command puts Claude Code on that key.
+	GitHubTokenCommand   string            `json:"githubTokenCommand"`
+	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
+	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
+	Paths                []string          `json:"paths"`
+	ProjectFiles         []string          `json:"projectFiles"`
+	Priority             int               `json:"priority"`
 }
 
 type bind struct {

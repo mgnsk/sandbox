@@ -18,10 +18,20 @@ let
 
   profileType = types.submodule {
     options = layerOptions // {
-      guards.claudeApiKey.enable = mkOption {
-        type = types.nullOr types.bool;
+      guards.claudeApiKey.tokenCommand = mkOption {
+        type = types.nullOr types.str;
         default = null;
-        description = "The top-level guards.claudeApiKey.enable for projects of this profile; null keeps it.";
+        description = "guards.claudeApiKey.tokenCommand for projects of this profile; null keeps the top level's.";
+      };
+      guards.github.tokenCommand = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "guards.github.tokenCommand for projects of this profile; null keeps the top level's.";
+      };
+      guards.forgejo.tokenCommands = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        description = "guards.forgejo.tokenCommands for projects of this profile, over the top level's.";
       };
       paths = mkOption {
         type = types.listOf types.str;
@@ -76,11 +86,17 @@ let
         "${env}/bin"
       ]
       ++ lib.optional cfg.nixProfile.enable "$HOME/.nix-profile/bin";
-      claudeApiKey =
+      claudeApiKeyCommand =
         let
-          own = l.guards.claudeApiKey.enable or null;
+          own = l.guards.claudeApiKey.tokenCommand or null;
         in
-        cfg.claude.enable && (if own == null then cfg.guards.claudeApiKey.enable else own);
+        if !cfg.claude.enable then
+          null
+        else if own != null then
+          own
+        else
+          cfg.guards.claudeApiKey.tokenCommand;
+      claudeApiKey = claudeApiKeyCommand != null;
       claudeDir = layer'.claudeDir name (layer'.claudeValues {
         lspMarketplace = "sandbox";
         claude = {
@@ -121,7 +137,13 @@ let
       // cfg.env;
       binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
-      inherit claudeApiKey;
+      inherit claudeApiKeyCommand;
+      githubTokenCommand =
+        let
+          own = l.guards.github.tokenCommand or null;
+        in
+        if own != null then own else cfg.guards.github.tokenCommand;
+      forgejoTokenCommands = cfg.guards.forgejo.tokenCommands // (l.guards.forgejo.tokenCommands or { });
     };
 
   runtimeConfig = {
@@ -377,22 +399,52 @@ in
       github.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the project's token (`sandbox --gh-token`; the host's gh is never used) and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
+        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the token from tokenCommand and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
+      };
+      github.tokenCommand = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "op read op://Employee/GitHub/token";
+        description = ''
+          A shell command, run on the host at each start, that prints the
+          GitHub token, e.g. from a secret manager. The token is handed to
+          the guard in memory: never written to disk, never inside the
+          sandbox. Trusted, as your config: run without asking. It wins over
+          a project's sandbox.nix, whose command is run only once you
+          approve it. Without either, GitHub API requests from inside are
+          refused.
+        '';
       };
       forgejo.enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Forgejo API requests from inside, to instances with a token, routed to a host proxy (as for GitHub) holding the project's tokens (`sandbox --fj-token HOST`; the host's fj is never used). fj itself isn't provided.";
+        description = "Forgejo API requests from inside, to instances in tokenCommands, routed to a host proxy (as for GitHub) holding their tokens. fj itself isn't provided.";
       };
-      claudeApiKey.enable = mkOption {
-        type = types.bool;
-        default = false;
+      forgejo.tokenCommands = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = {
+          "codeberg.org" = "op read op://Employee/Codeberg/token";
+        };
         description = ''
-          Claude Code inside on a per-project API key that stays outside, added
-          by a host proxy. The key is asked for on the terminal at a project's
-          first start (or with `sandbox --claude-api-key`). Replaces logging in
-          inside, so not for Claude subscriptions. A profile can override it
-          (`profiles.<name>.guards.claudeApiKey.enable`).
+          Shell commands, by Forgejo host (host[:port]), run on the host at
+          each start, each printing that instance's token; as for
+          github.tokenCommand, they win over sandbox.nix's for the same
+          host.
+        '';
+      };
+      claudeApiKey.tokenCommand = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "op read op://Employee/Claude/credential";
+        description = ''
+          A shell command printing a Claude API key, run on the host at each
+          start, like github.tokenCommand. With one, Claude Code inside runs
+          on that key, which a host proxy adds and which never enters the
+          sandbox or the disk - in place of logging in inside, so not for
+          Claude subscriptions. Trusted, and wins over a project's
+          sandbox.nix, whose command runs only once approved. A profile can
+          set its own.
         '';
       };
       openUrl.enable = mkOption {

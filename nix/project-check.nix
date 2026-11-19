@@ -65,6 +65,9 @@ runCommand "sandbox-project-check" { nativeBuildInputs = [ jq ]; } ''
     and .command == ["nix", "develop"]
     and .claudeDir == null
     and .binds == [{src: "~/data", dst: null, mode: "rw", optional: false, hideGit: false}]
+    and .githubTokenCommand == "op read op://v/gh/token"
+    and .forgejoTokenCommands == {"codeberg.org": "op read op://v/cb/token"}
+    and .claudeApiKeyCommand == "op read op://v/claude/key"
   ' ${manifest}
   touch $out
 ''

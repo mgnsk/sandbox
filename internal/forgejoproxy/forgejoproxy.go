@@ -1,27 +1,27 @@
 // Package forgejoproxy is forgejo-api-proxy, the sandbox's Forgejo API
 // guard.
 //
-//	sandbox-bin forgejo-api-proxy PROJECT_TOKENS_FILE
+//	sandbox-bin forgejo-api-proxy   (a JSON {host: token} on guard.SecretFD)
 //
 // It runs outside the sandbox as an intercepting HTTPS_PROXY on the host's
 // loopback, which the launcher maps into the sandbox. Any fj inside sends
 // its API requests to instances this proxy has a token for through it, via
 // the router (internal/router), without a token - it isn't logged in
-// inside. This proxy adds the project's own token for that host (`sandbox
-// --fj-token HOST`, from PROJECT_TOKENS_FILE), which never enters the
-// sandbox; the host's fj, and any login it has, is never used. Per request
-// (the mechanics are apiproxy's):
+// inside. This proxy adds the token for that host, which never enters the
+// sandbox: the one its token command printed at start
+// (guards.forgejo.tokenCommands, from the user's config or an approved
+// sandbox.nix), piped in by the launcher and kept in memory only. The host's fj, and any login it
+// has, is never used. Per request (the mechanics are apiproxy's):
 //
 //   - GET/HEAD are forwarded as they are;
 //   - everything else waits for the user's approval in a popup.
 //
-// Only hosts there's a token for are forwarded, over HTTPS. The tokens are
-// read for each request, so a `sandbox --fj-token` reaches running
-// sandboxes without a restart.
+// Only hosts there's a token for are forwarded, over HTTPS.
 package forgejoproxy
 
 import (
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 
@@ -30,10 +30,10 @@ import (
 	"github.com/mgnsk/sandbox/internal/tokens"
 )
 
-// New is the Forgejo guard: the tokens in tokensFile.
-func New(tokensFile string) *apiproxy.Proxy {
+// New is the Forgejo guard with hostTokens, {host[:port]: token}.
+func New(hostTokens map[string]string) *apiproxy.Proxy {
 	lookup := func(host string) (string, bool) {
-		token, ok := tokens.ReadHosts(tokensFile)[host]
+		token, ok := hostTokens[host]
 		return token, ok
 	}
 	return &apiproxy.Proxy{Guard: apiproxy.Guard{
@@ -48,8 +48,8 @@ func New(tokensFile string) *apiproxy.Proxy {
 		Route: func(host string) (apiproxy.Route, error) {
 			token, ok := lookup(host)
 			if !ok {
-				return apiproxy.Route{}, fmt.Errorf("no token for %[1]s in this project - on the host,"+
-					" outside the sandbox, run `sandbox --fj-token %[1]s` in the project", host)
+				return apiproxy.Route{}, fmt.Errorf("no token for %s - add a command printing one to"+
+					" guards.forgejo.tokenCommands, in sandbox.nix or your sandbox config", host)
 			}
 			return apiproxy.Route{Host: host, Header: http.Header{"Authorization": {"token " + token}}}, nil
 		},
@@ -57,8 +57,23 @@ func New(tokensFile string) *apiproxy.Proxy {
 }
 
 // Run serves on the launcher's listener until stopped.
-func Run(ctx context.Context, tokensFile string) error {
-	proxy, err := apiproxy.NewHTTPS(New(tokensFile))
+func Run(ctx context.Context) error {
+	secret, err := guard.Secret()
+	if err != nil {
+		return err
+	}
+	hostTokens := map[string]string{}
+	if len(secret) > 0 {
+		if err := json.Unmarshal(secret, &hostTokens); err != nil {
+			return fmt.Errorf("the launcher's tokens: %w", err)
+		}
+	}
+	for host, token := range hostTokens {
+		if !tokens.Valid(token) {
+			return fmt.Errorf("the launcher's token for %s isn't one", host)
+		}
+	}
+	proxy, err := apiproxy.NewHTTPS(New(hostTokens))
 	if err != nil {
 		return err
 	}

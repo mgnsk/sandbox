@@ -1,7 +1,7 @@
 // Package claudeproxy is claude-api-proxy: Claude Code inside the sandbox
 // on an API key that never enters it.
 //
-//	sandbox-bin claude-api-proxy KEY_FILE
+//	sandbox-bin claude-api-proxy   (the key on guard.SecretFD)
 //
 // It runs outside the sandbox, on a private socket that the launcher binds
 // in. Claude Code inside has ANTHROPIC_UNIX_SOCKET pointing here and
@@ -17,8 +17,9 @@
 //   - asks nothing: Claude Code makes a request per turn, too many for
 //     popups.
 //
-// The key is read from KEY_FILE for each request, so `sandbox
-// --claude-api-key` reaches running sandboxes.
+// The key is the one its token command printed at start
+// (guards.claudeApiKey.tokenCommand, from the user's config or an approved
+// sandbox.nix), piped in by the launcher and kept in memory only.
 //
 // Only API keys go through here, never a Claude subscription login:
 // Anthropic doesn't allow tools to store or intermediate claude.ai
@@ -49,7 +50,7 @@ var (
 	pathPrefixes = []string{"/v1/models", "/api/claude_code/"}
 )
 
-var errNoKey = errors.New("no Claude API key for this project - run `sandbox --claude-api-key` on the host")
+var errNoKey = errors.New("no Claude API key - the launcher passed none")
 
 // allowPath says whether Claude Code needs path.
 func allowPath(path string) bool {
@@ -61,15 +62,14 @@ func allowPath(path string) bool {
 	})
 }
 
-// New is the Claude API guard, with the key in keyFile.
-func New(keyFile string) *apiproxy.Proxy {
+// New is the Claude API guard with key; "" refuses every request.
+func New(key string) *apiproxy.Proxy {
 	return &apiproxy.Proxy{Guard: apiproxy.Guard{
 		Name: "claude-api-proxy",
 		Route: func(host string) (apiproxy.Route, error) {
 			if !slices.Contains(hosts, host) {
 				return apiproxy.Route{}, fmt.Errorf("host not allowed: %s", host)
 			}
-			key := tokens.Read(keyFile)
 			if key == "" {
 				return apiproxy.Route{}, errNoKey
 			}
@@ -81,8 +81,18 @@ func New(keyFile string) *apiproxy.Proxy {
 	}}
 }
 
-// Run serves on the launcher's socket until stopped.
-func Run(ctx context.Context, keyFile string) error {
+// Run serves on the launcher's listener until stopped, with the key the
+// launcher piped in.
+func Run(ctx context.Context) error {
+	secret, err := guard.Secret()
+	if err != nil {
+		return err
+	}
+	key := strings.TrimSpace(string(secret))
+	if !tokens.Valid(key) {
+		return errors.New("the launcher's key isn't one")
+	}
+	p := New(key)
 	ln, err := guard.Listener()
 	if err != nil {
 		return err
@@ -90,5 +100,5 @@ func Run(ctx context.Context, keyFile string) error {
 	if err := guard.Ready(struct{}{}); err != nil {
 		return err
 	}
-	return New(keyFile).Serve(ctx, ln)
+	return p.Serve(ctx, ln)
 }
