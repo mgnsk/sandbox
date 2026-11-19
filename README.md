@@ -56,17 +56,35 @@ program on the host, not just the sandbox.
 
 ## Install
 
-There's no `sandbox` package to install on its own: it's built from a
-configuration, in one of two places.
+Pick one of three ways to get a `sandbox` command:
 
-- **Your home-manager config**, for every project you work on:
-  `programs.sandbox`, see [With home-manager](#with-home-manager).
-- **A project's flake**, for everyone working on that project: run from the
-  project's remote, never from a checkout, see
+- **From this repo, with default settings** - nothing to install:
+
+  ```sh
+  nix run github:mgnsk/sandbox -- nix develop -c claude
+  ```
+
+  Pin it to a commit with `github:mgnsk/sandbox/<rev>` (and optionally
+  `?narHash=sha256-...`, see [Pinning](#pinning)). An alias in your shell
+  config makes it `sandbox`:
+
+  ```sh
+  alias sandbox='nix run github:mgnsk/sandbox --'
+  ```
+
+  It reads no config of yours; the repo you work on can still adjust what
+  applies inside through its [sandbox.nix](#the-projects-own-sandbox-config-sandboxnix).
+- **Your home-manager config**, with settings of your own for every
+  project: `programs.sandbox`, see [With home-manager](#with-home-manager).
+- **The flake of the repo you work on**, so everyone working on it gets the
+  same settings - only needed for settings `sandbox.nix` can't change (they
+  apply on the host: guards, `packages`, `env`, ...). Run it from the repo's
+  remote, never from your local clone, which the sandbox can write; see
   [In a project's flake](#in-a-projects-flake).
 
-Either way a project brings its own tools through its dev shell (a flake or
-devenv, below). For gh, set up [authentication](#authentication) first.
+Whichever you pick, the repo you work on brings its own tools through its dev
+shell (a flake or devenv, below). For gh, set up
+[authentication](#authentication) first.
 
 ## Using it in a project
 
@@ -405,7 +423,9 @@ A language server it defines replaces one of yours with the same name.
 If the sandbox itself is defined in the project's flake, run it from the
 project's remote, never from the checkout (`nix run .#sandbox`): the sandbox
 can edit `flake.nix`, and that `nix run` would run whatever it put there on
-the host. See [In a project's flake](#in-a-projects-flake).
+the host. See [In a project's flake](#in-a-projects-flake). The same goes for
+a clone of this repo: run `github:mgnsk/sandbox`, not a checkout you work on
+in a sandbox.
 
 ### Using devenv
 
@@ -493,8 +513,8 @@ A sandbox configuration is a list of modules with the options in
 [Configuration](#configuration). Its top level applies to every project;
 `profiles` narrow some settings to projects under given paths (see
 [Profiles](#profiles)). It comes from your home-manager config or from a
-project's flake run from its remote - never from a checkout a sandbox can
-write.
+flake run from its remote (this repo's, with the defaults, or a project's) -
+never from a checkout a sandbox can write.
 
 ### With home-manager
 
@@ -531,8 +551,9 @@ config, git config, etc. apply inside. Without it, see
 
 ### In a project's flake
 
-A project can ship the sandbox to everyone working on it: its flake builds
-one with `mkSandbox`, and each user runs it from the project's remote, either
+When the defaults don't fit a repo and `sandbox.nix` can't change what's
+needed, the repo's flake can build its own sandbox with `mkSandbox`, the same
+for everyone working on it. Each user runs it from the repo's remote, either
 following its default branch or pinned to a commit:
 
 ```nix
@@ -571,7 +592,10 @@ nix run github:owner/myproject/<rev>#sandbox -- nix develop -c claude
 nix run 'github:owner/myproject/<rev>?narHash=sha256-...#sandbox' -- nix develop -c claude
 ```
 
-The `narHash` of a commit, to pin it with:
+#### Pinning
+
+Pinning works the same for `github:mgnsk/sandbox`. The `narHash` of a commit,
+to pin it with:
 
 ```sh
 nix flake metadata --json github:owner/myproject/<rev> | jq -r .locked.narHash

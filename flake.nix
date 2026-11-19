@@ -33,9 +33,13 @@
       # programs.sandbox for home-manager.
       homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
 
-      # No `sandbox` package of its own: build it with mkSandbox, from
-      # home-manager (homeManagerModules) or a project's flake run from its
-      # remote (see the README).
+      # The sandbox with default settings, run from this flake's remote:
+      #   nix run github:mgnsk/sandbox[/REV] -- COMMAND...
+      # It reads no user config; settings of your own come from home-manager
+      # (homeManagerModules) or a flake with mkSandbox (see the README).
+      packages = forAllSystems (pkgs: {
+        default = mkSandbox { inherit pkgs; };
+      });
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
