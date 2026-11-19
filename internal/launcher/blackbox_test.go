@@ -574,7 +574,7 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 // .sandbox.env: its token commands go over sandbox.nix's and are approved
 // like them, even without a sandbox.nix; its git settings apply inside
 // without asking; a Claude key from it gets the managed apiKeyHelper.
-func TestSandboxEnv(t *testing.T) {
+func TestLocalConfig(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Guards.GitHub = true
 	h.cfg.Default.ClaudeDir = filepath.Join(h.tmp, "claude")
@@ -583,11 +583,11 @@ func TestSandboxEnv(t *testing.T) {
 	mark := filepath.Join(h.tmp, "ran")
 	token := "github_pat_" + strings.Repeat("t", 30)
 	write := func(content string) {
-		os.WriteFile(filepath.Join(h.project, sandboxEnvFileName), []byte(content), 0o644)
+		os.WriteFile(filepath.Join(h.project, localConfigFileName), []byte(content), 0o644)
 	}
 
 	// Git settings alone: nothing to approve.
-	write("GIT_USER_NAME=Some One\nGIT_USER_EMAIL=a@example.com\nGIT_SIGNING_KEY=ssh-ed25519 AAAAkey\n")
+	write("git:\n  userName: Some One\n  userEmail: a@example.com\n  signingKey: ssh-ed25519 AAAAkey\n")
 	r := h.run("", nil)
 	env := r.pasta(t).setenv()
 	if r.code != 0 || env["GIT_AUTHOR_NAME"] != "Some One" || env["GIT_COMMITTER_EMAIL"] != "a@example.com" ||
@@ -596,8 +596,8 @@ func TestSandboxEnv(t *testing.T) {
 	}
 
 	// A token command: asked first, naming both files.
-	write("GH_TOKEN_COMMAND=touch " + mark + "; echo " + token + "\nCLAUDE_API_KEY_COMMAND=echo " + claudeKey + "\n")
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "(or .sandbox.env) asks for host access") || exists(mark) {
+	write("guards:\n  github:\n    tokenCommand: touch " + mark + "; echo " + token + "\n  claudeApiKey:\n    tokenCommand: echo " + claudeKey + "\n")
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "(or .sandbox.yml) asks for host access") || exists(mark) {
 		t.Errorf("unapproved: %d %q", r.code, r.stderr)
 	}
 	p := h.pty(nil)
@@ -627,7 +627,7 @@ func TestSandboxEnv(t *testing.T) {
 
 	// The signing key from a command: approved like the token commands, its
 	// output the key.
-	write("GIT_SIGNING_KEY_COMMAND=echo ssh-ed25519 AAAAfromcmd\n")
+	write("git:\n  signingKeyCommand: echo ssh-ed25519 AAAAfromcmd\n")
 	p = h.pty(nil)
 	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "for git's signing key:") {
 		t.Errorf("not shown: %q", shown)
@@ -636,7 +636,7 @@ func TestSandboxEnv(t *testing.T) {
 	if r := p.wait(); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAfromcmd" {
 		t.Errorf("signing key: %d %q", r.code, r.stdout)
 	}
-	write("GIT_SIGNING_KEY_COMMAND=echo not-a-key\n")
+	write("git:\n  signingKeyCommand: echo not-a-key\n")
 	p = h.pty(nil)
 	p.expect("Allow? [y/N] ")
 	p.send("y\r")
@@ -647,7 +647,7 @@ func TestSandboxEnv(t *testing.T) {
 	// From sandbox.nix, for everyone: approved and used without a
 	// .sandbox.env; a .sandbox.env's own key wins, and the command then
 	// isn't asked about.
-	os.Remove(filepath.Join(h.project, sandboxEnvFileName))
+	os.Remove(filepath.Join(h.project, localConfigFileName))
 	h.withProject(manifest{GitSigningKeyCommand: "echo ssh-ed25519 AAAAteam"}, "{ ... }: { y = 1; }\n", "m3.json")
 	p = h.pty(nil)
 	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "for git's signing key:") {
@@ -657,13 +657,13 @@ func TestSandboxEnv(t *testing.T) {
 	if r := p.wait(); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAteam" {
 		t.Errorf("sandbox.nix's key: %d %q", r.code, r.stdout)
 	}
-	write("GIT_SIGNING_KEY=ssh-ed25519 AAAAmine\n")
+	write("git:\n  signingKey: ssh-ed25519 AAAAmine\n")
 	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAmine" {
 		t.Errorf(".sandbox.env's key: %d %q", r.code, r.stderr)
 	}
 
 	// Host commands run from /, not the project.
-	write("GH_TOKEN_COMMAND=[ \"$PWD\" = / ] && echo " + token + "\n")
+	write("guards:\n  github:\n    tokenCommand: '[ \"$PWD\" = / ] && echo " + token + "'\n")
 	p = h.pty(nil)
 	p.expect("Allow? [y/N] ")
 	p.send("y\r")
@@ -677,20 +677,20 @@ func TestSandboxEnv(t *testing.T) {
 	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\ncase \"$4\" in user.name) echo Host;; user.email) echo host@example.com;; *) exit 1;; esac\n"), 0o755)
 	withGit := map[string]string{"PATH": bin + ":" + h.env["PATH"]}
 	h.withProject(manifest{GitFromHost: true}, "{ ... }: { z = 1; }\n", "m4.json")
-	write("GIT_USER_NAME=Mine\n")
+	write("git:\n  userName: Mine\n")
 	r = h.run("", withGit)
 	env = r.pasta(t).setenv()
 	if r.code != 0 || env["GIT_AUTHOR_NAME"] != "Mine" || env["GIT_AUTHOR_EMAIL"] != "host@example.com" {
 		t.Errorf("fromHost: %d %q %v", r.code, r.stderr, env)
 	}
-	write("GIT_FROM_HOST=0\n")
+	write("git:\n  fromHost: false\n")
 	if r := h.run("", withGit); r.code != 0 || r.pasta(t).setenv()["GIT_AUTHOR_EMAIL"] != "" {
-		t.Errorf("GIT_FROM_HOST=0: %d %q", r.code, r.stderr)
+		t.Errorf("fromHost: false: %d %q", r.code, r.stderr)
 	}
 
 	// A bad file stops the start.
-	write("NOPE=1\n")
-	h.run("", nil).refused(t, ".sandbox.env: line 1: unknown key NOPE")
+	write("nope: 1\n")
+	h.run("", nil).refused(t, ".sandbox.yml: yaml: unmarshal errors:\n  line 1: field nope not found")
 }
 
 // -- secrets --

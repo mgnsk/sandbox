@@ -12,7 +12,7 @@ import (
 )
 
 // hostGit is the git identity from the user's global git config on the
-// host (git.fromHost, GIT_FROM_HOST): name, email, and the ssh public key
+// host (git.fromHost, in sandbox.nix or .sandbox.yml): name, email, and the ssh public key
 // it signs with. Only `git config --global --get` runs, from /, never in
 // the project, whose .git the sandbox can write; a value that isn't set,
 // or no git on the host, leaves it empty.
@@ -88,9 +88,9 @@ func readPublicKey(path string) string {
 }
 
 // fill sets what env doesn't have yet from h: explicit settings win, and a
-// signing key or command from .sandbox.env or sandbox.nix keeps the host's
+// signing key or command from .sandbox.yml or sandbox.nix keeps the host's
 // key out.
-func (h hostGit) fill(env *sandboxEnv) {
+func (h hostGit) fill(env *localConfig) {
 	if env.GitUserName == "" {
 		env.GitUserName = h.Name
 	}
@@ -103,8 +103,8 @@ func (h hostGit) fill(env *sandboxEnv) {
 }
 
 // gitFromHost says whether to fill the git settings from the host:
-// .sandbox.env's GIT_FROM_HOST, else sandbox.nix's git.fromHost.
-func gitFromHost(env *sandboxEnv, m *manifest) bool {
+// .sandbox.yml's git.fromHost, else sandbox.nix's.
+func gitFromHost(env *localConfig, m *manifest) bool {
 	if env != nil && env.GitFromHost != nil {
 		return *env.GitFromHost
 	}

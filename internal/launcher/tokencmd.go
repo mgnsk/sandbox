@@ -110,7 +110,7 @@ func (l *launcher) runHostCommand(ctx context.Context, what, command string) (st
 
 // claudeKeySettings binds a copy of claudeDir's managed settings with the
 // apiKeyHelper placeholder over the original, when they lack it: a key
-// command from .sandbox.env comes with no managed config of its own (one
+// command from .sandbox.yml comes with no managed config of its own (one
 // from the user's config or sandbox.nix already has it). Without it Claude
 // Code would ask to log in.
 func claudeKeySettings(g *guards, a *bwrapArgs, claudeDir string) error {

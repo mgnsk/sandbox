@@ -76,31 +76,28 @@ func TestSSHSigningKey(t *testing.T) {
 
 func TestHostGitFill(t *testing.T) {
 	h := hostGit{Name: "Host", Email: "host@example.com", SigningKey: "ssh-ed25519 AAAAhost"}
-	env := &sandboxEnv{GitUserName: "Mine", GitSigningKeyCommand: "op read x"}
+	env := &localConfig{GitUserName: "Mine", GitSigningKeyCommand: "op read x"}
 	h.fill(env)
 	if env.GitUserName != "Mine" || env.GitUserEmail != "host@example.com" || env.GitSigningKey != "" {
 		t.Errorf("%+v", env)
 	}
 	on, off := true, false
 	for _, tc := range []struct {
-		env  *sandboxEnv
+		env  *localConfig
 		m    *manifest
 		want bool
 	}{
 		{nil, nil, false},
 		{nil, &manifest{GitFromHost: true}, true},
-		{&sandboxEnv{GitFromHost: &off}, &manifest{GitFromHost: true}, false},
-		{&sandboxEnv{GitFromHost: &on}, nil, true},
-		{&sandboxEnv{}, &manifest{GitFromHost: true}, true},
+		{&localConfig{GitFromHost: &off}, &manifest{GitFromHost: true}, false},
+		{&localConfig{GitFromHost: &on}, nil, true},
+		{&localConfig{}, &manifest{GitFromHost: true}, true},
 	} {
 		if got := gitFromHost(tc.env, tc.m); got != tc.want {
 			t.Errorf("%+v %+v: %v", tc.env, tc.m, got)
 		}
 	}
-	if env, err := parseSandboxEnv([]byte("GIT_FROM_HOST=0\n")); err != nil || env.GitFromHost == nil || *env.GitFromHost {
+	if env, err := parseLocalConfig([]byte("git:\n  fromHost: false\n")); err != nil || env.GitFromHost == nil || *env.GitFromHost {
 		t.Errorf("%+v %v", env, err)
-	}
-	if _, err := parseSandboxEnv([]byte("GIT_FROM_HOST=maybe\n")); err == nil {
-		t.Error("GIT_FROM_HOST=maybe taken")
 	}
 }

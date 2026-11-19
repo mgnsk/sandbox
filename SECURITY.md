@@ -329,17 +329,24 @@ treated as untrusted input:
   where the sandbox can't write; without a terminal the sandbox doesn't
   start.
 
-## Per-user project settings (.sandbox.env)
+## Per-user project settings (.sandbox.yml)
 
-`.sandbox.env` is in the project too, so it's untrusted like `sandbox.nix`:
-read on the host without following a symlink, parsed as plain `KEY=VALUE`
-lines (never by a shell), every key known. Its token commands and signing
-key command go through the same approval as `sandbox.nix`'s (which can set
-a signing key command too) (the key
-command's output must be an ssh public key); its git identity and signing key only
-set git's environment inside. Being gitignored keeps it out of commits, not
-out of the sandbox's reach - and the sandbox can read it, which is fine:
-it holds commands and public data, not secrets.
+`.sandbox.yml` is in the project too, so it's untrusted like `sandbox.nix`:
+read on the host without following a symlink, decoded strictly (an unknown
+field is an error). Its token commands and signing key command go through
+the same approval as `sandbox.nix`'s (whose own signing key command is
+approved too); a signing key command's output must be an ssh public key.
+Its git identity and signing key only set git's environment inside. Being
+gitignored keeps it out of commits, not out of the sandbox's reach - and the
+sandbox can read it, which is fine: it holds commands and public data, not
+secrets.
+
+`git.fromHost` (in either file) runs only `git config --global --get` on the
+host, for a fixed set of keys, from `/` - never in the project, whose `.git`
+the sandbox can write - and reads a signing key's `.pub` file without
+following a link at its last component. The values only set git's
+environment inside. All host commands (token and signing key commands) run
+from `/` too, so nothing the sandbox wrote in the project reaches them.
 
 ## Where the configuration comes from
 

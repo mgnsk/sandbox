@@ -10,49 +10,52 @@ import (
 
 const signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk me@example.com"
 
-func TestParseSandboxEnv(t *testing.T) {
-	env, err := parseSandboxEnv([]byte(`# Mine, not committed.
-GH_TOKEN_COMMAND=op read "op://Employee/GitHub/token"
-export CLAUDE_API_KEY_COMMAND='op read op://Employee/Claude/key'
-FORGEJO_TOKEN_COMMAND_Codeberg.org = op read op://Employee/Codeberg/token
-
-GIT_USER_NAME="Some One"
-GIT_USER_EMAIL=some.one@example.com
-GIT_SIGNING_KEY=` + signingKey + "\n"))
+func TestParseLocalConfig(t *testing.T) {
+	c, err := parseLocalConfig([]byte(`# Mine, not committed.
+guards:
+  github:
+    tokenCommand: op read "op://Employee/GitHub/token"
+  claudeApiKey:
+    tokenCommand: 'op read op://Employee/Claude/key'
+  forgejo:
+    tokenCommands:
+      Codeberg.org: op read op://Employee/Codeberg/token
+git:
+  fromHost: false
+  userName: Some One
+  userEmail: some.one@example.com
+  signingKey: ` + signingKey + "\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := sandboxEnv{
-		GitHubTokenCommand:   `op read "op://Employee/GitHub/token"`,
-		ClaudeAPIKeyCommand:  "op read op://Employee/Claude/key",
-		ForgejoTokenCommands: map[string]string{"codeberg.org": "op read op://Employee/Codeberg/token"},
-		GitUserName:          "Some One",
-		GitUserEmail:         "some.one@example.com",
-		GitSigningKey:        signingKey,
+	if c.GitHubTokenCommand != `op read "op://Employee/GitHub/token"` || c.ClaudeAPIKeyCommand != "op read op://Employee/Claude/key" ||
+		!maps.Equal(c.ForgejoTokenCommands, map[string]string{"codeberg.org": "op read op://Employee/Codeberg/token"}) ||
+		c.GitUserName != "Some One" || c.GitUserEmail != "some.one@example.com" || c.GitSigningKey != signingKey ||
+		c.GitFromHost == nil || *c.GitFromHost {
+		t.Errorf("got %+v", c)
 	}
-	if env.GitHubTokenCommand != want.GitHubTokenCommand || env.ClaudeAPIKeyCommand != want.ClaudeAPIKeyCommand ||
-		!maps.Equal(env.ForgejoTokenCommands, want.ForgejoTokenCommands) || env.GitUserName != want.GitUserName ||
-		env.GitUserEmail != want.GitUserEmail || env.GitSigningKey != want.GitSigningKey {
-		t.Errorf("got %+v", env)
+	if c, err := parseLocalConfig(nil); err != nil || c.GitFromHost != nil || c.GitHubTokenCommand != "" {
+		t.Errorf("empty: %+v %v", c, err)
 	}
 
 	for content, wantErr := range map[string]string{
-		"GH_TOKEN=x\n":                         "line 1: unknown key GH_TOKEN",
-		"GIT_USER_NAME\n":                      "line 1: want KEY=VALUE",
-		"GIT_USER_NAME=a\nGIT_USER_NAME=b\n":   "line 2: GIT_USER_NAME set twice",
-		"GH_TOKEN_COMMAND=\n":                  "line 1: GH_TOKEN_COMMAND is empty",
-		"GIT_SIGNING_KEY=~/.ssh/id_ed25519\n":  "must be an ssh public key",
-		"FORGEJO_TOKEN_COMMAND_not a host=x\n": "not a Forgejo host",
-		"GIT_SIGNING_KEY=" + signingKey + "\nGIT_SIGNING_KEY_COMMAND=x\n": "set one",
+		"guards:\n  gitHub:\n    tokenCommand: x\n":                        "field gitHub not found",
+		"git:\n  username: x\n":                                            "field username not found",
+		"git:\n  fromHost: maybe\n":                                        "cannot unmarshal",
+		"git:\n  signingKey: ~/.ssh/id_ed25519\n":                          "must be an ssh public key",
+		"guards:\n  forgejo:\n    tokenCommands:\n      not a host: x\n":   "not a Forgejo host",
+		"guards:\n  forgejo:\n    tokenCommands:\n      a.example: ''\n":   "is empty",
+		"git:\n  signingKey: " + signingKey + "\n  signingKeyCommand: x\n": "set one",
+		"git: [\n": "yaml",
 	} {
-		if _, err := parseSandboxEnv([]byte(content)); err == nil || !strings.Contains(err.Error(), wantErr) {
+		if _, err := parseLocalConfig([]byte(content)); err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("%q: %v", content, err)
 		}
 	}
 }
 
-func TestSandboxEnvGit(t *testing.T) {
-	env := &sandboxEnv{GitUserName: "Some One", GitUserEmail: "a@example.com", GitSigningKey: signingKey}
+func TestLocalConfigGit(t *testing.T) {
+	env := &localConfig{GitUserName: "Some One", GitUserEmail: "a@example.com", GitSigningKey: signingKey}
 	// After the profile's own git config entries.
 	inside := map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "pull.rebase", "GIT_CONFIG_VALUE_0": "true"}
 	env.setGit(inside)
@@ -71,20 +74,20 @@ func TestSandboxEnvGit(t *testing.T) {
 	}
 	// Only what's set.
 	inside = map[string]string{}
-	(&sandboxEnv{GitUserEmail: "a@example.com"}).setGit(inside)
+	(&localConfig{GitUserEmail: "a@example.com"}).setGit(inside)
 	if !maps.Equal(inside, map[string]string{"GIT_AUTHOR_EMAIL": "a@example.com", "GIT_COMMITTER_EMAIL": "a@example.com"}) {
 		t.Errorf("got %v", inside)
 	}
 }
 
-func TestReadSandboxEnvRefusesALink(t *testing.T) {
+func TestReadLocalConfigRefusesALink(t *testing.T) {
 	dir := t.TempDir()
-	if env, err := readSandboxEnv(dir); env != nil || err != nil {
+	if env, err := readLocalConfig(dir); env != nil || err != nil {
 		t.Errorf("none: %v %v", env, err)
 	}
-	os.WriteFile(filepath.Join(dir, "elsewhere"), []byte("GIT_USER_NAME=x\n"), 0o644)
-	os.Symlink(filepath.Join(dir, "elsewhere"), filepath.Join(dir, sandboxEnvFileName))
-	if _, err := readSandboxEnv(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+	os.WriteFile(filepath.Join(dir, "elsewhere"), []byte("git:\n  userName: x\n"), 0o644)
+	os.Symlink(filepath.Join(dir, "elsewhere"), filepath.Join(dir, localConfigFileName))
+	if _, err := readLocalConfig(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("link: %v", err)
 	}
 }

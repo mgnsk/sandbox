@@ -59,14 +59,14 @@ let
                 Take git's name, email and ssh signing key inside from each
                 user's global git config on the host (`git config --global`,
                 run from /), where nothing more specific sets them. A user's
-                .sandbox.env can turn it off (GIT_FROM_HOST=0).
+                .sandbox.yml can turn it off (git.fromHost: false).
               '';
             };
             git.signingKey = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
               example = "ssh-ed25519 AAAA...";
-              description = "An ssh public key in the user's agent: git inside signs commits and tags with it. A user's .sandbox.env wins.";
+              description = "An ssh public key in the user's agent: git inside signs commits and tags with it. A user's .sandbox.yml wins.";
             };
             git.signingKeyCommand = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
@@ -75,7 +75,7 @@ let
               description = ''
                 A shell command printing that public key, run on the host at
                 each start once the user approves it, like the token
-                commands. A user's .sandbox.env wins.
+                commands. A user's .sandbox.yml wins.
               '';
             };
             guards.claudeApiKey.tokenCommand = lib.mkOption {

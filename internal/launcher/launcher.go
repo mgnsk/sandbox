@@ -120,10 +120,10 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 
 	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
 	hostPorts := l.cfg.HostPorts
-	// The project's settings: sandbox.nix (committed) and .sandbox.env
+	// The project's settings: sandbox.nix (committed) and .sandbox.yml
 	// (each user's), the latter's token commands over the former's.
 	var m *manifest
-	var env *sandboxEnv
+	var env *localConfig
 	if !l.opts.NoProjectConfig {
 		if lexists(filepath.Join(l.project, projectFileName)) {
 			var err error
@@ -132,7 +132,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 			}
 		}
 		var err error
-		if env, err = readSandboxEnv(l.project); err != nil {
+		if env, err = readLocalConfig(l.project); err != nil {
 			return nil, nil, err
 		}
 		if env != nil {
@@ -165,7 +165,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	env = withProjectSigning(env, m)
 	if gitFromHost(env, m) {
 		if env == nil {
-			env = &sandboxEnv{}
+			env = &localConfig{}
 		}
 		readHostGit(ctx, l.home).fill(env)
 	}

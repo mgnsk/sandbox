@@ -29,7 +29,7 @@ type manifest struct {
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
 	// Git's signing key, or a command printing it (approved like the
-	// token commands); a user's .sandbox.env wins.
+	// token commands); a user's .sandbox.yml wins.
 	GitSigningKey        string `json:"gitSigningKey"`
 	GitSigningKeyCommand string `json:"gitSigningKeyCommand"`
 	GitFromHost          bool   `json:"gitFromHost"`
@@ -229,7 +229,7 @@ func (l *launcher) approveProject(m *manifest) error {
 	from := filepath.Join(l.project, projectFileName)
 	if access.GitHubTokenCommand != "" || len(access.ForgejoTokenCommands) > 0 || access.ClaudeAPIKeyCommand != "" ||
 		access.GitSigningKeyCommand != "" {
-		from = fmt.Sprintf("%s (or %s)", from, sandboxEnvFileName)
+		from = fmt.Sprintf("%s (or %s)", from, localConfigFileName)
 	}
 	t, err := openTTY()
 	if err != nil {
