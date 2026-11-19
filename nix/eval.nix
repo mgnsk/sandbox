@@ -1,5 +1,5 @@
 # The sandbox's configuration from modules (see module.nix for the options):
-# lib.evalSandbox in the flake, and user.nix.
+# lib.evalSandbox in the flake, and the home-manager module.
 { lib }:
 {
   pkgs,
