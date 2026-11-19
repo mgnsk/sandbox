@@ -1,64 +1,58 @@
 package launcher
 
 import (
-	"encoding/json"
+	"bufio"
+	"context"
+	"encoding/json/v2"
 	"fmt"
-	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
+	"github.com/mgnsk/sandbox/internal/apiproxy"
+	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/popup"
+	"github.com/mgnsk/sandbox/internal/popuprelay"
+	"github.com/mgnsk/sandbox/internal/tokens"
 )
 
-// proc is a started process whose exit can be polled.
-type proc struct {
-	cmd  *exec.Cmd
-	done chan struct{}
-	code int
-}
+const (
+	// How long a guard has to say it's ready.
+	startTimeout = 10 * time.Second
+	// How long a guard has to exit after SIGTERM, before it's killed.
+	stopTimeout = 2 * time.Second
+)
 
-func (p *proc) exited() bool {
-	select {
-	case <-p.done:
-		return true
-	default:
-		return false
-	}
-}
-
-// status is the exit status as Python's returncode: -N for a signal.
-func status(state *os.ProcessState) int {
-	if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-		return -int(ws.Signal())
-	}
-	return state.ExitCode()
-}
-
-// guards are the host-side guard processes and their temp dirs, torn down
-// on close.
+// guards are the host-side guard processes of a sandbox and their temp
+// dirs, torn down on close.
 //
 // An "always" answer to any guard's popup lives in that guard's memory, so
 // it ends with this sandbox.
 type guards struct {
-	self string
+	self string // This binary, which the guards are too.
 	cfg  *config
+	env  []string
 
-	mu     sync.Mutex
-	closed bool
 	procs  []*proc
 	dirs   []string
+	popups *net.UnixListener // Where the guards ask, if anywhere.
 
 	// Host loopback ports pasta maps in (-T), and CA certificates the gh/fj
 	// wrappers trust, from the HTTPS-intercepting guards.
 	tcpPorts []string
 	caCerts  []string
-	env      []string
+}
+
+// proc is a started guard, whose exit closes done.
+type proc struct {
+	cmd  *exec.Cmd
+	done chan struct{}
 }
 
 func newGuards(self string, cfg *config) *guards {
@@ -66,7 +60,7 @@ func newGuards(self string, cfg *config) *guards {
 	// gh, xdg-open, ... from the store first; the host's PATH after, for
 	// what xdg-open hands URLs to (the browser).
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "PATH=") && !strings.HasPrefix(kv, "PYTHONPATH=") {
+		if !strings.HasPrefix(kv, "PATH=") {
 			g.env = append(g.env, kv)
 		}
 	}
@@ -74,115 +68,170 @@ func newGuards(self string, cfg *config) *guards {
 	return g
 }
 
-func (g *guards) setEnv(name, value string) {
-	g.env = append(g.env, name+"="+value)
+// listenPopups opens the launcher's popup socket, which the guards started
+// after this ask at.
+func (g *guards) listenPopups() error {
+	dir, err := g.tempdir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "popup.sock")
+	if g.popups, err = popuprelay.Listen(path); err != nil {
+		return err
+	}
+	g.env = append(g.env, popup.Env+"="+path)
+	return nil
 }
 
 func (g *guards) tempdir() (string, error) {
 	dir, err := os.MkdirTemp("", "sandbox-")
-	if err != nil {
-		return "", err
+	if err == nil {
+		g.dirs = append(g.dirs, dir)
 	}
-	g.mu.Lock()
-	g.dirs = append(g.dirs, dir)
-	g.mu.Unlock()
-	return dir, nil
+	return dir, err
 }
 
-// start runs argv as a guard (argv[0] is what it runs as) with the guards'
-// environment and the launcher's stdio.
-func (g *guards) start(path string, argv []string) (*proc, error) {
-	cmd := &exec.Cmd{Path: path, Args: argv, Env: g.env,
-		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed {
-		return nil, errorf("stopping")
+// start runs argv with the guards' environment and the launcher's stdio,
+// with listener (if any) passed in, and waits for its ready line (see
+// package guard). Failing here names the guard, rather than leaving bwrap to
+// trip over a missing socket.
+func (g *guards) start(ctx context.Context, name string, argv []string, listener *os.File) ([]byte, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, err
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, errorf("can't start %s: %v", argv[0], err)
+	defer r.Close()
+	cmd := &exec.Cmd{
+		Path: argv[0], Args: argv, Env: g.env,
+		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+		ExtraFiles: []*os.File{w},
+	}
+	if listener != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, listener)
+	}
+	err = cmd.Start()
+	w.Close()
+	if err != nil {
+		return nil, fmt.Errorf("can't start %s: %w", name, err)
 	}
 	p := &proc{cmd: cmd, done: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
-		p.code = status(cmd.ProcessState)
 		close(p.done)
 	}()
 	g.procs = append(g.procs, p)
-	return p, nil
-}
 
-// guard starts the guard name, which this binary runs as.
-func (g *guards) guard(name string, args ...string) (*proc, error) {
-	return g.start(g.self, append([]string{name}, args...))
-}
-
-// waitFor waits for p to create path. Failing here names the guard, rather
-// than leaving bwrap to trip over a missing bind source.
-func (g *guards) waitFor(path string, p *proc, what string) error {
-	deadline := time.Now().Add(5 * time.Second)
-	for !exists(path) {
-		if p.exited() {
-			return errorf("%s exited with status %d", what, p.code)
+	ready := make(chan []byte, 1)
+	go func() {
+		line, _ := bufio.NewReader(r).ReadBytes('\n')
+		ready <- line
+	}()
+	select {
+	case line := <-ready:
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			return line, nil
 		}
-		if time.Now().After(deadline) {
-			return errorf("%s didn't start (%s missing)", what, path)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return nil
-}
-
-func (g *guards) close() {
-	g.mu.Lock()
-	g.closed = true
-	procs, dirs := g.procs, g.dirs
-	g.mu.Unlock()
-	for _, p := range procs {
-		if !p.exited() {
-			_ = p.cmd.Process.Signal(syscall.SIGTERM)
-		}
-	}
-	for _, p := range procs {
 		select {
 		case <-p.done:
-		case <-time.After(2 * time.Second):
+			return nil, fmt.Errorf("%s exited with status %d", name, cmd.ProcessState.ExitCode())
+		case <-time.After(stopTimeout):
+			return nil, fmt.Errorf("%s closed its ready pipe", name)
+		}
+	case <-time.After(startTimeout):
+		return nil, fmt.Errorf("%s didn't start", name)
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
+}
+
+// program is the path of this binary as the program name, by the link next
+// to it.
+func (g *guards) program(name string) string {
+	return filepath.Join(filepath.Dir(g.self), name)
+}
+
+// guard starts the guard name with a listener made for it.
+func (g *guards) guard(ctx context.Context, name string, ln listener, args ...string) ([]byte, error) {
+	f, err := ln.File()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return g.start(ctx, name, append([]string{g.program(name)}, args...), f)
+}
+
+type listener interface {
+	File() (*os.File, error)
+	Close() error
+}
+
+// unixListener listens at path; the socket file stays when it's closed, for
+// the guard that serves on it.
+func unixListener(path string) (*net.UnixListener, error) {
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err == nil {
+		ln.SetUnlinkOnClose(false)
+	}
+	return ln, err
+}
+
+// unixGuard starts the guard name on a socket named sock in a temp dir of
+// its own; the socket's path.
+func (g *guards) unixGuard(ctx context.Context, name, sock string, args ...string) (string, error) {
+	dir, err := g.tempdir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, sock)
+	ln, err := unixListener(path)
+	if err != nil {
+		return "", err
+	}
+	defer ln.Close()
+	_, err = g.guard(ctx, name, ln, args...)
+	return path, err
+}
+
+// close stops the guards, the last started first: a guard may need one
+// started before it (secret-service-guard its bus) until it's gone.
+func (g *guards) close() {
+	for _, p := range slices.Backward(g.procs) {
+		_ = p.cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-p.done:
+		case <-time.After(stopTimeout):
 			_ = p.cmd.Process.Kill()
 			<-p.done
 		}
 	}
-	for _, d := range dirs {
+	if g.popups != nil {
+		g.popups.Close()
+	}
+	for _, d := range g.dirs {
 		_ = os.RemoveAll(d)
 	}
 }
 
-// sshAgentArgs: sandboxed processes only see this proxy's socket, never the
-// real one - sign requests other than commit signing are gated behind a
-// popup.
-func (g *guards) sshAgentArgs(variables map[string]string) ([]string, error) {
+// sshAgent: sandboxed processes only see this proxy's socket, never the
+// real one - signatures other than commit signing are gated behind a popup.
+func (g *guards) sshAgent(ctx context.Context, a *bwrapArgs, vars map[string]string) error {
 	cfg := g.cfg.Guards.SSHAgent
-	socketPath := os.Getenv("SSH_AUTH_SOCK")
-	if cfg.Socket != nil && *cfg.Socket != "" {
-		socketPath = expand(*cfg.Socket, variables)
+	upstream := os.Getenv("SSH_AUTH_SOCK")
+	if cfg.Socket != "" {
+		upstream = expand(cfg.Socket, vars)
 	}
-	if socketPath == "" {
+	if upstream == "" {
 		fmt.Fprintln(os.Stderr, "sandbox: no ssh agent ($SSH_AUTH_SOCK unset), none inside")
-		return nil, nil
+		return nil
 	}
-	dir, err := g.tempdir()
+	sock, err := g.unixGuard(ctx, "ssh-agent-guard", "agent.sock", upstream)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	sock := filepath.Join(dir, "agent.sock")
-	p, err := g.guard("ssh-agent-guard", socketPath, sock)
-	if err != nil {
-		return nil, err
-	}
-	if err := g.waitFor(sock, p, "ssh-agent-guard"); err != nil {
-		return nil, err
-	}
-	inside := expand(cfg.Path, variables)
-	return []string{"--bind", sock, inside, "--setenv", "SSH_AUTH_SOCK", inside}, nil
+	inside := expand(cfg.Path, vars)
+	a.bind(sock, inside)
+	a.setenv("SSH_AUTH_SOCK", inside)
+	return nil
 }
 
 const busConf = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -199,220 +248,150 @@ const busConf = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Confi
 </busconfig>
 `
 
-// secretServiceArgs: a private, ephemeral D-Bus bus with a fake Secret
-// Service, so credentials go through libsecret instead of plaintext files.
-// The database itself is never bound in, only the socket, so it's only
+// secretService: a private, ephemeral D-Bus bus with a fake Secret Service,
+// so credentials go through libsecret instead of plaintext files. The
+// database itself is never bound in, only the socket, so it's only
 // reachable through the API.
-func (g *guards) secretServiceArgs(volumeDir, runtimeDir string) ([]string, error) {
-	tmp, err := g.tempdir()
+func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, runtimeDir string) error {
+	dir, err := g.tempdir()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	sock := filepath.Join(tmp, "bus.sock")
-	conf := filepath.Join(tmp, "bus.conf")
-	ready := filepath.Join(tmp, "ready")
-	// The database holds credentials in plaintext; secret-service-guard
-	// keeps the file itself at 0600, this keeps the directory around it as
-	// private.
-	if err := os.MkdirAll(volumeDir, 0o777); err != nil {
-		return nil, err
+	sock := filepath.Join(dir, "bus.sock")
+	conf := filepath.Join(dir, "bus.conf")
+	if err := os.WriteFile(conf, fmt.Appendf(nil, busConf, sock), 0o600); err != nil {
+		return err
 	}
-	if err := os.Chmod(volumeDir, 0o700); err != nil {
-		return nil, err
+	// The bus first, which prints its address once it listens.
+	address, err := g.start(ctx, "dbus-daemon", []string{g.cfg.DBusDaemon,
+		"--config-file=" + conf, "--nofork", "--nopidfile", "--print-address=" + strconv.Itoa(guard.ReadyFD),
+	}, nil)
+	if err != nil {
+		return err
 	}
+	// The database holds credentials in plaintext, in the volume dir, which
+	// only the user can enter.
 	db := filepath.Join(volumeDir, "secrets.sqlite3")
-	if err := os.WriteFile(conf, []byte(fmt.Sprintf(busConf, sock)), 0o666); err != nil {
-		return nil, err
-	}
-	bus, err := g.start(g.cfg.DBusDaemon, []string{g.cfg.DBusDaemon,
-		"--config-file=" + conf, "--nofork", "--nopidfile"})
-	if err != nil {
-		return nil, err
-	}
-	// The bus first: the guard connects to it as soon as it starts.
-	if err := g.waitFor(sock, bus, "dbus-daemon"); err != nil {
-		return nil, err
-	}
-	guard, err := g.guard("secret-service-guard", "unix:path="+sock, db, ready)
-	if err != nil {
-		return nil, err
-	}
-	if err := g.waitFor(ready, guard, "secret-service-guard"); err != nil {
-		return nil, err
+	argv := []string{g.program("secret-service-guard"), strings.TrimSpace(string(address)), db}
+	if _, err := g.start(ctx, "secret-service-guard", argv, nil); err != nil {
+		return err
 	}
 	inside := runtimeDir + "/bus"
-	return []string{"--bind", sock, inside, "--setenv", "DBUS_SESSION_BUS_ADDRESS", "unix:path=" + inside}, nil
+	a.bind(sock, inside)
+	a.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path="+inside)
+	return nil
 }
 
-// httpsProxy starts an HTTPS-intercepting guard; its HTTPS_PROXY URL once
-// it's up.
+// httpsProxy starts an HTTPS-intercepting guard; its HTTPS_PROXY URL.
 //
 // It listens on a free port of the host's loopback, which pasta maps to the
 // same port inside. The URL carries a per-launch secret the guard checks,
 // since anything on the host's loopback can connect to that port. Its CA
 // certificate (the key stays in the guard) goes into the bundle the gh/fj
-// wrappers trust, see caBundleArgs.
-func (g *guards) httpsProxy(name string, args ...string) (string, error) {
-	tmp, err := g.tempdir()
+// wrappers trust, see caBundle.
+func (g *guards) httpsProxy(ctx context.Context, name string, args ...string) (string, error) {
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		return "", err
 	}
-	p, err := g.guard(name, append([]string{tmp}, args...)...)
+	defer ln.Close()
+	line, err := g.guard(ctx, name, ln, args...)
 	if err != nil {
 		return "", err
 	}
-	infoPath := filepath.Join(tmp, "proxy.json")
-	if err := g.waitFor(infoPath, p, name); err != nil {
-		return "", err
+	var info apiproxy.Info
+	if err := json.Unmarshal(line, &info); err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
 	}
-	var info struct {
-		Port   int    `json:"port"`
-		Secret string `json:"secret"`
-	}
-	data, err := os.ReadFile(infoPath)
-	if err == nil {
-		err = json.Unmarshal(data, &info)
-	}
-	if err != nil {
-		return "", errorf("%s: bad %s: %v", name, infoPath, err)
-	}
-	ca, err := os.ReadFile(filepath.Join(tmp, "ca.pem"))
-	if err != nil {
-		return "", errorf("%s: %v", name, err)
-	}
-	port := strconv.Itoa(info.Port)
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
 	g.tcpPorts = append(g.tcpPorts, port)
-	g.caCerts = append(g.caCerts, string(ca))
+	g.caCerts = append(g.caCerts, info.CA)
 	return "http://sandbox:" + info.Secret + "@127.0.0.1:" + port, nil
 }
 
-// githubArgs: gh inside (upstream gh, wrapped to use SANDBOX_GH_PROXY as
-// its HTTPS_PROXY) has just a placeholder token; gh-api-proxy, out here,
+// github: gh inside (upstream gh, wrapped to use SANDBOX_GH_PROXY as its
+// HTTPS_PROXY) has just a placeholder token; gh-api-proxy, out here,
 // intercepts its requests, swaps in the real token - the project's
 // (`sandbox --gh-token`) or else the host's - and gates writes behind a
 // popup. Never a per-sandbox OAuth login: those hit GitHub's cap on
 // simultaneously valid tokens.
-func (g *guards) githubArgs(volumeDir string) []string {
-	url, err := g.httpsProxy("gh-api-proxy", filepath.Join(volumeDir, githubTokenFile))
+func (g *guards) github(ctx context.Context, a *bwrapArgs, volumeDir string) error {
+	url, err := g.httpsProxy(ctx, "gh-api-proxy", filepath.Join(volumeDir, tokens.GitHubFile))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
-		return nil
+		return err
 	}
-	return []string{
-		"--setenv", "SANDBOX_GH_PROXY", url,
-		// Only so gh considers itself logged in; never a real credential.
-		"--setenv", "GH_TOKEN", "sandbox-placeholder",
-	}
+	a.setenv("SANDBOX_GH_PROXY", url)
+	// Only so gh considers itself logged in; never a real credential.
+	a.setenv("GH_TOKEN", "sandbox-placeholder")
+	return nil
 }
 
-// forgejoArgs: the same for fj: forgejo-api-proxy adds the project's token
-// for the host (`sandbox --fj-token`) or else the one the host's fj is
-// logged in with, read per request, so no login is needed to start.
-func (g *guards) forgejoArgs(volumeDir string) ([]string, error) {
-	url, err := g.httpsProxy("forgejo-api-proxy", filepath.Join(volumeDir, forgejoTokensFile))
+// forgejo: the same for fj: forgejo-api-proxy adds the project's token for
+// the host (`sandbox --fj-token`) or else the one the host's fj is logged
+// in with, read per request, so no login is needed to start.
+func (g *guards) forgejo(ctx context.Context, a *bwrapArgs, volumeDir string) error {
+	url, err := g.httpsProxy(ctx, "forgejo-api-proxy", filepath.Join(volumeDir, tokens.ForgejoFile))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return []string{"--setenv", "SANDBOX_FJ_PROXY", url}, nil
+	a.setenv("SANDBOX_FJ_PROXY", url)
+	return nil
 }
 
-// caBundleArgs: the system CA bundle plus the HTTPS-intercepting guards'
-// CAs, as SANDBOX_CA_FILE, which the gh/fj wrappers make their
-// SSL_CERT_FILE. Nothing else inside trusts these CAs.
-func (g *guards) caBundleArgs(runtimeDir string) ([]string, error) {
+// caBundle: the system CA bundle plus the HTTPS-intercepting guards' CAs,
+// as SANDBOX_CA_FILE, which the gh/fj wrappers make their SSL_CERT_FILE.
+// Nothing else inside trusts these CAs.
+func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 	if len(g.caCerts) == 0 {
-		return nil, nil
+		return nil
 	}
 	system, err := os.ReadFile(filepath.Join(g.cfg.FHS.SSL, "certs", "ca-bundle.crt"))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	dir, err := g.tempdir()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	path := filepath.Join(dir, "ca-bundle.pem")
-	parts := append([]string{strings.TrimRight(string(system), "\n")}, g.caCerts...)
-	if err := os.WriteFile(path, []byte(strings.Join(parts, "\n")), 0o666); err != nil {
-		return nil, err
+	bundle := strings.Join(append([]string{strings.TrimRight(string(system), "\n")}, g.caCerts...), "\n")
+	if err := os.WriteFile(path, []byte(bundle), 0o644); err != nil {
+		return err
 	}
 	inside := runtimeDir + "/sandbox-ca.pem"
-	return []string{"--ro-bind", path, inside, "--setenv", "SANDBOX_CA_FILE", inside}, nil
+	a.roBind(path, inside)
+	a.setenv("SANDBOX_CA_FILE", inside)
+	return nil
 }
 
-// claudeAPIArgs: Claude Code inside sends its API requests as plain HTTP
-// over a socket to claude-api-proxy, which adds the project's API key; the
-// managed apiKeyHelper gives it a placeholder key.
-func (g *guards) claudeAPIArgs(keyFile, runtimeDir string) ([]string, error) {
+// claudeAPI: Claude Code inside sends its API requests as plain HTTP over a
+// socket to claude-api-proxy, which adds the project's API key; the managed
+// apiKeyHelper gives it a placeholder key.
+func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, volumeDir, runtimeDir string) error {
+	sock, err := g.unixGuard(ctx, "claude-api-proxy", "claude-api.sock", filepath.Join(volumeDir, tokens.ClaudeFile))
+	if err != nil {
+		return err
+	}
 	inside := runtimeDir + "/claude-api.sock"
-	dir, err := g.tempdir()
-	if err != nil {
-		return nil, err
-	}
-	sock := filepath.Join(dir, "claude-api.sock")
-	p, err := g.guard("claude-api-proxy", sock, keyFile)
-	if err != nil {
-		return nil, err
-	}
-	if err := g.waitFor(sock, p, "claude-api-proxy"); err != nil {
-		return nil, err
-	}
-	return []string{
-		"--bind", sock, inside,
-		"--setenv", "ANTHROPIC_UNIX_SOCKET", inside,
-		// http: plain requests on the socket, which the proxy can read.
-		"--setenv", "ANTHROPIC_BASE_URL", "http://api.anthropic.com",
-	}, nil
+	a.bind(sock, inside)
+	a.setenv("ANTHROPIC_UNIX_SOCKET", inside)
+	// http: plain requests on the socket, which the proxy can read.
+	a.setenv("ANTHROPIC_BASE_URL", "http://api.anthropic.com")
+	return nil
 }
 
-// openURLArgs: no display in here, so xdg-open (/usr/bin/xdg-open, the
-// shim) hands http(s) URLs to open-url-guard, which opens them in the
-// host's browser behind a popup.
-func (g *guards) openURLArgs(runtimeDir string) ([]string, error) {
-	dir, err := g.tempdir()
+// openURL: no display in here, so xdg-open (/usr/bin/xdg-open, the shim)
+// hands http(s) URLs to open-url-guard, which opens them in the host's
+// browser behind a popup.
+func (g *guards) openURL(ctx context.Context, a *bwrapArgs, runtimeDir string) error {
+	sock, err := g.unixGuard(ctx, "open-url-guard", "open-url.sock")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	sock := filepath.Join(dir, "open-url.sock")
-	p, err := g.guard("open-url-guard", sock)
-	if err != nil {
-		return nil, err
-	}
-	if err := g.waitFor(sock, p, "open-url-guard"); err != nil {
-		return nil, err
-	}
+	a.bind(sock, runtimeDir+"/open-url.sock")
 	// BROWSER because Python's webbrowser doesn't try xdg-open without a
 	// display variable, and npm's open honors it when it can't detect a
 	// desktop.
-	return []string{
-		"--bind", sock, runtimeDir + "/open-url.sock",
-		"--setenv", "BROWSER", "/usr/bin/xdg-open",
-	}, nil
+	a.setenv("BROWSER", "/usr/bin/xdg-open")
+	return nil
 }
-
-// exchangeArgs: a drop box for output of commands the user runs on the
-// host, read back instead of pasted. Bound at its host path so a command
-// naming $SANDBOX_EXCHANGE's value runs verbatim on either side.
-//
-// Read-only: only the host writes here, and a symlink a sandbox planted
-// would point that write at any host file. Links left from when it was
-// read-write are dropped.
-func exchangeArgs(volumeDir string) ([]string, error) {
-	exchange := filepath.Join(volumeDir, "exchange")
-	if err := os.MkdirAll(exchange, 0o777); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(exchange, 0o700); err != nil {
-		return nil, err
-	}
-	_ = filepath.WalkDir(exchange, func(path string, d fs.DirEntry, err error) error {
-		if err == nil && d.Type()&fs.ModeSymlink != 0 {
-			_ = os.Remove(path)
-		}
-		return nil
-	})
-	return []string{"--ro-bind", exchange, exchange, "--setenv", "SANDBOX_EXCHANGE", exchange}, nil
-}
-
-// The guards find the launcher's popup socket here.
-var popupEnv = popup.Env

@@ -39,8 +39,9 @@ type CA struct {
 	configs map[string]*tls.Config
 }
 
+// serial is a random serial number: 159 bits, positive in 20 bytes as RFC
+// 5280 asks.
 func serial() (*big.Int, error) {
-	// As cryptography's random_serial_number: 159 random bits.
 	return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 159))
 }
 
@@ -97,7 +98,7 @@ func (ca *CA) Config(host string) (*tls.Config, error) {
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{leaf},
 		MinVersion:   tls.VersionTLS12,
-		// One request per connection, over HTTP/1.1 - no h2.
+		// The proxy's inner server speaks HTTP/1.1 only.
 		NextProtos: []string{"http/1.1"},
 	}
 	ca.configs[host] = cfg

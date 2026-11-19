@@ -62,19 +62,12 @@
           in
           pkgs.mkShell {
             packages = [
-              (pkgs.python3.withPackages (ps: [
-                ps.cryptography
-                ps.dbus-fast
-                ps.pytest
-                ps.pyte
-              ]))
+              pkgs.go
+              # The sandbox's gh and fj wrappers, which the proxy tests run,
+              # and the bus the secret-service tests start.
               p.gh
               p.forgejo-cli
-              # For the launcher tests' secret-service guard.
               pkgs.dbus
-              pkgs.ruff
-              pkgs.go
-              pkgs.procps
             ];
           };
       });

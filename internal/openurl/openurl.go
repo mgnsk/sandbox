@@ -1,7 +1,7 @@
 // Package openurl is open-url-guard: it opens web URLs from a sandbox in the
 // host's browser, behind a popup.
 //
-//	open-url-guard SOCKET
+//	open-url-guard
 //
 // The sandbox has no display, so its xdg-open (sandbox-xdg-open) sends the
 // URL here instead. The host's xdg-open picks a handler by scheme, and for a
@@ -14,244 +14,163 @@
 package openurl
 
 import (
-	"bytes"
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
-	"os"
+	"net/url"
 	"os/exec"
-	"regexp"
 	"strings"
 	"syscall"
+	"unicode"
 	"unicode/utf8"
 
-	"github.com/mgnsk/sandbox/internal/cover"
+	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/peer"
 	"github.com/mgnsk/sandbox/internal/popup"
 )
 
-// From PATH, which the launcher starts with the store's xdg-utils.
-const xdgOpen = "xdg-open"
-
 const maxURLSize = 4096
 
-var approvals popup.Approvals
-
-// url is a URL split as Python's urllib.parse.urlsplit does, as far as
-// Validate looks: the guard has to judge the URL the way the browser will
-// read it, and these rules are the ones it was written against.
-type url struct {
-	scheme, netloc string
-}
-
-func isSchemeChar(c byte) bool {
-	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
-		c == '+' || c == '-' || c == '.'
-}
-
-var ipvFuture = regexp.MustCompile(`\Av[a-fA-F0-9]+\..+\z`)
-
-func split(s string) (url, error) {
-	var u url
-	if i := strings.IndexByte(s, ':'); i > 0 && (s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z') {
-		ok := true
-		for j := range i {
-			if !isSchemeChar(s[j]) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			u.scheme, s = strings.ToLower(s[:i]), s[i+1:]
-		}
-	}
-	if rest, ok := strings.CutPrefix(s, "//"); ok {
-		end := strings.IndexAny(rest, "/?#")
-		if end < 0 {
-			end = len(rest)
-		}
-		u.netloc = rest[:end]
-		open, close := strings.Contains(u.netloc, "["), strings.Contains(u.netloc, "]")
-		if open != close {
-			return u, errors.New("invalid IPv6 URL")
-		}
-		if open {
-			hostport := u.netloc[strings.LastIndexByte(u.netloc, '@')+1:]
-			before, after, found := strings.Cut(hostport, "[")
-			host, port, _ := strings.Cut(after, "]")
-			switch {
-			case !found:
-			case before != "", port != "" && !strings.HasPrefix(port, ":"):
-				return u, errors.New("invalid IPv6 URL")
-			case strings.HasPrefix(host, "v"):
-				if !ipvFuture.MatchString(host) {
-					return u, errors.New("invalid IPvFuture host")
-				}
-			default:
-				if addr, err := netip.ParseAddr(host); err != nil || !addr.Is6() {
-					return u, errors.New("invalid IPv6 host")
-				}
-			}
-		}
-	}
-	return u, nil
-}
-
-// hostname is the host of the URL's netloc, lowercased.
-func (u url) hostname() string {
-	hostport := u.netloc
-	if i := strings.LastIndexByte(hostport, '@'); i >= 0 {
-		hostport = hostport[i+1:]
-	}
-	var host string
-	if strings.Contains(hostport, "[") {
-		_, after, _ := strings.Cut(hostport, "[")
-		host, _, _ = strings.Cut(after, "]")
-	} else {
-		host, _, _ = strings.Cut(hostport, ":")
-	}
-	return strings.ToLower(host)
-}
-
-// Validate says why rawURL must not be opened, or "" if it may be offered to
-// the user.
+// Validate says why rawURL must not be opened, or returns nil if it may be
+// offered to the user.
 //
 // The checks on the raw text come first: a URL parser may silently drop tabs
 // and newlines, so it would judge a different URL from the one handed on.
-func Validate(rawURL string) string {
-	for i := 0; i < len(rawURL); i++ {
-		if c := rawURL[i]; c <= ' ' || c >= 0x7f {
-			// Also what rules out a homograph host: the popup shows the
-			// host as its punycode or not at all.
-			return "not printable ASCII"
-		}
+func Validate(rawURL string) error {
+	if strings.ContainsFunc(rawURL, func(r rune) bool {
+		return r > unicode.MaxASCII || !unicode.IsGraphic(r) || unicode.IsSpace(r)
+	}) {
+		// Also what rules out a homograph host: the popup shows the host as
+		// its punycode or not at all.
+		return errors.New("not printable ASCII")
 	}
 	if strings.Contains(rawURL, `\`) {
 		// Browsers read it as "/", URL parsers don't: the host shown for
 		// https://github.com\.evil.example wouldn't be the one loaded.
-		return "backslash in URL"
+		return errors.New("backslash in URL")
 	}
-	u, err := split(rawURL)
-	if err != nil {
-		return "malformed URL"
-	}
-	if u.scheme != "http" && u.scheme != "https" {
-		return "only http and https URLs can be opened"
-	}
-	if u.hostname() == "" {
-		return "no host"
-	}
-	if strings.Contains(u.netloc, "@") {
+	u, err := url.Parse(rawURL)
+	switch {
+	case err != nil:
+		return errors.New("malformed URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return errors.New("only http and https URLs can be opened")
+	case u.Opaque != "", u.Hostname() == "":
+		return errors.New("no host")
+	case !validHost(u):
+		return errors.New("malformed host")
+	case u.User != nil:
 		// https://github.com@evil.example reads as github.com in a popup.
-		return "user info in URL"
+		return errors.New("user info in URL")
 	}
-	return ""
+	return nil
+}
+
+// validHost says whether u's host reads the same to a browser: brackets
+// only around an IPv6 address.
+func validHost(u *url.URL) bool {
+	if !strings.HasPrefix(u.Host, "[") {
+		return !strings.ContainsAny(u.Host, "[]")
+	}
+	addr, err := netip.ParseAddr(u.Hostname())
+	return err == nil && addr.Is6()
+}
+
+// Guard opens URLs its clients send, once the user approves.
+type Guard struct {
+	// Open hands a URL to the host; xdg-open in its own session if nil.
+	Open func(rawURL string) error
+	// Ask asks the user; popup.Ask if nil.
+	Ask func(name, text string) popup.Answer
+
+	approvals popup.Approvals
+}
+
+// Handle answers one client's request to open a URL.
+func (g *Guard) Handle(conn net.Conn) {
+	defer conn.Close()
+	who := peer.Describe(conn)
+	reply := "ok"
+	if err := g.handle(conn, who); err != nil {
+		reply = "denied: " + err.Error()
+	}
+	_, _ = io.WriteString(conn, reply+"\n")
+}
+
+func (g *Guard) handle(conn net.Conn, who peer.Peer) error {
+	rawURL, err := readLine(conn)
+	if err != nil {
+		return err
+	}
+	if err := Validate(rawURL); err != nil {
+		return err
+	}
+	if !g.approvals.Approve(func() popup.Answer { return g.confirm(rawURL, who) }) {
+		return errors.New("not approved")
+	}
+	open := g.Open
+	if open == nil {
+		open = xdgOpen
+	}
+	if err := open(rawURL); err != nil {
+		return fmt.Errorf("couldn't run xdg-open: %w", err)
+	}
+	return nil
+}
+
+// readLine reads the client's first line.
+func readLine(conn net.Conn) (string, error) {
+	errBad := errors.New("URL too long or not UTF-8")
+	line, err := bufio.NewReaderSize(io.LimitReader(conn, maxURLSize+1), maxURLSize+1).ReadString('\n')
+	line = strings.TrimSuffix(line, "\n")
+	if err != nil && !errors.Is(err, io.EOF) || len(line) > maxURLSize || !utf8.ValidString(line) {
+		return "", errBad
+	}
+	return line, nil
 }
 
 // confirm asks in a popup whether to open rawURL. Shown whole and wrapped,
 // not truncated: a URL is approved for exactly what's on screen.
-func confirm(rawURL, cwd, cmdline string) string {
-	u, _ := split(rawURL)
-	text := "Open in the host's browser?\n\n" +
-		"  host:     " + popup.Clean(u.hostname()) + "\n" +
-		"  cwd:      " + popup.Clean(cwd) + "\n" +
-		"  command:  " + popup.Clean(cmdline) + "\n\n" +
-		rawURL + "\n\n"
-	return popup.Ask("open-url-guard", text)
+func (g *Guard) confirm(rawURL string, who peer.Peer) popup.Answer {
+	u, _ := url.Parse(rawURL)
+	ask := g.Ask
+	if ask == nil {
+		ask = popup.Ask
+	}
+	return ask("open-url-guard", "Open in the host's browser?\n\n"+
+		"  host:     "+popup.Clean(u.Hostname())+"\n"+
+		"  cwd:      "+popup.Clean(who.Cwd)+"\n"+
+		"  command:  "+popup.Clean(who.Cmdline)+"\n\n"+
+		rawURL+"\n\n")
 }
 
-// open hands a validated URL to the host's xdg-open. In its own session,
-// since a browser it starts has to outlive this guard and the sandbox.
-func open(rawURL string) error {
-	cmd := exec.Command(xdgOpen, rawURL)
+// xdgOpen hands a validated URL to the host's xdg-open, from PATH (which the
+// launcher starts with the store's xdg-utils). In its own session, since a
+// browser it starts has to outlive this guard and the sandbox.
+func xdgOpen(rawURL string) error {
+	cmd := exec.Command("xdg-open", rawURL)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go cmd.Wait() //nolint:errcheck // reaped only
+	go cmd.Wait() //nolint:errcheck // Reaped only.
 	return nil
 }
 
-// strerror words err as the C library would ("No such file or directory").
-func strerror(err error) string {
-	var errno syscall.Errno
-	switch {
-	case errors.Is(err, exec.ErrNotFound):
-		errno = syscall.ENOENT
-	case !errors.As(err, &errno):
-		return err.Error()
-	}
-	s := errno.Error()
-	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-// readLine reads the first line from conn, or ok=false if it's too long or
-// isn't UTF-8.
-func readLine(conn net.Conn) (line string, ok bool) {
-	var buf []byte
-	chunk := make([]byte, maxURLSize+1)
-	for !bytes.Contains(buf, []byte("\n")) {
-		if len(buf) > maxURLSize {
-			return "", false
-		}
-		n, err := conn.Read(chunk)
-		buf = append(buf, chunk[:n]...)
-		if err != nil {
-			break
-		}
-	}
-	first, _, _ := bytes.Cut(buf, []byte("\n"))
-	if len(first) > maxURLSize || !utf8.Valid(first) {
-		return "", false
-	}
-	return string(first), true
-}
-
-// handle answers one client's request to open a URL.
-func handle(conn *net.UnixConn) {
-	defer conn.Close()
-	cwd, cmdline := peer.Describe(conn)
-	rawURL, ok := readLine(conn)
-	reason := "URL too long or not UTF-8"
-	if ok {
-		reason = Validate(rawURL)
-	}
-	if reason == "" && !approvals.Approve(func() string { return confirm(rawURL, cwd, cmdline) }) {
-		reason = "not approved"
-	}
-	if reason == "" {
-		if err := open(rawURL); err != nil {
-			reason = fmt.Sprintf("couldn't run %s: %s", xdgOpen, strerror(err))
-		}
-	}
-	reply := "ok\n"
-	if reason != "" {
-		reply = "denied: " + reason + "\n"
-	}
-	_, _ = conn.Write([]byte(reply))
-}
-
-// Main listens on argv[1].
+// Main serves on the launcher's socket until stopped.
 func Main(argv []string) int {
-	if len(argv) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: open-url-guard SOCKET")
-		return 2
-	}
-	cover.DieOnSignals()
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: argv[1], Net: "unix"})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open-url-guard: %v\n", err)
-		return 1
-	}
-	// Left in place when the guard ends, as the launcher removes its dir.
-	ln.SetUnlinkOnClose(false)
-	for {
-		conn, err := ln.AcceptUnix()
+	return guard.Main(argv, "open-url-guard", 0, func(ctx context.Context, _ []string) error {
+		ln, err := guard.Listener()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "open-url-guard: %v\n", err)
-			return 1
+			return err
 		}
-		go handle(conn)
-	}
+		if err := guard.Ready(struct{}{}); err != nil {
+			return err
+		}
+		return guard.Serve(ctx, ln, (&Guard{}).Handle)
+	})
 }

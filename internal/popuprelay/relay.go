@@ -15,26 +15,26 @@
 // itself (vim, less, ...), it's drawn there, and afterwards the pty is
 // resized away and back, which has a full-screen program redraw.
 //
-// Guards ask over a unix socket in a private temp dir (see package popup):
-// a JSON {"name", "text"} request, answered with "once", "always" or "no".
+// Guards ask over a unix socket in a private temp dir (see package popup).
 // Requests are shown one at a time, in order. Without a usable terminal
 // there is no socket, and popup.Ask answers no.
 package popuprelay
 
 import (
-	"encoding/json"
-	"errors"
+	"encoding/json/v2"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
+
+	"github.com/mgnsk/sandbox/internal/popup"
 )
 
 const (
@@ -49,16 +49,13 @@ const (
 	maxPending = 1 << 20
 	// How long the pty stays at the other size when nudging a redraw.
 	nudge = 50 * time.Millisecond
+	// How long output the sandbox left behind is waited for after it exits.
+	drainQuiet = 50 * time.Millisecond
 )
 
 // Usable says whether there's a terminal to relay and show popups on.
 func Usable() bool {
-	return isatty(0) && isatty(1)
-}
-
-func isatty(fd int) bool {
-	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-	return err == nil
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // Listen opens the socket the guards ask on, in the launcher's private temp
@@ -76,487 +73,320 @@ func Listen(path string) (*net.UnixListener, error) {
 }
 
 type request struct {
-	conn       net.Conn
-	name, text string
+	conn net.Conn
+	popup.Request
 }
 
-// jsonString is a request field as Python's str() of it.
-func jsonString(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	return string(raw)
+func (r request) reply(answer popup.Answer) {
+	_, _ = io.WriteString(r.conn, string(answer))
+	r.conn.Close()
 }
 
 // readRequest reads a guard's request; ok=false if it's malformed.
-func readRequest(conn net.Conn) (name, text string, ok bool) {
+func readRequest(conn net.Conn) (popup.Request, bool) {
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	data, err := io.ReadAll(io.LimitReader(conn, maxRequest+1))
 	if err != nil || len(data) > maxRequest {
-		return "", "", false
+		return popup.Request{}, false
 	}
-	var req map[string]json.RawMessage
-	if json.Unmarshal(data, &req) != nil {
-		return "", "", false
+	var req struct {
+		Name *string `json:"name"`
+		Text *string `json:"text"`
 	}
-	rawName, ok1 := req["name"]
-	rawText, ok2 := req["text"]
-	if !ok1 || !ok2 {
-		return "", "", false
+	if json.Unmarshal(data, &req) != nil || req.Name == nil || req.Text == nil {
+		return popup.Request{}, false
 	}
-	return jsonString(rawName), jsonString(rawText), true
+	return popup.Request{Name: *req.Name, Text: *req.Text}, true
 }
 
-func reply(conn net.Conn, answer string) {
-	_, _ = conn.Write([]byte(answer))
-	conn.Close()
+// Run runs cmd on a pty of its own, relaying the terminal on stdin and
+// stdout, with popups for the guards asking on ln. Signals from signals are
+// passed on to cmd, but SIGINT: in raw mode a Ctrl-C reaches the sandbox as
+// a key. It returns cmd.Wait's error.
+func Run(cmd *exec.Cmd, ln net.Listener, signals <-chan os.Signal) error {
+	return run(os.Stdin, os.Stdout, cmd, ln, signals, grace)
 }
 
-type winsize = unix.Winsize
-
-func getSize(fd int) (*winsize, error) { return unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ) }
-func setSize(fd int, ws *winsize)      { _ = unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, ws) }
-
-// Relay runs a command on a pty and relays the terminal, with popups.
-type Relay struct {
-	listener *net.UnixListener
-	fd, out  int
-
-	ttyOK     bool
-	masterEOF bool
-	master    int
-	modes     modes
-	toChild   []byte
-	pending   []byte
-	queue     []request
-	popup     *pop
-	conn      net.Conn
-	screen    bool // The popup screen is open.
-	drewOnAlt bool
-	resized   bool
-	timers    map[string]time.Time
-
-	wakeR, wakeW int
-	mu           sync.Mutex
-	requests     []request
-	winch        bool
-	cmd          *exec.Cmd
-}
-
-// New makes a relay for the guards asking on listener.
-func New(listener *net.UnixListener) *Relay {
-	return &Relay{listener: listener, fd: 0, out: 1, ttyOK: true, master: -1,
-		modes: modes{cursor: true}, timers: map[string]time.Time{}}
-}
-
-// Signal handles a signal the launcher gets while the relay runs: SIGINT is
-// for the sandbox (it's raw mode here, so it only comes from kill), SIGTERM
-// and SIGHUP go to it.
-func (r *Relay) Signal(sig os.Signal) {
-	r.mu.Lock()
-	cmd := r.cmd
-	r.mu.Unlock()
-	if sig != syscall.SIGINT && cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Signal(sig)
-	}
-}
-
-func (r *Relay) wake() {
-	_, _ = unix.Write(r.wakeW, []byte{0})
-}
-
-// openPty opens a pty pair: the master, and the slave as a file.
-func openPty() (int, *os.File, error) {
-	master, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+// run is Run on the terminal in and out.
+func run(in, out *os.File, cmd *exec.Cmd, ln net.Listener, signals <-chan os.Signal, grace time.Duration) error {
+	attrs, err := unix.IoctlGetTermios(int(in.Fd()), unix.TCGETS)
 	if err != nil {
-		return -1, nil, err
+		return err
 	}
-	if err := unix.IoctlSetPointerInt(master, unix.TIOCSPTLCK, 0); err != nil {
-		unix.Close(master)
-		return -1, nil, err
-	}
-	n, err := unix.IoctlGetInt(master, unix.TIOCGPTN)
+	master, slave, err := pty.Open()
 	if err != nil {
-		unix.Close(master)
-		return -1, nil, err
+		return err
 	}
-	name := "/dev/pts/" + strconv.Itoa(n)
-	slave, err := unix.Open(name, unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		unix.Close(master)
-		return -1, nil, err
-	}
-	return master, os.NewFile(uintptr(slave), name), nil
-}
-
-// makeRaw is Python's tty.cfmakeraw.
-func makeRaw(t unix.Termios) *unix.Termios {
-	t.Iflag &^= unix.IGNBRK | unix.BRKINT | unix.IGNPAR | unix.PARMRK | unix.INPCK |
-		unix.ISTRIP | unix.INLCR | unix.IGNCR | unix.ICRNL | unix.IXON | unix.IXANY | unix.IXOFF
-	t.Oflag &^= unix.OPOST
-	t.Cflag &^= unix.PARENB | unix.CSIZE
-	t.Cflag |= unix.CS8
-	t.Lflag &^= unix.ECHO | unix.ECHOE | unix.ECHOK | unix.ECHONL | unix.ICANON | unix.IEXTEN |
-		unix.ISIG | unix.NOFLSH | unix.TOSTOP
-	t.Cc[unix.VMIN] = 1
-	t.Cc[unix.VTIME] = 0
-	return &t
-}
-
-// Run runs argv on a pty, relaying the terminal; its exit status (negative
-// for a signal, as Python's).
-func (r *Relay) Run(argv []string) (int, error) {
-	attrs, err := unix.IoctlGetTermios(r.fd, unix.TCGETS)
-	if err != nil {
-		return 0, err
-	}
-	master, slave, err := openPty()
-	if err != nil {
-		return 0, err
-	}
+	defer master.Close()
 	_ = unix.IoctlSetTermios(int(slave.Fd()), unix.TCSETS, attrs)
-	if ws, err := getSize(r.fd); err == nil {
-		setSize(int(slave.Fd()), ws)
-	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	_ = pty.InheritSize(in, master)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	err = cmd.Start()
 	slave.Close()
 	if err != nil {
-		unix.Close(master)
-		return 0, err
+		return err
 	}
-	r.mu.Lock()
-	r.cmd = cmd
-	r.mu.Unlock()
-	r.master = master
-	_ = unix.SetNonblock(master, true)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
 
-	var pipe [2]int
-	if err := unix.Pipe2(pipe[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
-		return 0, err
+	saved, err := term.MakeRaw(int(in.Fd()))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		<-done
+		return err
 	}
-	r.wakeR, r.wakeW = pipe[0], pipe[1]
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	stop := make(chan struct{})
+	defer term.Restore(int(in.Fd()), saved) //nolint:errcheck // Nothing left to do about it.
+
+	r := &relay{in: in, out: out, master: master, cmd: cmd, grace: grace, ttyOK: true, modes: modes{cursor: true}}
+	return r.loop(ln, signals, done)
+}
+
+// relay is the state of a Run: everything here is touched by its loop
+// alone.
+type relay struct {
+	in, out, master *os.File
+	cmd             *exec.Cmd
+	grace           time.Duration
+
+	ttyOK     bool
+	modes     modes
+	pending   []byte   // Sandbox output held back under a popup.
+	toChild   [][]byte // Keys for the sandbox, not yet written.
+	queue     []request
+	popup     *pop
+	current   request
+	screen    bool // The popup screen is open.
+	drewOnAlt bool
+	resized   bool
+	ready     <-chan time.Time // The current popup takes keys.
+	unnudge   <-chan time.Time // Size the pty back after a nudge.
+}
+
+// reader sends what's read from f, in chunks, until it fails.
+func reader(f *os.File, size int) <-chan []byte {
+	ch := make(chan []byte)
 	go func() {
+		defer close(ch)
 		for {
-			select {
-			case <-winch:
-				r.mu.Lock()
-				r.winch = true
-				r.mu.Unlock()
-				r.wake()
-			case <-stop:
+			buf := make([]byte, size)
+			n, err := f.Read(buf)
+			if n > 0 {
+				ch <- buf[:n]
+			}
+			if err != nil {
 				return
 			}
 		}
 	}()
-	go r.accept()
-
-	pidfd, err := unix.PidfdOpen(cmd.Process.Pid, 0)
-	if err != nil {
-		return 0, err
-	}
-	_ = unix.IoctlSetTermios(r.fd, unix.TCSETS, makeRaw(*attrs))
-
-	r.loop(pidfd)
-	r.drain()
-
-	for _, c := range append([]net.Conn{r.conn}, r.queuedConns()...) {
-		if c != nil {
-			reply(c, "no")
-		}
-	}
-	r.popup, r.conn, r.queue = nil, nil, nil
-	if r.screen {
-		r.closeScreen()
-	}
-	_ = unix.IoctlSetTermios(r.fd, unix.TCSETSW, attrs)
-	signal.Stop(winch)
-	close(stop)
-	r.listener.Close()
-	for _, fd := range []int{pidfd, r.wakeR, r.wakeW, master} {
-		unix.Close(fd)
-	}
-	_ = cmd.Wait()
-	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-		return -int(ws.Signal()), nil
-	}
-	return cmd.ProcessState.ExitCode(), nil
+	return ch
 }
 
-func (r *Relay) queuedConns() []net.Conn {
-	var out []net.Conn
-	for _, q := range r.queue {
-		out = append(out, q.conn)
+func (r *relay) loop(ln net.Listener, signals <-chan os.Signal, done <-chan error) error {
+	input := reader(r.in, 4096)
+	output := reader(r.master, 64*1024)
+	toMaster := make(chan []byte)
+	defer close(toMaster)
+	go func() {
+		for data := range toMaster {
+			_, _ = r.master.Write(data)
+		}
+	}()
+	requests := make(chan request)
+	stop := make(chan struct{})
+	defer close(stop)
+	go accept(ln, requests, stop)
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	defer signal.Stop(winch)
+
+	for {
+		// Not read while the held output is full: the sandbox blocks.
+		fromMaster := output
+		if len(r.pending) >= maxPending {
+			fromMaster = nil
+		}
+		var write chan<- []byte
+		var next []byte
+		if len(r.toChild) > 0 {
+			write, next = toMaster, r.toChild[0]
+		}
+		select {
+		case data, ok := <-input:
+			if !ok {
+				input = nil
+				r.hangUp()
+				continue
+			}
+			r.onInput(data)
+		case data, ok := <-fromMaster:
+			if !ok {
+				output = nil
+				continue
+			}
+			r.onOutput(data)
+		case write <- next:
+			r.toChild = r.toChild[1:]
+		case req := <-requests:
+			r.queue = append(r.queue, req)
+			if r.popup == nil {
+				r.nextPopup()
+			}
+		case <-winch:
+			r.onResize()
+		case <-r.ready:
+			r.ready = nil
+			r.draw()
+		case <-r.unnudge:
+			r.unnudge = nil
+			_ = pty.InheritSize(r.in, r.master)
+		case sig := <-signals:
+			if sig != syscall.SIGINT {
+				_ = r.cmd.Process.Signal(sig)
+			}
+		case err := <-done:
+			r.finish(output)
+			return err
+		}
 	}
-	r.mu.Lock()
-	for _, q := range r.requests {
-		out = append(out, q.conn)
-	}
-	r.requests = nil
-	r.mu.Unlock()
-	return out
 }
 
 // accept reads the guards' requests, one at a time, in order, and hands
-// them to the loop.
-func (r *Relay) accept() {
+// them to the loop; once it stops, each is answered no.
+func accept(ln net.Listener, requests chan<- request, stop <-chan struct{}) {
+	go func() {
+		<-stop
+		ln.Close()
+	}()
 	for {
-		conn, err := r.listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		name, text, ok := readRequest(conn)
+		req, ok := readRequest(conn)
 		if !ok {
 			conn.Close()
 			continue
 		}
-		r.mu.Lock()
-		r.requests = append(r.requests, request{conn, name, text})
-		r.mu.Unlock()
-		r.wake()
-	}
-}
-
-func (r *Relay) loop(pidfd int) {
-	for {
-		fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}, {Fd: int32(r.wakeR), Events: unix.POLLIN}}
-		ttyAt, masterAt := -1, -1
-		if r.ttyOK {
-			ttyAt = len(fds)
-			fds = append(fds, unix.PollFd{Fd: int32(r.fd), Events: unix.POLLIN})
-		}
-		if ev := r.masterEvents(); ev != 0 {
-			masterAt = len(fds)
-			fds = append(fds, unix.PollFd{Fd: int32(r.master), Events: ev})
-		}
-		timeout := -1
-		if len(r.timers) > 0 {
-			next := time.Time{}
-			for _, at := range r.timers {
-				if next.IsZero() || at.Before(next) {
-					next = at
-				}
-			}
-			timeout = max(int(time.Until(next)/time.Millisecond)+1, 0)
-		}
-		if _, err := unix.Poll(fds, timeout); err != nil && !errors.Is(err, unix.EINTR) {
-			return
-		}
-		if fds[0].Revents != 0 {
-			return
-		}
-		if ttyAt >= 0 && fds[ttyAt].Revents != 0 {
-			r.onTTY()
-		}
-		if masterAt >= 0 {
-			if fds[masterAt].Revents&unix.POLLOUT != 0 {
-				r.writeChild()
-			}
-			if fds[masterAt].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
-				r.readChild()
-			}
-		}
-		if fds[1].Revents != 0 {
-			r.onWake()
-		}
-		now := time.Now()
-		for name, at := range r.timers {
-			if !at.After(now) {
-				delete(r.timers, name)
-				switch name {
-				case "unnudge":
-					if ws, err := getSize(r.fd); err == nil {
-						setSize(r.master, ws)
-					}
-				case "ready":
-					if r.popup != nil {
-						r.draw()
-					}
-				}
-			}
+		select {
+		case requests <- request{conn, req}:
+		case <-stop:
+			request{conn, req}.reply(popup.No)
 		}
 	}
 }
 
-func (r *Relay) onWake() {
-	var buf [512]byte
-	for {
-		if n, _ := unix.Read(r.wakeR, buf[:]); n <= 0 {
-			break
+// finish shows what the sandbox wrote before it exited, and answers every
+// popup no.
+func (r *relay) finish(output <-chan []byte) {
+	for quiet := time.After(drainQuiet); output != nil; {
+		select {
+		case data, ok := <-output:
+			if !ok {
+				output = nil
+				break
+			}
+			r.onOutput(data)
+		case <-quiet:
+			output = nil
 		}
 	}
-	r.mu.Lock()
-	winch := r.winch
-	r.winch = false
-	requests := r.requests
-	r.requests = nil
-	r.mu.Unlock()
-	if winch {
-		r.onResize()
+	if r.popup != nil {
+		r.current.reply(popup.No)
+		r.popup = nil
 	}
-	for _, req := range requests {
-		r.queue = append(r.queue, req)
-		if r.popup == nil {
-			r.nextPopup()
-		}
+	for _, req := range r.queue {
+		req.reply(popup.No)
+	}
+	r.queue = nil
+	if r.screen {
+		r.closeScreen()
 	}
 }
 
 // -- the sandbox's side --
 
-// masterEvents is what to watch the pty for: reading unless the held output
-// is full, writing while there's input for it.
-func (r *Relay) masterEvents() int16 {
-	if r.masterEOF {
-		return 0
-	}
-	var ev int16
-	if len(r.pending) < maxPending {
-		ev |= unix.POLLIN
-	}
-	if len(r.toChild) > 0 {
-		ev |= unix.POLLOUT
-	}
-	return ev
-}
-
-func (r *Relay) writeChild() {
-	n, err := unix.Write(r.master, r.toChild)
-	if errors.Is(err, unix.EAGAIN) {
-		return
-	}
-	if err != nil {
-		n = len(r.toChild)
-	}
-	r.toChild = r.toChild[n:]
-}
-
-func (r *Relay) readChild() {
-	buf := make([]byte, 65536)
-	n, err := unix.Read(r.master, buf)
-	if errors.Is(err, unix.EAGAIN) {
-		return
-	}
-	if err != nil || n <= 0 {
-		// Every slave fd closed; the exit follows.
-		r.masterEOF = true
-		return
-	}
+func (r *relay) onOutput(data []byte) {
 	if r.screen {
-		r.pending = append(r.pending, buf[:n]...)
+		r.pending = append(r.pending, data...)
 	} else {
-		r.show(buf[:n])
-	}
-}
-
-// drain takes what the sandbox wrote before it exited.
-func (r *Relay) drain() {
-	buf := make([]byte, 65536)
-	for {
-		n, err := unix.Read(r.master, buf)
-		if err != nil || n <= 0 {
-			return
-		}
-		if r.screen {
-			r.pending = append(r.pending, buf[:n]...)
-		} else {
-			r.show(buf[:n])
-		}
-	}
-}
-
-// -- the terminal's side --
-
-func (r *Relay) write(data []byte) {
-	if !r.ttyOK {
-		return
-	}
-	for len(data) > 0 {
-		n, err := unix.Write(r.out, data)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			r.ttyOK = false
-			return
-		}
-		data = data[n:]
+		r.show(data)
 	}
 }
 
 // show puts sandbox output onto the terminal.
-func (r *Relay) show(data []byte) {
+func (r *relay) show(data []byte) {
 	r.modes.feed(data)
 	r.write(data)
 }
 
-func (r *Relay) onTTY() {
-	buf := make([]byte, 4096)
-	n, err := unix.Read(r.fd, buf)
-	if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
+// -- the terminal's side --
+
+func (r *relay) write(data []byte) {
+	if !r.ttyOK {
 		return
 	}
-	if err != nil || n <= 0 {
-		// Hung up: nothing more to relay, and no one to answer popups.
+	if _, err := r.out.Write(data); err != nil {
 		r.ttyOK = false
-		if r.popup != nil {
-			r.answer("no")
-		}
-		return
 	}
-	if r.popup != nil {
-		if answer := r.popup.feed(buf[:n], time.Now()); answer != "" {
-			r.answer(answer)
-		} else {
-			r.draw()
-		}
-		return
-	}
-	r.toChild = append(r.toChild, buf[:n]...)
 }
 
-func (r *Relay) onResize() {
-	ws, err := getSize(r.fd)
+func (r *relay) onInput(data []byte) {
+	if r.popup == nil {
+		r.toChild = append(r.toChild, data)
+		return
+	}
+	if answer, ok := r.popup.feed(data, time.Now()); ok {
+		r.answer(answer)
+	} else {
+		r.draw()
+	}
+}
+
+// hangUp: nothing more to relay, and no one to answer popups.
+func (r *relay) hangUp() {
+	r.ttyOK = false
+	if r.popup != nil {
+		r.answer(popup.No)
+	}
+}
+
+func (r *relay) onResize() {
+	ws, err := pty.GetsizeFull(r.in)
 	if err != nil {
 		return
 	}
 	if !r.screen {
-		setSize(r.master, ws)
+		_ = pty.Setsize(r.master, ws)
 		return
 	}
 	r.resized = true
 	if r.popup != nil {
-		r.popup.resize(int(ws.Row), int(ws.Col))
+		r.popup.resize(int(ws.Rows), int(ws.Cols))
 		r.draw()
 	}
 }
 
 // -- popups --
 
-func (r *Relay) nextPopup() {
+func (r *relay) nextPopup() {
 	for len(r.queue) > 0 {
 		req := r.queue[0]
 		r.queue = r.queue[1:]
 		if !r.ttyOK {
-			reply(req.conn, "no")
+			req.reply(popup.No)
 			continue
 		}
 		if !r.screen {
 			r.openScreen()
 		}
 		rows, cols := 24, 80
-		if ws, err := getSize(r.fd); err == nil {
-			rows, cols = int(ws.Row), int(ws.Col)
+		if ws, err := pty.GetsizeFull(r.in); err == nil {
+			rows, cols = int(ws.Rows), int(ws.Cols)
 		}
-		r.popup = newPop(req.name, req.text, rows, cols, time.Now(), grace)
-		r.conn = req.conn
-		r.timers["ready"] = r.popup.readyAt
+		r.popup = newPop(req.Name, req.Text, rows, cols, time.Now().Add(r.grace))
+		r.current = req
+		r.ready = time.After(r.grace)
 		r.draw()
 		return
 	}
@@ -565,18 +395,17 @@ func (r *Relay) nextPopup() {
 	}
 }
 
-func (r *Relay) answer(answer string) {
-	reply(r.conn, answer)
-	r.popup, r.conn = nil, nil
-	delete(r.timers, "ready")
+func (r *relay) answer(answer popup.Answer) {
+	r.current.reply(answer)
+	r.popup, r.ready = nil, nil
 	r.nextPopup()
 }
 
-func (r *Relay) draw() {
+func (r *relay) draw() {
 	r.write(r.popup.render(time.Now()))
 }
 
-func (r *Relay) openScreen() {
+func (r *relay) openScreen() {
 	r.drewOnAlt = r.modes.alt
 	r.resized = false
 	// 1049 saves the cursor and attributes on the way in and restores them
@@ -589,7 +418,7 @@ func (r *Relay) openScreen() {
 	r.screen = true
 }
 
-func (r *Relay) closeScreen() {
+func (r *relay) closeScreen() {
 	if r.drewOnAlt {
 		r.write([]byte("\x1b[0m\x1b[H\x1b[2J\x1b8"))
 	} else {
@@ -605,22 +434,21 @@ func (r *Relay) closeScreen() {
 		r.show(r.pending)
 		r.pending = nil
 	}
-	ws, err := getSize(r.fd)
-	if err != nil {
-		return
-	}
-	if r.resized {
-		setSize(r.master, ws)
-	} else if r.drewOnAlt {
+	ws, err := pty.GetsizeFull(r.in)
+	switch {
+	case err != nil:
+	case r.resized:
+		_ = pty.Setsize(r.master, ws)
+	case r.drewOnAlt:
 		// The same size again wouldn't signal; a column less, briefly, has
 		// the program inside redraw what the popup covered.
 		other := *ws
-		if other.Col > 1 {
-			other.Col--
+		if other.Cols > 1 {
+			other.Cols--
 		} else {
-			other.Col = 2
+			other.Cols = 2
 		}
-		setSize(r.master, &other)
-		r.timers["unnudge"] = time.Now().Add(nudge)
+		_ = pty.Setsize(r.master, &other)
+		r.unnudge = time.After(nudge)
 	}
 }

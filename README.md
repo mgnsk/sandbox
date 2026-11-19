@@ -684,15 +684,16 @@ profiles.audio = {
 ## Development
 
 ```sh
-make test             # everything: all tests against a fresh build, and lint
-make test K=host_port # only the pytest tests matching a -k filter, no lint
-make coverage         # line coverage of the Go code by the tests
-make fmt              # format Go, the tests' Python and nix files
+make test              # everything: all tests against a fresh build, and lint
+make test RUN=HostPort # only the tests matching a go test -run filter, no lint
+make coverage          # line coverage of the Go code by the tests
+make fmt               # format Go and nix files
 ```
 
 The launcher, `sandbox-init` and the guards are one Go binary (`cmd/sandbox`,
-`internal/`), run under each program's name. The tests (`tests/`, pytest) run
-it as a program and judge it from the outside.
+`internal/`), run under each program's name. Each package has its tests next
+to it; the launcher's and `sandbox-init`'s also run the binary as the
+programs it is, and `e2e/` starts real sandboxes from a fresh build.
 
 Each target enters the dev shell itself when run outside it. The real-sandbox
 tests need unprivileged user namespaces, so they skip inside a running

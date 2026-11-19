@@ -25,12 +25,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"syscall"
-
-	"github.com/mgnsk/sandbox/internal/cover"
 )
 
 // Where the launcher mounts the profile's managed Claude Code config.
@@ -38,29 +34,6 @@ const managedClaudeDir = "/etc/claude-code"
 
 func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "sandbox-init: "+format+"\n", a...)
-}
-
-// strerror is err's errno as the C library words it ("Not a directory"),
-// or err itself for anything else.
-func strerror(err error) string {
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		s := errno.Error()
-		if s != "" {
-			return strings.ToUpper(s[:1]) + s[1:]
-		}
-	}
-	return err.Error()
-}
-
-func isSymlink(path string) bool {
-	fi, err := os.Lstat(path)
-	return err == nil && fi.Mode()&fs.ModeSymlink != 0
-}
-
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func isDir(path string) bool {
@@ -76,10 +49,8 @@ func linksTo(path, target string) bool {
 // relink makes path a symlink to target, replacing a file or link there.
 func relink(path, target string) error {
 	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".sandbox-init")
-	if _, err := os.Lstat(tmp); err == nil {
-		if err := syscall.Unlink(tmp); err != nil {
-			return &fs.PathError{Op: "unlink", Path: tmp, Err: err}
-		}
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	if err := os.Symlink(target, tmp); err != nil {
 		return err
@@ -87,25 +58,8 @@ func relink(path, target string) error {
 	return os.Rename(tmp, path)
 }
 
-// unescapeMountinfo undoes mountinfo's octal escapes of space, tab, newline
-// and backslash.
-func unescapeMountinfo(s string) string {
-	if !strings.Contains(s, `\`) {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+4 <= len(s) {
-			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
-				b.WriteByte(byte(n))
-				i += 3
-				continue
-			}
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
-}
+// mountinfoUnescape undoes /proc/self/mountinfo's escapes.
+var mountinfoUnescape = strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
 
 // mountPoints lists the mounts over the volume under home - not its own,
 // and may be whole repos.
@@ -115,11 +69,9 @@ func mountPoints(home string) map[string]bool {
 	if err != nil {
 		return mounts
 	}
-	for line := range strings.SplitSeq(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 4 {
-			mount := unescapeMountinfo(fields[4])
-			if strings.HasPrefix(mount, home+"/") {
+	for line := range strings.Lines(string(data)) {
+		if fields := strings.Fields(line); len(fields) > 4 {
+			if mount := mountinfoUnescape.Replace(fields[4]); strings.HasPrefix(mount, home+"/") {
 				mounts[mount] = true
 			}
 		}
@@ -127,55 +79,48 @@ func mountPoints(home string) map[string]bool {
 	return mounts
 }
 
-// walkLinks calls fn for every symlink under home, not descending into skip
-// or through links. Unreadable directories are passed over.
-func walkLinks(home string, skip map[string]bool, fn func(path string)) {
+// staleLinks lists the links under home into another generation's files
+// than homeFiles, not descending into skip. Only a link this program made;
+// anything else is the volume's own. Matched by name, since an old
+// generation may be garbage-collected.
+func staleLinks(home, homeFiles string, skip map[string]bool) []string {
+	storeDir := filepath.Dir(homeFiles)
+	var stale []string
 	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
-		if path == home {
+		switch {
+		case err != nil, path == home:
+			return nil
+		case skip[path] && d.IsDir():
+			return filepath.SkipDir
+		case d.Type()&fs.ModeSymlink == 0:
 			return nil
 		}
+		target, err := os.Readlink(path)
 		if err != nil {
 			return nil
 		}
-		if skip[path] {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			fn(path)
+		rest, ok := strings.CutPrefix(target, storeDir+"/")
+		name, _, _ := strings.Cut(rest, "/")
+		if ok && strings.HasSuffix(name, "-home-manager-files") && !strings.HasPrefix(target, homeFiles+"/") {
+			stale = append(stale, path)
 		}
 		return nil
 	})
+	return stale
 }
 
-// generationFiles lists the paths relative to homeFiles of every file or link
-// in it, not descending through links, sorted.
+// generationFiles lists the paths relative to homeFiles of every file or
+// link in it, not descending through links, in order.
 func generationFiles(homeFiles string) []string {
 	var out []string
 	_ = filepath.WalkDir(homeFiles, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(homeFiles, path)
-		if err == nil {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(homeFiles, path)
 			out = append(out, rel)
 		}
 		return nil
 	})
-	slices.Sort(out)
 	return out
-}
-
-// realpath is path with its links resolved, or just absolute if it doesn't
-// exist.
-func realpath(path string) string {
-	abs, _ := filepath.Abs(path)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
-	}
-	return abs
 }
 
 // linkGeneration links every file of generation's home-files into home.
@@ -188,41 +133,22 @@ func linkGeneration(home, generation string) error {
 	if err := relink(filepath.Join(profiles, "home-manager"), generation); err != nil {
 		return err
 	}
-
-	homeFiles := realpath(filepath.Join(generation, "home-files"))
-	storeDir := filepath.Dir(homeFiles)
-
-	// Only a link this program made; anything else is the volume's own.
-	// Matched by name, since an old generation may be garbage-collected.
-	var stale []string
-	walkLinks(home, mountPoints(home), func(link string) {
-		target, err := os.Readlink(link)
-		if err != nil {
-			return
-		}
-		rest, ok := strings.CutPrefix(target, storeDir+"/")
-		if !ok {
-			return
-		}
-		name, _, _ := strings.Cut(rest, "/")
-		if strings.HasSuffix(name, "-home-manager-files") &&
-			!strings.HasPrefix(target, homeFiles+"/") {
-			stale = append(stale, link)
-		}
-	})
-	for _, link := range stale {
+	homeFiles, err := filepath.EvalSymlinks(filepath.Join(generation, "home-files"))
+	if err != nil {
+		return err
+	}
+	for _, link := range staleLinks(home, homeFiles, mountPoints(home)) {
 		if err := os.Remove(link); err != nil {
 			return err
 		}
 	}
-
 	for _, rel := range generationFiles(homeFiles) {
 		dst := filepath.Join(home, rel)
 		src := filepath.Join(homeFiles, rel)
 		if linksTo(dst, src) {
 			continue
 		}
-		if isDir(dst) && !isSymlink(dst) {
+		if fi, err := os.Lstat(dst); err == nil && fi.IsDir() {
 			if err := syscall.Rmdir(dst); err != nil {
 				warn("not linking ~/%s, a non-empty directory is in the way", rel)
 				continue
@@ -233,7 +159,7 @@ func linkGeneration(home, generation string) error {
 			err = relink(dst, src)
 		}
 		if err != nil {
-			warn("not linking ~/%s: %s", rel, strerror(err))
+			warn("not linking ~/%s: %v", rel, err)
 		}
 	}
 	return nil
@@ -244,20 +170,21 @@ func linkGeneration(home, generation string) error {
 func linkKnownMarketplaces(home, managed string) error {
 	link := filepath.Join(home, ".claude/plugins/known_marketplaces.json")
 	target := filepath.Join(managed, "known_marketplaces.json")
-	switch {
-	case exists(target):
+	if _, err := os.Stat(target); err != nil {
 		if linksTo(link, target) {
-			return nil
+			return os.Remove(link)
 		}
-		err := os.MkdirAll(filepath.Dir(link), 0o777)
-		if err == nil {
-			err = relink(link, target)
-		}
-		if err != nil {
-			warn("not linking %s: %s", link, strerror(err))
-		}
-	case linksTo(link, target):
-		return os.Remove(link)
+		return nil
+	}
+	if linksTo(link, target) {
+		return nil
+	}
+	err := os.MkdirAll(filepath.Dir(link), 0o777)
+	if err == nil {
+		err = relink(link, target)
+	}
+	if err != nil {
+		warn("not linking %s: %v", link, err)
 	}
 	return nil
 }
@@ -276,7 +203,7 @@ func writeGhConfig(home string) {
 		err = os.WriteFile(ghConfig, []byte("git_protocol: ssh\n"), 0o666)
 	}
 	if err != nil {
-		warn("not writing %s: %s", ghConfig, strerror(err))
+		warn("not writing %s: %v", ghConfig, err)
 	}
 }
 
@@ -292,7 +219,6 @@ func Main(argv []string) int {
 		warn("HOME is not set")
 		return 1
 	}
-
 	if nixProfile != "" {
 		if err := relink(filepath.Join(home, ".nix-profile"), nixProfile); err != nil {
 			warn("%v", err)
@@ -311,22 +237,14 @@ func Main(argv []string) int {
 	}
 	writeGhConfig(home)
 
-	return execvp(command)
-}
-
-// execvp replaces the process with command, looked up in $PATH.
-func execvp(command []string) int {
 	path, err := exec.LookPath(command[0])
-	switch {
-	case errors.Is(err, exec.ErrNotFound):
+	if errors.Is(err, exec.ErrNotFound) {
 		warn("%s: command not found", command[0])
 		return 127
-	case err != nil && !errors.Is(err, exec.ErrDot):
-		warn("%s: %s", command[0], strerror(err))
-		return 126
 	}
-	cover.Flush()
-	err = syscall.Exec(path, command, os.Environ())
-	warn("%s: %s", command[0], strerror(err))
+	if err == nil {
+		err = syscall.Exec(path, command, os.Environ())
+	}
+	warn("%v", err)
 	return 126
 }

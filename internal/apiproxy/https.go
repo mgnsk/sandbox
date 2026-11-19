@@ -2,204 +2,232 @@ package apiproxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/mgnsk/sandbox/internal/hostname"
 	"github.com/mgnsk/sandbox/internal/mitmca"
+	"github.com/mgnsk/sandbox/internal/popup"
 )
 
-// host:port, as a client CONNECTs to it. No IPv6 literals.
-var connectRE = regexp.MustCompile(`^([a-z0-9.-]+):([0-9]{1,5})$`)
-
-// HTTPSProxy is a guard as an intercepting HTTPS_PROXY on the host's
-// loopback. The peer is pasta, so its popup can't name the requesting
-// process.
-type HTTPSProxy struct {
-	server
-	ln       net.Listener
+// HTTPS serves a Proxy as an intercepting HTTPS_PROXY. The peer is pasta,
+// so its popups can't name the requesting process.
+type HTTPS struct {
+	*Proxy
 	ca       *mitmca.CA
 	secret   string
 	expected []byte
 }
 
-// NewHTTPSProxy listens on a free loopback port with a fresh CA and secret.
-func NewHTTPSProxy(policy Policy) (*HTTPSProxy, error) {
-	ca, err := mitmca.New("sandbox " + policy.Name())
+// Info is what the launcher needs to hand a client: the secret for
+// Proxy-Authorization (user "sandbox") and the CA certificate to trust.
+type Info struct {
+	Secret string `json:"secret"`
+	CA     string `json:"ca"`
+}
+
+// NewHTTPS makes an HTTPS proxy for p with a fresh CA and secret.
+func NewHTTPS(p *Proxy) (*HTTPS, error) {
+	ca, err := mitmca.New("sandbox " + p.Name)
 	if err != nil {
 		return nil, err
 	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return nil, err
-	}
-	secret := base64.RawURLEncoding.EncodeToString(raw)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, err
-	}
-	token := base64.StdEncoding.EncodeToString([]byte("sandbox:" + secret))
-	return &HTTPSProxy{
-		server:   server{policy: policy},
-		ln:       ln,
+	secret := rand.Text()
+	return &HTTPS{
+		Proxy:    p,
 		ca:       ca,
 		secret:   secret,
-		expected: []byte("Basic " + token),
+		expected: []byte("Basic " + base64.StdEncoding.EncodeToString([]byte("sandbox:"+secret))),
 	}, nil
 }
 
-// Announce writes ca.pem, then proxy.json ({"port", "secret"}) - the
-// launcher waits for the latter. stateDir is private to the launcher's
-// user.
-func (p *HTTPSProxy) Announce(stateDir string) error {
-	if err := os.WriteFile(filepath.Join(stateDir, "ca.pem"), p.ca.PEM(), 0o666); err != nil {
-		return err
-	}
-	port := p.ln.Addr().(*net.TCPAddr).Port
-	info := fmt.Sprintf(`{"port": %d, "secret": %s}`, port, strconv.Quote(p.secret))
-	tmp := filepath.Join(stateDir, ".proxy.json")
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.WriteString(info); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(stateDir, "proxy.json"))
+// Info is the proxy's secret and CA.
+func (h *HTTPS) Info() Info {
+	return Info{Secret: h.secret, CA: string(h.ca.PEM())}
 }
 
-// Serve answers connections until the listener fails.
-func (p *HTTPSProxy) Serve() error {
-	for {
-		conn, err := p.ln.Accept()
-		if err != nil {
-			return err
-		}
-		go func() {
-			defer conn.Close()
-			p.handleConnect(conn)
-			closeWrite(conn)
-		}()
+// Serve answers CONNECTs on ln until ctx ends.
+func (h *HTTPS) Serve(ctx context.Context, ln net.Listener) error {
+	tunnels := newConnQueue(ln.Addr())
+	inner := newServer(h.Proxy)
+	inner.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		return context.WithValue(ctx, connectKey{}, c.(*tunnelConn).target)
 	}
+	go func() { _ = inner.Serve(tunnels) }()
+	defer inner.Close()
+	return serve(ctx, newServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.connect(w, r, tunnels)
+	})), ln)
+}
+
+// connect answers a CONNECT: a tunnel to the real host, or one this proxy
+// ends itself, reading the requests inside.
+func (h *HTTPS) connect(w http.ResponseWriter, r *http.Request, tunnels *connQueue) {
+	switch {
+	case r.Method != http.MethodConnect:
+		// Plain-HTTP proxying isn't offered: everything goes over CONNECT.
+		h.refuse(w, http.StatusMethodNotAllowed, "only CONNECT")
+		return
+	case !h.authorized(r.Header.Values("Proxy-Authorization")):
+		w.Header().Set("Proxy-Authenticate", `Basic realm="sandbox"`)
+		h.refuse(w, http.StatusProxyAuthRequired, "proxy authentication required")
+		return
+	}
+	target := strings.ToLower(r.Host)
+	name, port, err := net.SplitHostPort(target)
+	if err != nil || !hostname.ValidPort(target) {
+		h.refuse(w, http.StatusBadRequest, "bad CONNECT target: "+popup.Clean(r.Host))
+		return
+	}
+	host := target
+	if port == "443" {
+		host = name
+	}
+
+	var upstream net.Conn
+	if h.Tunnel != nil && h.Tunnel(target) {
+		if upstream, err = h.dial(r.Context(), target); err != nil {
+			h.refuse(w, http.StatusBadGateway, "upstream error: "+err.Error())
+			return
+		}
+	}
+	conn, buf, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		if upstream != nil {
+			upstream.Close()
+		}
+		return
+	}
+	client := bufferedConn(conn, buf.Reader)
+	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		conn.Close()
+		return
+	}
+	if upstream != nil {
+		splice(client, upstream)
+		return
+	}
+	cfg, err := h.ca.Config(name)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	tlsConn := tls.Server(client, cfg)
+	_ = conn.SetDeadline(time.Now().Add(headerTimeout))
+	if err := tlsConn.Handshake(); err != nil {
+		conn.Close() // Client gone, or didn't trust the certificate.
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	tunnels.push(&tunnelConn{Conn: tlsConn, target: host})
 }
 
 // authorized says whether Proxy-Authorization (all its values) carries the
 // secret.
-func (p *HTTPSProxy) authorized(values []string) bool {
+func (h *HTTPS) authorized(values []string) bool {
 	return len(values) == 1 &&
-		subtle.ConstantTimeCompare([]byte(pyStrip(values[0])), p.expected) == 1
+		subtle.ConstantTimeCompare([]byte(strings.TrimSpace(values[0])), h.expected) == 1
 }
 
-// bufConn reads what a bufio.Reader already holds before the connection.
-type bufConn struct {
+func (h *HTTPS) dial(ctx context.Context, addr string) (net.Conn, error) {
+	if h.Dial != nil {
+		return h.Dial(ctx, "tcp", addr)
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", addr)
+}
+
+// tunnelConn is a connection the proxy ends, read by the inner server.
+type tunnelConn struct {
+	net.Conn
+	target string
+}
+
+// CloseWrite sends a close_notify: responses may be close-delimited, and
+// rustls (fj) takes an EOF without one as a truncated body.
+func (c *tunnelConn) CloseWrite() error { return closeWrite(c.Conn) }
+
+// connQueue is a net.Listener for the tunnels the outer server hands over.
+type connQueue struct {
+	addr  net.Addr
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newConnQueue(addr net.Addr) *connQueue {
+	return &connQueue{addr: addr, conns: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (q *connQueue) push(c net.Conn) {
+	select {
+	case q.conns <- c:
+	case <-q.done:
+		c.Close()
+	}
+}
+
+func (q *connQueue) Accept() (net.Conn, error) {
+	select {
+	case c := <-q.conns:
+		return c, nil
+	case <-q.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (q *connQueue) Close() error {
+	q.once.Do(func() { close(q.done) })
+	return nil
+}
+
+func (q *connQueue) Addr() net.Addr { return q.addr }
+
+// bufferedConn reads what r already holds before conn.
+func bufferedConn(conn net.Conn, r *bufio.Reader) net.Conn {
+	if r.Buffered() == 0 {
+		return conn
+	}
+	return &readerConn{Conn: conn, r: io.MultiReader(io.LimitReader(r, int64(r.Buffered())), conn)}
+}
+
+type readerConn struct {
 	net.Conn
 	r io.Reader
 }
 
-func (c *bufConn) Read(b []byte) (int, error) { return c.r.Read(b) }
+func (c *readerConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-// handleConnect answers a CONNECT, then the TLS handshake inside it with a
-// certificate for the target, and the one request in the tunnel.
-func (p *HTTPSProxy) handleConnect(raw net.Conn) {
-	conn := &timeoutConn{raw, requestTimeout}
-	br := bufio.NewReader(conn)
-	r := p.readOne(br, conn)
-	if r == nil {
-		return
-	}
-	switch {
-	case isProxied(r.method):
-		// Plain-HTTP proxying isn't offered: everything goes over CONNECT.
-		p.refuse(conn, http.StatusMethodNotAllowed, "only CONNECT")
-		return
-	case r.method != "CONNECT":
-		p.refuse(conn, http.StatusNotImplemented, "unsupported method ("+clean(latin1(r.method))+")")
-		return
-	case !p.authorized(r.all("proxy-authorization")):
-		p.refuse(conn, http.StatusProxyAuthRequired, "proxy authentication required",
-			header{"Proxy-Authenticate", `Basic realm="sandbox"`})
-		return
-	}
-	match := connectRE.FindStringSubmatch(asciiLower(r.path))
-	var port int
-	if match != nil {
-		port, _ = strconv.Atoi(match[2])
-	}
-	// A trailing dot: Go's TLS refuses one in SNI, so refused up front.
-	if match == nil || strings.HasSuffix(match[1], ".") || port < 1 || port > 65535 {
-		p.refuse(conn, http.StatusBadRequest, "bad CONNECT target: "+clean(latin1(r.path)))
-		return
-	}
-	name, portText := match[1], match[2]
-	host := name
-	if portText != "443" {
-		host = name + ":" + portText
-	}
-	client := &bufConn{conn, br}
-	if p.policy.TunnelAllowed(host) {
-		p.tunnel(client, name, strconv.Itoa(port))
-		return
-	}
+func (c *readerConn) CloseWrite() error { return closeWrite(c.Conn) }
 
-	cfg, err := p.ca.Config(name)
-	if err != nil {
-		return
-	}
-	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return
-	}
-	tlsConn := tls.Server(client, cfg)
-	if err := tlsConn.Handshake(); err != nil {
-		return // Client gone, or didn't trust the certificate.
-	}
-	p.handle(tlsConn, bufio.NewReader(tlsConn), host)
-	// With a close_notify: responses here are close-delimited, and rustls
-	// (fj) takes an EOF without one as a truncated body.
-	_ = raw.SetDeadline(time.Now().Add(2 * time.Second))
-	_ = tlsConn.CloseWrite()
-}
-
-// tunnel connects the client to the real host, without looking inside.
-func (p *HTTPSProxy) tunnel(client net.Conn, name, port string) {
-	dialer := &net.Dialer{Timeout: upstreamTimeout}
-	up, err := dialer.Dial("tcp", upstreamAddress(name, port))
-	if err != nil {
-		p.refuse(client, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err))
-		return
-	}
-	defer up.Close()
-	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return
-	}
-	relay(&timeoutConn{client, upstreamTimeout}, &timeoutConn{up, upstreamTimeout})
-}
-
-// relay copies bytes both ways until both sides are done.
-func relay(client, upstream net.Conn) {
+// splice copies both ways until both sides are done, then closes both.
+func splice(a, b net.Conn) {
+	defer a.Close()
+	defer b.Close()
 	var wg sync.WaitGroup
 	pump := func(dst, src net.Conn) {
 		defer wg.Done()
 		_, _ = io.Copy(dst, src)
-		closeWrite(dst)
+		_ = closeWrite(dst)
 	}
 	wg.Add(2)
-	go pump(client, upstream)
-	pump(upstream, client)
+	go pump(a, b)
+	pump(b, a)
 	wg.Wait()
+}
+
+func closeWrite(c net.Conn) error {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Close()
 }

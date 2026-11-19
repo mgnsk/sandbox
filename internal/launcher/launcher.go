@@ -21,33 +21,20 @@
 // A project's sandbox.nix adds to the selected profile. It is evaluated
 // inside a sandbox of the project, and what it asks for beyond the inside
 // (binds, host ports) is shown on the terminal for approval first.
-//
-// Options:
-//
-//	--reload             evaluate sandbox.nix and ~/.config/sandbox/config.nix
-//	                     again, even if they are unchanged
-//	--no-project-config  ignore sandbox.nix
-//	--claude-api-key     set this project's Claude API key and exit (when
-//	                     guards.claudeApiKey.enable is on for its profile);
-//	                     running sandboxes pick it up
-//	--gh-token           set this project's GitHub token and exit
-//	--fj-token HOST      set this project's token for a Forgejo host and exit
 package launcher
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
+	"flag"
 	"fmt"
-	"math"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,88 +43,387 @@ import (
 	"github.com/mgnsk/sandbox/internal/popuprelay"
 )
 
+// launcher is one start of a sandbox.
 type launcher struct {
-	self string // This binary, which the guards and sandbox-init are too.
+	self       string // This binary, which the guards and sandbox-init are too.
+	configPath string
+	cfg        *config
+	opts       options
+	command    []string
 
-	// Set while a subprocess runs that a Ctrl-C interrupts (nix-build, the
-	// evaluation of sandbox.nix); interrupted records one came.
-	inSubprocess atomic.Bool
-	interrupted  atomic.Bool
-
-	mu       sync.Mutex
-	onSignal func(os.Signal)
+	home, user, runtimeDir string
+	vars                   map[string]string // What config values may name: $HOME, $USER, $XDG_RUNTIME_DIR.
+	cwd, project           string
+	volumeDir              string
 }
 
-func getwd() (string, error) {
-	// Physical, not $PWD: a symlink to ~ mustn't slip past the checks.
-	return syscall.Getwd()
-}
+// signalError is a signal that stopped the start.
+type signalError struct{ sig syscall.Signal }
+
+func (e signalError) Error() string { return "interrupted" }
 
 // Main runs the launcher with argv; its exit status.
 func Main(argv []string) int {
-	self, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sandbox: %v\n", err)
-		return 1
-	}
-	l := &launcher{self: self}
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	// Until the guards start, nothing to clean up: as the signal would.
-	l.setOnSignal(func(sig os.Signal) {
-		if sig == syscall.SIGINT && l.inSubprocess.Load() {
-			l.interrupted.Store(true)
-			return
-		}
-		signal.Reset(sig)
-		_ = syscall.Kill(os.Getpid(), sig.(syscall.Signal))
-	})
-	go func() {
-		for sig := range signals {
-			l.mu.Lock()
-			handle := l.onSignal
-			l.mu.Unlock()
-			handle(sig)
-		}
-	}()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 
-	code, err := l.main(argv)
-	var serr *sandboxError
-	if errors.As(err, &serr) {
-		fmt.Fprintf(os.Stderr, "sandbox: %s\n", serr.msg)
-		return 1
+	code, err := run(ctx, cancel, argv, signals)
+	if errors.Is(err, flag.ErrHelp) {
+		printUsage(os.Stderr)
+		return 0
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sandbox: %v\n", err)
-		return 1
+		code = 1
 	}
-	// As a negative status (killed by a signal) from Python's sys.exit.
-	return code & 0xff
+	// Stopped by a signal before the sandbox ran: end as the signal would,
+	// now that everything is cleaned up.
+	if serr, ok := context.Cause(ctx).(signalError); ok {
+		signal.Reset(serr.sig)
+		_ = syscall.Kill(os.Getpid(), serr.sig)
+		return 128 + int(serr.sig)
+	}
+	return code
 }
 
-func (l *launcher) setOnSignal(f func(os.Signal)) {
-	l.mu.Lock()
-	l.onSignal = f
-	l.mu.Unlock()
+func run(ctx context.Context, cancel context.CancelCauseFunc, argv []string, signals chan os.Signal) (int, error) {
+	if len(argv) < 2 {
+		return 0, errors.New("usage: sandbox CONFIG.json [OPTIONS] [--] [COMMAND...]")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	l := &launcher{self: self, configPath: argv[1]}
+	if l.cfg, err = readConfig(l.configPath); err != nil {
+		return 0, err
+	}
+	if l.opts, l.command, err = parseOptions(argv[2:]); err != nil {
+		return 0, err
+	}
+
+	// Until the sandbox runs, a signal stops the start.
+	starting := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-signals:
+			cancel(signalError{sig.(syscall.Signal)})
+		case <-starting:
+		}
+	}()
+	g := newGuards(self, l.cfg)
+	defer g.close()
+	argv, popups, err := l.prepare(ctx, g)
+	close(starting)
+	if err == nil {
+		err = context.Cause(ctx)
+	}
+	if err != nil || argv == nil {
+		return 0, err
+	}
+	return runSandbox(argv, popups, signals)
+}
+
+// prepare checks where the launcher runs, starts the guards and builds the
+// command line; nil for an option that's done without a sandbox.
+func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixListener, error) {
+	if err := l.locate(); err != nil {
+		return nil, nil, err
+	}
+	// The installed package's age; a config built from config.nix has none.
+	released := l.cfg.Released
+	if err := l.userConfig(ctx); err != nil {
+		return nil, nil, err
+	}
+	if notice := upgradeNotice(released, l.cfg.UpgradeNoticeDays, time.Now()); notice != "" && os.Getenv(quietEnv) == "" {
+		fmt.Fprintf(os.Stderr, "sandbox: %s\n", notice)
+	}
+	if err := l.makeVolume(); err != nil {
+		return nil, nil, err
+	}
+
+	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
+	switch {
+	case l.opts.claudeAPIKey:
+		if !prof.ClaudeAPIKey {
+			name := prof.Name
+			if name == "" {
+				name = "default"
+			}
+			return nil, nil, fmt.Errorf("--claude-api-key needs guards.claudeApiKey.enable for this project's profile (%s)", name)
+		}
+		return nil, nil, claudeAPIKey(l.volumeDir, true)
+	case l.opts.ghToken:
+		if !l.cfg.Guards.GitHub {
+			return nil, nil, errors.New("--gh-token needs guards.github.enable")
+		}
+		return nil, nil, setGitHubToken(l.volumeDir)
+	case l.opts.fjToken != "":
+		if !l.cfg.Guards.Forgejo {
+			return nil, nil, errors.New("--fj-token needs guards.forgejo.enable")
+		}
+		return nil, nil, setForgejoToken(l.volumeDir, l.opts.fjToken)
+	}
+
+	hostPorts := l.cfg.HostPorts
+	if !l.opts.noProjectConfig && lexists(filepath.Join(l.project, projectFileName)) {
+		m, err := l.projectManifest(ctx, prof.ClaudeDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := l.approveProject(m); err != nil {
+			return nil, nil, err
+		}
+		prof = applyProject(prof, m)
+		hostPorts = slices.Concat(hostPorts, m.HostPorts)
+		if len(l.command) == 0 {
+			l.command = m.Command
+		}
+	}
+	tcp, udp, err := parseHostPorts(hostPortSpecs(hostPorts))
+	if err != nil {
+		return nil, nil, err
+	}
+	if prof.ClaudeAPIKey {
+		if err := claudeAPIKey(l.volumeDir, false); err != nil {
+			return nil, nil, err
+		}
+	}
+	if unix.Access(l.cfg.Seccomp, unix.R_OK) != nil {
+		return nil, nil, fmt.Errorf("missing seccomp filter %s", l.cfg.Seccomp)
+	}
+
+	a := baseArgs(l.cfg, insideEnv(l.cfg, prof, l.vars))
+	// Must precede every mount under $HOME - bwrap layers mounts in argv
+	// order, so those narrower binds shadow the volume, not the other way
+	// round.
+	a.bind(l.homeVolume(), l.home)
+
+	// Before the guards start, so they get its path.
+	if popuprelay.Usable() {
+		if err := g.listenPopups(); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := l.startGuards(ctx, g, &a, prof); err != nil {
+		return nil, nil, err
+	}
+
+	// Claude Code's managed settings, memory and MCP servers: managed
+	// settings outrank user/project/local ones, so ~/.claude in the volume
+	// can't override them.
+	if prof.ClaudeDir != "" {
+		a.roBind(prof.ClaudeDir, "/etc/claude-code")
+	}
+	resolver, err := l.resolvConf(g, &a)
+	if err != nil {
+		return nil, nil, err
+	}
+	exchange, err := exchangeArgs(l.volumeDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	a.add(exchange...)
+	a.add(bindArgs(prof.Binds, l.vars, l.project)...)
+	l.initArgs(&a)
+
+	addrs, err := hostAddresses()
+	if err != nil {
+		return nil, nil, err
+	}
+	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, a, resolver), g.popups, nil
+}
+
+// locate finds the user, home and project, and checks the launcher may run
+// here.
+func (l *launcher) locate() error {
+	// Physical, not $PWD: a symlink to ~ mustn't slip past the checks, and
+	// the binds name the real path.
+	cwd, err := syscall.Getwd()
+	if err != nil {
+		return err
+	}
+	_ = os.Chdir(cwd)
+	homeEnv, ok := os.LookupEnv("HOME")
+	if !ok {
+		return errors.New("HOME is not set")
+	}
+	l.cwd, l.home = cwd, realpath(homeEnv)
+	l.user = os.Getenv("USER")
+	if l.user == "" {
+		l.user = os.Getenv("LOGNAME")
+	}
+	if l.user == "" {
+		l.user = strconv.Itoa(os.Getuid())
+	}
+	l.runtimeDir = os.Getenv("XDG_RUNTIME_DIR")
+	if l.runtimeDir == "" {
+		l.runtimeDir = fmt.Sprintf("/run/user/%d", os.Getuid())
+	}
+	l.vars = map[string]string{"HOME": l.home, "USER": l.user, "XDG_RUNTIME_DIR": l.runtimeDir}
+	if err := checkCwd(cwd, l.home); err != nil {
+		return err
+	}
+	l.project = projectRoot(cwd)
+	// The work tree is bound read-write whole, so it gets the same checks
+	// (a git repo in ~ would otherwise bind all of the host home).
+	if err := checkCwd(l.project, l.home); err != nil {
+		return fmt.Errorf("%s is in the git work tree %s: %w", cwd, l.project, err)
+	}
+	return nil
+}
+
+// makeVolume makes the project's dir in the state dir: its home volume and
+// what the host keeps for it.
+func (l *launcher) makeVolume() error {
+	stateDir := os.Getenv("SANDBOX_STATE_DIR")
+	if stateDir == "" {
+		stateDir = l.cfg.StateDir
+	}
+	if stateDir != "" {
+		stateDir = os.Expand(stateDir, func(name string) string {
+			if v, ok := l.vars[name]; ok {
+				return v
+			}
+			return os.Getenv(name)
+		})
+	} else {
+		stateDir = filepath.Join(xdgDir("XDG_DATA_HOME", l.home, ".local/share"), "sandbox")
+	}
+	stateDir = realpath(stateDir)
+	if err := checkOutside(l.cwd, stateDir); err != nil {
+		return err
+	}
+	if err := checkOutside(l.project, stateDir); err != nil {
+		return fmt.Errorf("%s is in the git work tree %s: %w", l.cwd, l.project, err)
+	}
+	l.volumeDir = filepath.Join(stateDir, volumeName(l.project))
+	// Private: it holds the project's tokens and secrets.
+	if err := os.MkdirAll(l.volumeDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(l.volumeDir, 0o700); err != nil {
+		return err
+	}
+	return os.MkdirAll(l.homeVolume(), 0o755)
+}
+
+// homeVolume is the per-project persistent $HOME, nested at $HOME's own path
+// inside the volume dir, so secrets.sqlite3 and exchange/ next to it stay
+// out of reach. Only ever written from inside the sandbox (sandbox-init) -
+// the sandbox can plant symlinks in it, which host-side writes would
+// follow.
+func (l *launcher) homeVolume() string {
+	return l.volumeDir + l.home
+}
+
+func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, prof profile) error {
+	gc := l.cfg.Guards
+	if gc.SSHAgent.Enable {
+		if err := g.sshAgent(ctx, a, l.vars); err != nil {
+			return err
+		}
+		// The hosts the host already trusts, where ssh reads system-wide
+		// config; the volume's own ~/.ssh/known_hosts stays writable.
+		a.add("--ro-bind-try", l.home+"/.ssh/known_hosts", "/etc/ssh/ssh_known_hosts")
+	}
+	if gc.SecretService {
+		if err := g.secretService(ctx, a, l.volumeDir, l.runtimeDir); err != nil {
+			return err
+		}
+	}
+	if gc.GitHub {
+		if err := g.github(ctx, a, l.volumeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
+		}
+	}
+	if gc.Forgejo {
+		if err := g.forgejo(ctx, a, l.volumeDir); err != nil {
+			return err
+		}
+	}
+	if err := g.caBundle(a, l.runtimeDir); err != nil {
+		return err
+	}
+	if prof.ClaudeAPIKey {
+		if err := g.claudeAPI(ctx, a, l.volumeDir, l.runtimeDir); err != nil {
+			return err
+		}
+	}
+	if gc.OpenURL {
+		if err := g.openURL(ctx, a, l.runtimeDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolvConf mounts a resolv.conf for inside over the host's when the
+// host's resolver is out of reach there (see dnsForward); the resolver to
+// forward to, or "".
+func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (string, error) {
+	path := l.cfg.ResolvConf
+	if path == "" {
+		path = "/etc/resolv.conf"
+	}
+	data, _ := os.ReadFile(path)
+	resolver, text := dnsForward(string(data))
+	if resolver == "" {
+		return "", nil
+	}
+	dir, err := g.tempdir()
+	if err != nil {
+		return "", err
+	}
+	inside := filepath.Join(dir, "resolv.conf")
+	if err := os.WriteFile(inside, []byte(text), 0o644); err != nil {
+		return "", err
+	}
+	// Over the host's, which hostEtc binds.
+	a.roBind(inside, "/etc/resolv.conf")
+	return resolver, nil
+}
+
+// initArgs runs sandbox-init, which links the nix profile and home-manager
+// generation into the volume, then execs the login shell; --login reads
+// .bash_profile/.profile, and the exec trick runs a given command after
+// that same chain.
+func (l *launcher) initArgs(a *bwrapArgs) {
+	a.add("--chdir", l.cwd, filepath.Join(filepath.Dir(l.self), "sandbox-init"))
+	for _, p := range []struct {
+		on   bool
+		path string
+	}{
+		{l.cfg.Init.NixProfile, l.home + "/.nix-profile"},
+		{l.cfg.Init.HomeManager, l.home + "/.local/state/nix/profiles/home-manager"},
+	} {
+		if p.on && lexists(p.path) {
+			a.add(realpath(p.path))
+		} else {
+			a.add("")
+		}
+	}
+	if len(l.command) > 0 {
+		a.add(l.cfg.Tools.Shell, "--login", "-c", `exec "$@"`, "bash")
+		a.add(l.command...)
+	} else {
+		a.add(l.cfg.Tools.Shell, "--login")
+	}
 }
 
 // selectProfile is the highest-priority profile matching cwd (by path
 // prefix) or the project (by a file in its root), else the default one.
-func selectProfile(cfg *config, cwd, project string, variables map[string]string) profile {
+func selectProfile(cfg *config, cwd, project string, vars map[string]string) profile {
 	var best *profile
 	for i := range cfg.Profiles {
 		p := &cfg.Profiles[i]
-		matches := false
-		for _, path := range p.Paths {
-			if strings.HasPrefix(cwd+"/", strings.TrimRight(expand(path, variables), "/")+"/") {
-				matches = true
-			}
-		}
-		for _, f := range p.ProjectFiles {
-			if lexists(filepath.Join(project, f)) {
-				matches = true
-			}
-		}
+		matches := slices.ContainsFunc(p.Paths, func(path string) bool {
+			return within(cwd, expand(path, vars))
+		}) || slices.ContainsFunc(p.ProjectFiles, func(f string) bool {
+			return lexists(filepath.Join(project, f))
+		})
 		if matches && (best == nil || p.Priority > best.Priority) {
 			best = p
 		}
@@ -149,479 +435,63 @@ func selectProfile(cfg *config, cwd, project string, variables map[string]string
 }
 
 // upgradeNotice suggests an upgrade once the installed flake is `days` old.
-func upgradeNotice(released, days *float64, now time.Time) string {
-	if released == nil || days == nil || *released == 0 || *days == 0 {
+func upgradeNotice(released int64, days int, now time.Time) string {
+	if released == 0 || days == 0 {
 		return ""
 	}
-	age := int(math.Floor((float64(now.UnixNano())/1e9 - *released) / 86400))
-	if float64(age) < *days {
+	age := int(now.Sub(time.Unix(released, 0)).Hours() / 24)
+	if age < days {
 		return ""
 	}
 	return fmt.Sprintf("this sandbox is %d days old; `nix profile upgrade sandbox` updates "+
 		"it and the tools inside (upgradeNotice.days = 0 turns this off)", age)
 }
 
-// insideEnv is the environment inside: passed-through host vars, then the
-// profile's own (PATH included), with $HOME etc. expanded.
-func insideEnv(cfg *config, p profile, variables map[string]string) orderedEnv {
-	env := orderedEnv{
-		{"HOME", variables["HOME"]},
-		{"USER", variables["USER"]},
-		{"LOGNAME", variables["USER"]},
-		{"XDG_RUNTIME_DIR", variables["XDG_RUNTIME_DIR"]},
-	}
-	for _, name := range cfg.PassEnv {
-		if value, ok := os.LookupEnv(name); ok {
-			env.set(name, value)
-		}
-	}
-	for _, v := range p.Env {
-		env.set(v.name, expand(v.value, variables))
-	}
-	return env
-}
-
-// bindArgs are the bwrap args for the profile's extra binds and the
-// project.
-func bindArgs(binds []bind, variables map[string]string, project string) []string {
-	var args []string
-	for _, b := range binds {
-		src := realpath(expand(b.Src, variables))
-		dst := src
-		if b.Dst != nil && *b.Dst != "" {
-			dst = expand(*b.Dst, variables)
-		}
-		if src == project && dst == src {
-			// The project bind below covers it, read-write and .git
-			// included: a repo bound for reference elsewhere is the project
-			// here.
-			continue
-		}
-		flag := "--ro-bind"
-		if b.Mode == "rw" {
-			flag = "--bind"
-		}
-		if b.Optional {
-			flag += "-try"
-		}
-		args = append(args, flag, src, dst)
-		if b.HideGit && isDir(filepath.Join(src, ".git")) {
-			// Its history, with whatever was ever committed and removed
-			// again, is none of another project's business.
-			args = append(args, "--tmpfs", filepath.Join(dst, ".git"))
-		}
-	}
-	// The whole work tree rather than just $PWD, so starting in a
-	// subdirectory still gets .git.
-	return append(args, "--bind", project, project)
-}
-
-// baseArgs are the namespaces, environment and the filesystem every
-// sandbox has.
-func baseArgs(cfg *config, env orderedEnv) []string {
-	args := []string{
-		// Includes --unshare-pid, so a sandbox shows up as two bwrap
-		// processes on the host: the outer one waits in the host's pid
-		// namespace to relay the exit status, the inner one is pid 1
-		// inside, reaping zombies and forwarding signals.
-		"--unshare-all",
-		"--unshare-user",
-		"--disable-userns",
-		// pasta maps the invoking user to uid 0 in its own userns; pin the
-		// real uid/gid so bwrap doesn't inherit that and look like real
-		// root.
-		"--uid", strconv.Itoa(os.Getuid()),
-		"--gid", strconv.Itoa(os.Getgid()),
-		// Retains the netns bwrap starts in - a fresh one from pasta, not
-		// the host's. Sharing the host's would also expose its abstract
-		// AF_UNIX namespace (e.g. @/tmp/.X11-unix/X0, which Xwayland
-		// accepts unauthenticated local connections on).
-		"--share-net",
-		"--die-with-parent",
-		"--cap-drop", "ALL",
-		// Otherwise the host env passes through untouched, e.g. a GitHub
-		// token in the host shell would reach the API directly, bypassing
-		// the gh write popups.
-		"--clearenv",
-	}
-	for _, v := range env {
-		args = append(args, "--setenv", v.name, v.value)
-	}
-	args = append(args,
-		"--dev", "/dev",
-		"--proc", "/proc",
-		"--tmpfs", "/tmp",
-		"--tmpfs", env.get("XDG_RUNTIME_DIR"),
-		// Read-only is enough for builds to land in the host store: the
-		// daemon socket stays connectable on a ro mount, and the host's
-		// nix-daemon does the actual store writes.
-		"--ro-bind", "/nix", "/nix",
-		// Nothing of the host's /usr, /bin or /lib: the few fixed paths
-		// programs expect, from the store.
-		"--ro-bind", cfg.FHS.Bin, "/bin",
-		"--ro-bind", cfg.FHS.UsrBin, "/usr/bin",
-		"--ro-bind", cfg.FHS.NixLd, cfg.FHS.LdPath,
-		"--ro-bind", cfg.FHS.SSL, "/etc/ssl",
-	)
-	for _, path := range cfg.HostEtc {
-		args = append(args, "--ro-bind-try", path, path)
-	}
-	return args
-}
-
-func readConfig(path string) (*config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	cfg := &config{}
-	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return cfg, nil
-}
-
-func (l *launcher) main(argv []string) (int, error) {
-	if len(argv) < 2 {
-		return 0, errorf("usage: sandbox CONFIG.json [OPTIONS] [--] [COMMAND...]")
-	}
-	configPath := argv[1]
-	cfg, err := readConfig(configPath)
-	if err != nil {
-		return 0, err
-	}
-	opts, command, err := parseOptions(argv[2:])
-	if err != nil {
-		return 0, err
-	}
-
-	// Physical, so a symlink to ~ can't slip past the checks, and the binds
-	// name the real path.
-	cwd, err := getwd()
-	if err != nil {
-		return 0, err
-	}
-	_ = os.Chdir(cwd)
-	homeEnv, ok := os.LookupEnv("HOME")
-	if !ok {
-		return 0, errorf("HOME is not set")
-	}
-	home := realpath(homeEnv)
-	user := os.Getenv("USER")
-	if user == "" {
-		user = os.Getenv("LOGNAME")
-	}
-	if user == "" {
-		user = strconv.Itoa(os.Getuid())
-	}
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		runtimeDir = fmt.Sprintf("/run/user/%d", os.Getuid())
-	}
-	variables := map[string]string{"HOME": home, "USER": user, "XDG_RUNTIME_DIR": runtimeDir}
-	if err := checkCwd(cwd, home); err != nil {
-		return 0, err
-	}
-	project := projectRoot(cwd)
-
-	// The work tree is bound read-write whole, so it gets the same checks
-	// (a git repo in ~ would otherwise bind all of the host home).
-	inWorkTree := func(err error) error {
-		if err != nil && project != cwd {
-			return errorf("%s is in the git work tree %s: %s", cwd, project, err.Error())
-		}
-		return nil
-	}
-	if err := inWorkTree(checkCwd(project, home)); err != nil {
-		return 0, err
-	}
-	// The installed package's age; a config built from config.nix has none.
-	released := cfg.Released
-	configPath, cfg, err = l.userConfig(cfg, configPath, home, project, opts.reload)
-	if err != nil {
-		return 0, err
-	}
-	if notice := upgradeNotice(released, cfg.UpgradeNoticeDays, time.Now()); notice != "" && os.Getenv(quietEnv) == "" {
-		fmt.Fprintf(os.Stderr, "sandbox: %s\n", notice)
-	}
-
-	stateDir := os.Getenv("SANDBOX_STATE_DIR")
-	if stateDir == "" && cfg.StateDir != nil {
-		stateDir = *cfg.StateDir
-	}
-	if stateDir != "" {
-		vars := map[string]string{}
-		for _, kv := range os.Environ() {
-			if k, v, ok := cutEnv(kv); ok {
-				vars[k] = v
-			}
-		}
-		for k, v := range variables {
-			vars[k] = v
-		}
-		stateDir = expand(stateDir, vars)
-	} else {
-		base := os.Getenv("XDG_DATA_HOME")
-		if base == "" {
-			base = home + "/.local/share"
-		}
-		stateDir = filepath.Join(base, "sandbox")
-	}
-	stateDir = realpath(stateDir)
-	if err := checkOutside(cwd, stateDir); err != nil {
-		return 0, err
-	}
-	if err := inWorkTree(checkOutside(project, stateDir)); err != nil {
-		return 0, err
-	}
-	volumeDir := filepath.Join(stateDir, volumeName(project))
-	// Per-project persistent $HOME, nested at $HOME's own path inside the
-	// volume dir, so secrets.sqlite3 and exchange/ next to it stay out of
-	// reach. Only ever written from inside the sandbox (sandbox-init) - the
-	// sandbox can plant symlinks in it, which host-side writes would
-	// follow.
-	homeVolume := volumeDir + home
-	if err := os.MkdirAll(homeVolume, 0o777); err != nil {
-		return 0, err
-	}
-
-	prof := selectProfile(cfg, cwd, project, variables)
-	// Per profile: Claude Code on an API key here, or logged in inside.
-	claudeAPI := prof.ClaudeAPIKey
-	switch {
-	case opts.claudeAPIKey:
-		if !claudeAPI {
-			name := "default"
-			if prof.Name != nil {
-				name = *prof.Name
-			}
-			return 0, errorf("--claude-api-key needs guards.claudeApiKey.enable for this project's profile (%s)", name)
-		}
-		_, err := claudeAPIKey(volumeDir, true)
-		return 0, err
-	case opts.ghToken:
-		if !cfg.Guards.GitHub {
-			return 0, errorf("--gh-token needs guards.github.enable")
-		}
-		return 0, setGitHubToken(volumeDir)
-	case opts.fjToken != "":
-		if !cfg.Guards.Forgejo {
-			return 0, errorf("--fj-token needs guards.forgejo.enable")
-		}
-		return 0, setForgejoToken(volumeDir, opts.fjToken)
-	}
-	hostPorts := cfg.HostPorts
-	if opts.projectConfig && lexists(filepath.Join(project, projectFileName)) {
-		base := ""
-		if prof.ClaudeDir != nil {
-			base = *prof.ClaudeDir
-		}
-		m, err := l.projectManifest(cfg, configPath, project, volumeDir, base, opts.reload)
-		if err != nil {
-			return 0, err
-		}
-		if err := approveProject(m, volumeDir, filepath.Join(project, projectFileName)); err != nil {
-			return 0, err
-		}
-		prof = applyProject(prof, m)
-		hostPorts = append(append([]string{}, hostPorts...), m.HostPorts...)
-		if len(command) == 0 && len(m.Command) > 0 {
-			command = m.Command
-		}
-	}
-	tcp, udp, err := parseHostPorts(hostPortSpecs(hostPorts))
-	if err != nil {
-		return 0, err
-	}
-	claudeKeyFile := ""
-	if claudeAPI {
-		if claudeKeyFile, err = claudeAPIKey(volumeDir, false); err != nil {
-			return 0, err
-		}
-	}
-
-	if unix.Access(cfg.Seccomp, unix.R_OK) != nil {
-		return 0, errorf("missing seccomp filter %s", cfg.Seccomp)
-	}
-
-	env := insideEnv(cfg, prof, variables)
-	args := baseArgs(cfg, env)
-	// Must precede every mount under $HOME - bwrap layers mounts in argv
-	// order, so those narrower binds shadow the volume, not the other way
-	// round.
-	args = append(args, "--bind", homeVolume, home)
-
-	g := newGuards(l.self, cfg)
-	defer g.close()
-	var listener *net.UnixListener
-	closeAll := func() {
-		if listener != nil {
-			listener.Close()
-		}
-		g.close()
-	}
-	// Cleanup on a signal arriving during startup too.
-	l.setOnSignal(func(sig os.Signal) {
-		if sig == syscall.SIGINT && l.inSubprocess.Load() {
-			l.interrupted.Store(true)
-			return
-		}
-		closeAll()
-		os.Exit(128 + int(sig.(syscall.Signal)))
-	})
-
-	// Before the guards start, so they get its path.
-	if popuprelay.Usable() {
-		dir, err := g.tempdir()
-		if err != nil {
-			return 0, err
-		}
-		path := filepath.Join(dir, "popup.sock")
-		if listener, err = popuprelay.Listen(path); err != nil {
-			return 0, err
-		}
-		defer listener.Close()
-		g.setEnv(popupEnv, path)
-	}
-
-	add := func(more []string, err error) error {
-		args = append(args, more...)
-		return err
-	}
-	gc := cfg.Guards
-	if gc.SSHAgent.Enable {
-		if err := add(g.sshAgentArgs(variables)); err != nil {
-			return 0, err
-		}
-		// The hosts the host already trusts, where ssh reads system-wide
-		// config; the volume's own ~/.ssh/known_hosts stays writable.
-		args = append(args, "--ro-bind-try", home+"/.ssh/known_hosts", "/etc/ssh/ssh_known_hosts")
-	}
-	if gc.SecretService {
-		if err := add(g.secretServiceArgs(volumeDir, runtimeDir)); err != nil {
-			return 0, err
-		}
-	}
-	if gc.GitHub {
-		args = append(args, g.githubArgs(volumeDir)...)
-	}
-	if gc.Forgejo {
-		if err := add(g.forgejoArgs(volumeDir)); err != nil {
-			return 0, err
-		}
-	}
-	if err := add(g.caBundleArgs(runtimeDir)); err != nil {
-		return 0, err
-	}
-	tcp = append(tcp, g.tcpPorts...)
-	if claudeAPI {
-		if err := add(g.claudeAPIArgs(claudeKeyFile, runtimeDir)); err != nil {
-			return 0, err
-		}
-	}
-	if gc.OpenURL {
-		if err := add(g.openURLArgs(runtimeDir)); err != nil {
-			return 0, err
-		}
-	}
-
-	// Claude Code's managed settings, memory and MCP servers: managed
-	// settings outrank user/project/local ones, so ~/.claude in the volume
-	// can't override them.
-	if prof.ClaudeDir != nil && *prof.ClaudeDir != "" {
-		args = append(args, "--ro-bind", *prof.ClaudeDir, "/etc/claude-code")
-	}
-
-	resolvPath := "/etc/resolv.conf"
-	if cfg.ResolvConf != nil {
-		resolvPath = *cfg.ResolvConf
-	}
-	dnsResolver, resolvConf := dnsForward(readResolvConf(resolvPath))
-	if dnsResolver != "" {
-		dir, err := g.tempdir()
-		if err != nil {
-			return 0, err
-		}
-		path := filepath.Join(dir, "resolv.conf")
-		if err := os.WriteFile(path, []byte(resolvConf), 0o666); err != nil {
-			return 0, err
-		}
-		// Mounted over the host's, bound in baseArgs.
-		args = append(args, "--ro-bind", path, "/etc/resolv.conf")
-	}
-
-	if err := add(exchangeArgs(volumeDir)); err != nil {
-		return 0, err
-	}
-	args = append(args, bindArgs(prof.Binds, variables, project)...)
-
-	// sandbox-init links the nix profile and home-manager generation into
-	// the volume, then execs the login shell; --login reads
-	// .bash_profile/.profile, and the exec trick runs a given command after
-	// that same chain.
-	args = append(args, "--chdir", cwd, filepath.Join(filepath.Dir(l.self), "sandbox-init"))
-	for _, p := range []struct {
-		on   bool
-		path string
-	}{
-		{cfg.Init.NixProfile, home + "/.nix-profile"},
-		{cfg.Init.HomeManager, home + "/.local/state/nix/profiles/home-manager"},
-	} {
-		if p.on && lexists(p.path) {
-			args = append(args, realpath(p.path))
-		} else {
-			args = append(args, "")
-		}
-	}
-	shell := cfg.Tools.Shell
-	if len(command) > 0 {
-		args = append(args, shell, "--login", "-c", `exec "$@"`, "bash")
-		args = append(args, command...)
-	} else {
-		args = append(args, shell, "--login")
-	}
-
-	addrs, err := hostAddresses(cfg.Tools.IP)
-	if err != nil {
-		return 0, err
-	}
-	return l.run(pastaArgv(cfg, tcp, udp, addrs, args, dnsResolver), listener)
-}
-
-// run runs argv in the foreground; its exit status.
+// runSandbox runs argv in the foreground; its exit status.
 //
 // With popups (the guards' socket, see popuprelay), argv runs on a pty of
 // the launcher's, which shows the guards' popups. Without, it runs on the
 // launcher's own terminal (or none), and the guards ask no one.
 //
-// SIGINT reaches the whole foreground process group anyway, so it's only
-// kept from killing the launcher before cleanup. A handler rather than
-// ignoring it: an ignored signal stays ignored across exec.
-func (l *launcher) run(argv []string, popups *net.UnixListener) (int, error) {
-	if popups != nil {
-		relay := popuprelay.New(popups)
-		l.setOnSignal(relay.Signal)
-		return relay.Run(argv)
-	}
+// A SIGINT reaches the whole foreground process group anyway, so it's only
+// kept from killing the launcher before cleanup; SIGTERM and SIGHUP are
+// passed on.
+func runSandbox(argv []string, popups *net.UnixListener, signals <-chan os.Signal) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Start(); err != nil {
-		return 0, err
-	}
-	l.setOnSignal(func(sig os.Signal) {
-		if sig != syscall.SIGINT {
-			_ = cmd.Process.Signal(sig)
+	var err error
+	if popups != nil {
+		err = popuprelay.Run(cmd, popups, signals)
+	} else {
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err = cmd.Start(); err != nil {
+			return 0, err
 		}
-	})
-	_ = cmd.Wait()
-	return status(cmd.ProcessState), nil
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+	wait:
+		for {
+			select {
+			case sig := <-signals:
+				if sig != syscall.SIGINT {
+					_ = cmd.Process.Signal(sig)
+				}
+			case err = <-done:
+				break wait
+			}
+		}
+	}
+	return exitStatus(cmd, err)
 }
 
-func cutEnv(kv string) (string, string, bool) {
-	for i := 0; i < len(kv); i++ {
-		if kv[i] == '=' {
-			return kv[:i], kv[i+1:], true
-		}
+// exitStatus is the status a shell would give cmd's exit: 128+N for a
+// signal.
+func exitStatus(cmd *exec.Cmd, err error) (int, error) {
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		return 0, err
 	}
-	return "", "", false
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal()), nil
+	}
+	return cmd.ProcessState.ExitCode(), nil
 }

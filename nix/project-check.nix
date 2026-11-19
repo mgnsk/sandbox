@@ -11,7 +11,7 @@ let
   manifest = import ./project.nix {
     nixpkgs = pkgs.path;
     inherit (pkgs.stdenv.hostPlatform) system;
-    file = ../tests/fixtures/sandbox.nix;
+    file = ./fixtures/sandbox.nix;
   };
   merged =
     layer.mergeClaudeValues

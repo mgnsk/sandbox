@@ -1,40 +1,31 @@
-# The tests, as a check, against the built binary. The tests that start a
-# real sandbox skip themselves: the nix build sandbox has no unprivileged
-# user namespaces.
+# The Go tests, as a check, with the gh and fj wrappers and dbus-daemon for
+# the tests that run them. The real-sandbox tests (e2e), and the others that
+# need unprivileged user namespaces or a nix daemon, skip themselves: the nix
+# build sandbox has neither.
 {
   cacert,
   callPackage,
   dbus,
-  python3,
-  runCommand,
 }:
 let
   p = callPackage ./packages.nix { };
-  python = python3.withPackages (ps: [
-    ps.cryptography
-    ps.dbus-fast
-    ps.pytest
-    ps.pyte
-  ]);
 in
-runCommand "sandbox-tests"
-  {
-    nativeBuildInputs = [
-      python
-      dbus
-      p.gh
-      p.forgejo-cli
-    ];
-  }
-  ''
-    cp -r ${../tests} tests
-    chmod -R u+w .
+p.sandbox.overrideAttrs {
+  pname = "sandbox-tests";
+  doCheck = true;
+  nativeCheckInputs = [
+    dbus
+    p.gh
+    p.forgejo-cli
+  ];
+  checkPhase = ''
+    runHook preCheck
     export HOME=$TMPDIR/home
-    # rustls-platform-verifier wants a system bundle even when a test
+    mkdir -p $HOME
+    # rustls-platform-verifier (fj) wants a system bundle even when a test
     # replaces it.
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
-    mkdir -p $HOME
-    export SANDBOX_BIN_DIR=${p.sandbox}/bin
-    python -m pytest -q -p no:cacheprovider tests
-    touch $out
-  ''
+    go test ./...
+    runHook postCheck
+  '';
+}
