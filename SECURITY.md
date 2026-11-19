@@ -284,16 +284,19 @@ So `A` takes the user out of the loop for anything sandboxed code does next:
 ## Host userland: none
 
 Nothing of the host's `/usr`, `/bin` or `/lib` is bound in. Every program
-inside comes from the nix store: the configured package set on `PATH`,
+inside comes from the nix store: a fixed minimal set on `PATH` (bash, nix,
+git, ssh, terminfo and stdenv's basics - no configuration adds to it; other tools come
+from the project's dev shell or the user's profile),
 `/bin/sh`, `/bin/env`, `/usr/bin/env` and `/usr/bin/xdg-open` from a small
-store directory, and nix-ld at the dynamic loader's path for prebuilt
+store directory, a managed read-only `/etc/bashrc` and `/etc/profile` (loading
+bash-completion) from the store, and nix-ld at the dynamic loader's path for prebuilt
 binaries. From the host's `/etc` only identity and name resolution are bound
 (`passwd`, `group`, `hosts`, `resolv.conf`, `nsswitch.conf`, `localtime`);
 CA certificates come from the store too.
 
 The launcher itself runs nothing from the host's `PATH` either: bwrap, pasta,
 dbus-daemon and ip are store paths in its generated config, and the guards
-are its own binary. The guards get gh and xdg-utils from the store first on `PATH`,
+are its own binary. The guards get xdg-utils from the store first on `PATH`,
 the host's after - xdg-open hands approved URLs to the host's browser. The
 project root is found by looking for `.git`, not by running git, which would
 read a sandbox-writable repo config on the host.

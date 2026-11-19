@@ -13,10 +13,30 @@ let
 
   sandboxPkgs = pkgs.callPackage ./packages.nix { };
 
+  # An option that's gone, as an error naming what to do instead.
+  removed = path: {
+    options = lib.setAttrByPath path (mkOption {
+      type = types.unspecified;
+      visible = false;
+      apply =
+        _:
+        throw "${lib.concatStringsSep "." path} is gone: the sandbox adds no tools - they come from the project's dev shell (or your ~/.nix-profile, home-manager)";
+    });
+  };
+
   layer' = import ./layer.nix { inherit lib pkgs; };
   layerOptions = layer'.options;
 
   profileType = types.submodule {
+    imports = map (path: removed path) [
+      [ "packages" ]
+      [ "basePackages" ]
+      [
+        "claude"
+        "package"
+      ]
+    ];
+
     options = layerOptions // {
       guards.claudeApiKey.tokenCommand = mkOption {
         type = types.nullOr types.str;
@@ -61,15 +81,48 @@ let
     text = builtins.readFile ./claude/deny-github-http.sh;
   };
 
-  basePackages =
-    cfg.basePackages
-    ++ lib.optional (cfg.claude.enable && cfg.claude.package != null) cfg.claude.package
-    ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
+  # The userland inside, fixed: what the sandbox itself needs (a shell, nix
+  # to enter the project's dev shell, terminfo; git and ssh, which its
+  # ssh-agent guard and commit signing are for - pushes run ssh, ssh signing
+  # runs ssh-keygen) plus the tools `nix develop` puts on PATH anyway
+  # (stdenv's initialPath). Every other tool - Claude Code, ... - comes from
+  # the project's dev shell, or the user's ~/.nix-profile or home-manager;
+  # no configuration adds any.
+  basePackages = [
+    pkgs.bashInteractive
+    pkgs.bash-completion
+    pkgs.nix
+    pkgs.ncurses
+    pkgs.git
+    pkgs.openssh
+  ]
+  ++ pkgs.stdenv.initialPath
+  ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
 
-  # The same for every profile: packages and env are the top level's alone.
+  # bash's system-wide startup files, managed: every interactive shell -
+  # nix develop's too, which reads /etc/bashrc despite its --rcfile - loads
+  # bash-completion, which finds the completions of the dev shell's packages
+  # through the XDG_DATA_DIRS nix develop sets, and those of the base set
+  # through PATH. The user's own files run after these.
+  bashrc = pkgs.writeText "sandbox-bashrc" ''
+    # Managed by the sandbox, read-only; your ~/.bashrc runs after this.
+    if [[ $- == *i* ]] && [ -z "''${BASH_COMPLETION_VERSINFO-}" ]; then
+      . ${pkgs.bash-completion}/share/bash-completion/bash_completion
+    fi
+  '';
+  profile = pkgs.writeText "sandbox-profile" ''
+    # Managed by the sandbox, read-only; your ~/.bash_profile (or
+    # ~/.bash_login, ~/.profile) runs after this. Interactive login shells
+    # get /etc/bashrc too, as bash itself reads it only for non-login ones.
+    if [ -n "''${BASH_VERSION-}" ] && [[ $- == *i* ]]; then
+      . /etc/bashrc
+    fi
+  '';
+
+  # The same for every profile.
   env = pkgs.buildEnv {
     name = "sandbox-env";
-    paths = basePackages ++ cfg.packages;
+    paths = basePackages;
     pathsToLink = [
       "/bin"
       "/share"
@@ -165,6 +218,13 @@ let
     fhs = {
       bin = "${sandboxPkgs.fhs}/bin";
       usrBin = "${sandboxPkgs.fhs}/usr/bin";
+      # At /usr/share/bash-completion: a fixed path a user's own ~/.bashrc
+      # can source across upgrades.
+      bashCompletion = "${pkgs.bash-completion}/share/bash-completion";
+      # The managed, read-only /etc/bashrc and /etc/profile bash reads
+      # before the user's files.
+      bashrc = "${bashrc}";
+      profile = "${profile}";
       nixLd = "${pkgs.nix-ld}/libexec/nix-ld";
       ldPath =
         if pkgs.stdenv.hostPlatform.isx86_64 then
@@ -236,53 +296,10 @@ let
 in
 {
   options = layerOptions // {
-    packages = mkOption {
-      type = types.listOf types.package;
-      default = [ ];
-      description = "Packages on PATH inside, after the base set, in every project.";
-    };
-
     env = mkOption {
       type = types.attrsOf types.str;
       default = { };
       description = "Environment variables inside, with `~`/`$HOME`/`$USER`/`$XDG_RUNTIME_DIR` expanded at start.";
-    };
-
-    basePackages = mkOption {
-      type = types.listOf types.package;
-      default = with pkgs; [
-        bashInteractive
-        bash-completion
-        coreutils
-        findutils
-        diffutils
-        gnugrep
-        gnused
-        gawk
-        gnutar
-        gzip
-        bzip2
-        xz
-        zstd
-        unzip
-        gnumake
-        which
-        file
-        less
-        procps
-        getent
-        iproute2
-        ncurses
-        git
-        openssh
-        curl
-        jq
-        ripgrep
-        python3
-        nix
-      ];
-      defaultText = lib.literalMD "a small POSIX userland plus git, openssh, curl, jq, ripgrep, python3 and nix";
-      description = "The userland inside. Nothing of the host's /usr is visible, so whatever isn't here (or in `packages`) doesn't exist.";
     };
 
     profiles = mkOption {
@@ -458,17 +475,7 @@ in
       enable = mkOption {
         type = types.bool;
         default = true;
-        description = "Claude Code inside, with managed settings/memory at /etc/claude-code.";
-      };
-      package = mkOption {
-        type = types.nullOr types.package;
-        default = pkgs.claude-code;
-        defaultText = lib.literalExpression "pkgs.claude-code";
-        description = ''
-          Claude Code on PATH inside. null leaves it out but keeps the managed
-          config: `claude` then comes from the project's dev shell,
-          ~/.nix-profile or home-manager.
-        '';
+        description = "Managed settings/memory for Claude Code at /etc/claude-code - for the `claude` the project's dev shell (or your ~/.nix-profile, home-manager) brings; the sandbox ships none.";
       };
     };
 

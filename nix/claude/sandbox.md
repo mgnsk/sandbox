@@ -11,11 +11,12 @@ Not reachable - don't probe, plan around it:
 - nested namespaces (bwrap, unshare, user namespaces)
 - sudo/setuid (no_new_privs, all caps dropped), files owned by other
   users
-- the host's /usr, /bin and /lib: every program comes from the nix store
-  (the sandbox's own package set, plus `~/.nix-profile` when linked). A
-  missing command is missing, not misconfigured - use `nix shell
-  nixpkgs#<pkg>` for one-off tools and tell the user which package to
-  add for good
+- the host's /usr, /bin and /lib: every program comes from the nix store.
+  The sandbox itself has only bash, nix, git, ssh and the basic
+  coreutils/grep/sed/tar/make set; every other tool comes from the project's dev shell
+  (`nix develop`), plus `~/.nix-profile` when linked. A missing command is
+  missing, not misconfigured - use `nix shell nixpkgs#<pkg>` for one-off
+  tools and tell the user to add it to the project's dev shell for good
 - all of `~` is a per-project volume, not the host's - host files appear
   only where bound in (the project dir and whatever the user configured)
 - services on the host itself (its loopback or its own addresses), except

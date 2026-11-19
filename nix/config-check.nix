@@ -1,5 +1,5 @@
-# The launcher's config from a fixture module, and with Claude Code brought
-# by the user (claude.package = null).
+# The launcher's config from a fixture module, its fixed userland, and the
+# options that are gone.
 {
   evalSandbox,
   pkgs,
@@ -9,7 +9,6 @@
 let
   configFile = modules: (evalSandbox { inherit pkgs modules; }).configFile;
   config = configFile [ ./fixtures/settings.nix ];
-  withoutClaude = configFile [ { claude.package = null; } ];
   # Language servers: the package's main program, or another of its bin/.
   withLsp = configFile [
     {
@@ -48,6 +47,10 @@ assert fails [
   })
 ];
 assert fails [ (lsp { package = pkgs.vscode-langservers-extracted; }) ];
+# No configuration adds tools.
+assert fails [ { packages = [ pkgs.hello ]; } ];
+assert fails [ { basePackages = [ ]; } ];
+assert fails [ { claude.package = pkgs.hello; } ];
 runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .guards.forgejo == true
@@ -58,10 +61,12 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
          == [{name: "work", paths: ["~/work"], claudeApiKeyCommand: "op read op://v/claude/key"}])
   ' ${config}
   bin=$(jq -r '.default.env.PATH | split(":")[0]' ${config})
-  test -x "$bin/hello"
-  test -x "$bin/claude"
-  test ! -e "$(jq -r '.default.env.PATH | split(":")[0]' ${withoutClaude})/claude"
-  test -f "$(jq -r '.default.claudeDir' ${withoutClaude})/managed-settings.json"
+  for tool in bash nix sed make tic git ssh ssh-keygen xdg-open; do test -x "$bin/$tool"; done
+  for tool in claude curl python3 hello; do test ! -e "$bin/$tool"; done
+  test -f "$(jq -r '.default.claudeDir' ${config})/managed-settings.json"
+  test -f "$(jq -r '.fhs.bashCompletion' ${config})/bash_completion"
+  grep -q bash_completion "$(jq -r '.fhs.bashrc' ${config})"
+  grep -q /etc/bashrc "$(jq -r '.fhs.profile' ${config})"
   settings="$(jq -r '.default.claudeDir' ${withLsp})/managed-settings.json"
   jq -e \
     --arg gopls ${pkgs.gopls}/bin/gopls \

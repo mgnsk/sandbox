@@ -83,6 +83,15 @@ func baseArgs(cfg *config, env map[string]string) bwrapArgs {
 	// programs expect, from the store.
 	a.roBind(cfg.FHS.Bin, "/bin")
 	a.roBind(cfg.FHS.UsrBin, "/usr/bin")
+	for src, dst := range map[string]string{
+		cfg.FHS.BashCompletion: "/usr/share/bash-completion",
+		cfg.FHS.Bashrc:         "/etc/bashrc",
+		cfg.FHS.Profile:        "/etc/profile",
+	} {
+		if src != "" {
+			a.roBind(src, dst)
+		}
+	}
 	a.roBind(cfg.FHS.NixLd, cfg.FHS.LdPath)
 	a.roBind(cfg.FHS.SSL, "/etc/ssl")
 	for _, path := range cfg.HostEtc {

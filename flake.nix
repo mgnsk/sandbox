@@ -13,13 +13,7 @@
       ];
       forAllSystems = f: lib.genAttrs systems (system: f (pkgsFor system));
 
-      # claude-code is unfree; nothing else here is.
-      pkgsFor =
-        system:
-        import nixpkgs {
-          inherit system;
-          config.allowUnfreePredicate = pkg: lib.getName pkg == "claude-code";
-        };
+      pkgsFor = system: nixpkgs.legacyPackages.${system};
 
       # A `sandbox` package from configuration modules (see nix/module.nix
       # for the options), e.g.
@@ -57,6 +51,12 @@
             pkgs.gh
             pkgs.forgejo-cli
             pkgs.dbus
+            # What the real-sandbox tests (e2e) run inside, by store path:
+            # the sandbox itself has none of them.
+            pkgs.python3
+            pkgs.curl
+            pkgs.iproute2
+            pkgs.getent
             # libseccomp for internal/seccomp, the one cgo package.
             pkgs.pkg-config
             pkgs.libseccomp

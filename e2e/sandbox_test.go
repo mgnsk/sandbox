@@ -80,6 +80,26 @@ func newProject(t *testing.T) project {
 	return p
 }
 
+// testTools is a PATH line for the scripts run inside: the directories of
+// the tools they use beyond the sandbox's own userland, from the test's
+// PATH (the dev shell), by store path - /nix/store is visible inside, and
+// the sandbox brings none of them itself.
+func testTools(t *testing.T) string {
+	t.Helper()
+	var dirs []string
+	for _, tool := range []string{"python3", "curl", "ip", "getent"} {
+		path, err := exec.LookPath(tool)
+		if err == nil {
+			path, err = filepath.EvalSymlinks(path)
+		}
+		if err != nil || !strings.HasPrefix(path, "/nix/store/") {
+			t.Skipf("needs %s from the store on PATH (the dev shell has it)", tool)
+		}
+		dirs = append(dirs, filepath.Dir(path))
+	}
+	return "PATH=" + strings.Join(dirs, ":") + ":$PATH\n"
+}
+
 func (p project) command(cwd string, env map[string]string, args ...string) *exec.Cmd {
 	cmd := exec.Command(p.bin, args...)
 	cmd.Dir = cwd
@@ -109,7 +129,7 @@ func (p project) run(t *testing.T, script string, env map[string]string, args ..
 func (p project) runIn(t *testing.T, cwd, script string, env map[string]string, args ...string) result {
 	t.Helper()
 	cmd := p.command(cwd, env, args...)
-	cmd.Stdin = strings.NewReader(script)
+	cmd.Stdin = strings.NewReader(testTools(t) + script)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	cmd.WaitDelay = 10 * time.Minute
@@ -207,7 +227,7 @@ echo "HOME=[$HOME]"; echo "TERM=[$TERM]"
 
 // /usr/bin, /bin and the dynamic loader are the store's, not the host's.
 func TestNoHostUserland(t *testing.T) {
-	r := newProject(t).run(t, "readlink -f /usr/bin/env /bin/sh; ls /usr/bin; ls /lib 2>&1 | head -1\ncommand -v bash git claude\n", nil).ok(t)
+	r := newProject(t).run(t, "readlink -f /usr/bin/env /bin/sh; ls /usr/bin; ls /lib 2>&1 | head -1\ncommand -v bash nix git\n", nil).ok(t)
 	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
 	if !strings.HasPrefix(lines[0], "/nix/store/") || !strings.HasPrefix(lines[1], "/nix/store/") {
 		t.Errorf("%q", lines[:2])
@@ -220,6 +240,24 @@ func TestNoHostUserland(t *testing.T) {
 		if !strings.HasPrefix(path, "/nix/store/") {
 			t.Errorf("%s not from the store", path)
 		}
+	}
+}
+
+// The managed /etc/bashrc loads bash-completion in every interactive shell -
+// one with --rcfile like nix develop's, and a login one through
+// /etc/profile - which finds a tool's completion through PATH (here git's,
+// from the base set; a dev shell's through the XDG_DATA_DIRS nix develop
+// sets). The files are read-only.
+func TestBashCompletion(t *testing.T) {
+	p := newProject(t)
+	for _, shell := range []string{"bash -i", "bash --rcfile /dev/null -i", "bash -l -i"} {
+		r := p.run(t, shell+" -c '_comp_load git; complete -p git' 2>/dev/null\n", nil).ok(t)
+		if !strings.Contains(r.stdout, "-F __git_wrap__git_main git") {
+			t.Errorf("%s: %q", shell, r.stdout)
+		}
+	}
+	if r := p.run(t, "echo x >> /etc/bashrc\n", nil); r.code == 0 {
+		t.Error("/etc/bashrc writable")
 	}
 }
 
@@ -378,7 +416,7 @@ func (p project) background(t *testing.T, script string, env map[string]string) 
 	}
 	// `read` holds the sandbox open until stdin closes, so it exits
 	// normally and cleans up.
-	io.WriteString(stdin, script+"\nread -r _\n")
+	io.WriteString(stdin, testTools(t)+script+"\nread -r _\n")
 	t.Cleanup(func() {
 		stdin.Close()
 		done := make(chan struct{})
