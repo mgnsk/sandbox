@@ -572,7 +572,7 @@ modules = [
   inputs.sandbox.homeManagerModules.default
   {
     # Your home-manager pkgs must allow the unfree claude-code
-    # (or set programs.sandbox.settings.claude.enable = false).
+    # (or set programs.sandbox.settings.claude.package = null to use your own).
     programs.sandbox.enable = true;
     programs.sandbox.settings = {
       packages = [ pkgs.neovim ];
@@ -623,7 +623,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
-| `claude.enable` / `.package` | on / `pkgs.claude-code` | |
+| `claude.enable` / `.package` | on / `pkgs.claude-code` | `package = null` keeps the managed config but brings no `claude`: one from the dev shell, `~/.nix-profile` or home-manager runs instead. |
 | `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |

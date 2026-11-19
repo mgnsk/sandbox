@@ -16,6 +16,12 @@ let
       inherit pkgs;
       modules = [ { userConfig.enable = true; } ];
     }).configFile;
+  # Claude Code brought by the user: the managed config without the package.
+  withoutClaude =
+    (import ./eval.nix { inherit lib; } {
+      inherit pkgs;
+      modules = [ { claude.package = null; } ];
+    }).configFile;
 in
 runCommand "sandbox-user-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
@@ -28,5 +34,8 @@ runCommand "sandbox-user-check" { nativeBuildInputs = [ jq ]; } ''
   ' ${config}
   test -x "$(jq -r '.default.env.PATH | split(":")[0]' ${config})/hello"
   jq -e '.userConfig.eval | endswith("/user.nix")' ${withUser}
+  test -x "$(jq -r '.default.env.PATH | split(":")[0]' ${config})/claude"
+  test ! -e "$(jq -r '.default.env.PATH | split(":")[0]' ${withoutClaude})/claude"
+  test -f "$(jq -r '.default.claudeDir' ${withoutClaude})/managed-settings.json"
   touch $out
 ''

@@ -53,7 +53,7 @@ let
 
   basePackages =
     cfg.basePackages
-    ++ lib.optional cfg.claude.enable cfg.claude.package
+    ++ lib.optional (cfg.claude.enable && cfg.claude.package != null) cfg.claude.package
     ++ lib.optional cfg.guards.github.enable sandboxPkgs.gh
     ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli
     ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
@@ -437,9 +437,14 @@ in
         description = "Claude Code inside, with managed settings/memory at /etc/claude-code.";
       };
       package = mkOption {
-        type = types.package;
+        type = types.nullOr types.package;
         default = pkgs.claude-code;
         defaultText = lib.literalExpression "pkgs.claude-code";
+        description = ''
+          Claude Code on PATH inside. null leaves it out but keeps the managed
+          config: `claude` then comes from the project's dev shell,
+          ~/.nix-profile or home-manager.
+        '';
       };
     };
 
