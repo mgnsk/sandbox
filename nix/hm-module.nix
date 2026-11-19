@@ -27,7 +27,7 @@ in
       description = ''
         Sandbox configuration (the options in nix/module.nix). Merged across
         modules like any other option, so e.g. one module can add a profile
-        while another sets packages.
+        while another sets the guards.
       '';
     };
 

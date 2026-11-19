@@ -20,7 +20,7 @@ let
       visible = false;
       apply =
         _:
-        throw "${lib.concatStringsSep "." path} is gone: the sandbox adds no tools - they come from the project's dev shell (or your ~/.nix-profile, home-manager)";
+        throw "${lib.concatStringsSep "." path} is gone: the sandbox adds no tools or variables - they come from the project's dev shell (or your ~/.nix-profile, home-manager)";
     });
   };
 
@@ -31,6 +31,7 @@ let
     imports = map (path: removed path) [
       [ "packages" ]
       [ "basePackages" ]
+      [ "env" ]
       [
         "claude"
         "package"
@@ -186,8 +187,7 @@ let
         # The store is read-only in here; builds go through the host's daemon.
         NIX_REMOTE = "daemon";
         NIX_CONFIG = cfg.nixConfig;
-      }
-      // cfg.env;
+      };
       binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
       inherit claudeApiKeyCommand;
@@ -296,12 +296,6 @@ let
 in
 {
   options = layerOptions // {
-    env = mkOption {
-      type = types.attrsOf types.str;
-      default = { };
-      description = "Environment variables inside, with `~`/`$HOME`/`$USER`/`$XDG_RUNTIME_DIR` expanded at start.";
-    };
-
     profiles = mkOption {
       type = types.attrsOf profileType;
       default = { };

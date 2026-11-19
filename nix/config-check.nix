@@ -51,11 +51,11 @@ assert fails [ (lsp { package = pkgs.vscode-langservers-extracted; }) ];
 assert fails [ { packages = [ pkgs.hello ]; } ];
 assert fails [ { basePackages = [ ]; } ];
 assert fails [ { claude.package = pkgs.hello; } ];
+assert fails [ { env.EDITOR = "nvim"; } ];
 runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .guards.forgejo == true
     and .hostPorts == ["5432"]
-    and .default.env.EDITOR == "nvim"
     and .default.claudeApiKeyCommand == null
     and ([.profiles[] | {name, paths, claudeApiKeyCommand}]
          == [{name: "work", paths: ["~/work"], claudeApiKeyCommand: "op read op://v/claude/key"}])

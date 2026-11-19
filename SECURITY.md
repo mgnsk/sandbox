@@ -36,9 +36,10 @@ The only host-backed paths writable from inside are:
   `~/.local/share/sandbox`) and `<volume>` is the project path made flat plus
   a hash. It looks like the host home but is never the real one — a file the
   sandbox writes there never reaches the host path it shadows, and a file the
-  host has there is not visible inside. The project's secrets (tokens, keys,
-  Secret Service data, approvals) sit next to it in `<state dir>/<volume>/`,
-  outside the mount, out of the sandbox's reach.
+  host has there is not visible inside. The project's Secret Service data,
+  `sandbox.nix` approvals and evaluation cache sit next to it in
+  `<state dir>/<volume>/`, outside the mount, out of the sandbox's reach.
+  Tokens and keys are never written there, or anywhere.
 
 Everything else the sandbox needs (`/nix`, configured reference binds, home-manager-generated
 config) is mounted **read-only**. Home-manager files, when enabled, reach the
@@ -62,7 +63,8 @@ browser on the host reaches OAuth callbacks and dev servers); the other
 direction is closed. Host services - on its loopback or on any of its own
 addresses - are reachable only for ports listed in `SANDBOX_HOST_PORTS`
 (`5037 8080/udp 9000-9010`, tcp by default), read from the host's environment
-when `sandbox` starts, and then only at `127.0.0.1:<port>` inside:
+when `sandbox` starts, or in `hostPorts` (the user's config, or an approved
+`sandbox.nix`), and then only at `127.0.0.1:<port>` inside:
 
 - pasta's `-T`/`-U` mirror just those host loopback ports, instead of its
   default of every listener the host has;
@@ -107,8 +109,9 @@ which chains `CONNECT`s for the GitHub API hosts to gh-api-proxy
 ships none. The proxy runs on the host and holds the real token, in memory
 only: the one a token command printed at start (see "Token commands" below),
 piped to the proxy by the launcher - never on disk, in argv or in an
-environment. Nothing on the host runs gh or reads its login, so a sandbox
-without a token command gets no GitHub access at all. It listens on a free port of the host's
+environment. Nothing on the host runs gh or reads its login (unless the
+user's token command is `gh auth token`), so a sandbox without a token
+command gets no GitHub access at all. It listens on a free port of the host's
 loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
 carrying a random per-launch secret (`SANDBOX_GH_PROXY`, handed to the
 router and left out of the command's environment, sent as Basic
@@ -196,7 +199,7 @@ it comes from is the boundary:
 - **The user's config** (home-manager, a flake with `mkSandbox`, a profile):
   trusted like the rest of it, run without asking. It wins over the
   project's for the same guard or host.
-- **The project's `sandbox.nix`**: sandboxed code can edit it, so its
+- **The project's `sandbox.nix`** (or `.sandbox.yml`, below): sandboxed code can edit it, so its
   commands are shown on the terminal and run only after a yes, stored with
   the project's other approvals and asked again whenever any of them
   changes; without a terminal the sandbox doesn't start. A command the
