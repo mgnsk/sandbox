@@ -9,7 +9,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestParseHostPorts(t *testing.T) {
@@ -304,22 +303,6 @@ func TestInsideEnv(t *testing.T) {
 	}
 	if got := insideEnv(cfg, p, vars); !maps.Equal(got, want) {
 		t.Errorf("insideEnv = %v", got)
-	}
-}
-
-func TestUpgradeNotice(t *testing.T) {
-	now := time.Now()
-	ago := func(days float64) int64 { return now.Add(-time.Duration(days * 24 * float64(time.Hour))).Unix() }
-	if got := upgradeNotice(ago(40.5), 30, now); !strings.Contains(got, "this sandbox is 40 days old; `nix profile upgrade sandbox`") {
-		t.Errorf("%q", got)
-	}
-	for _, tc := range []struct {
-		released int64
-		days     int
-	}{{ago(29), 30}, {ago(900), 0}, {0, 30}} {
-		if got := upgradeNotice(tc.released, tc.days, now); got != "" {
-			t.Errorf("%+v: %q", tc, got)
-		}
 	}
 }
 

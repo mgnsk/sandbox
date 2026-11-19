@@ -55,22 +55,17 @@ program on the host, not just the sandbox.
 
 ## Install
 
-```sh
-nix profile add github:mgnsk/sandbox
-```
+There's no `sandbox` package to install on its own: it's built from a
+configuration, in one of two places.
 
-`sandbox` is one command for every project; a project brings its own tools
-through its dev shell (a flake or devenv, below). For gh, set up
-[authentication](#authentication) first. Your own settings go in
-`~/.config/sandbox/config.nix`, see [Configuring the sandbox](#configuring-the-sandbox).
+- **Your home-manager config**, for every project you work on:
+  `programs.sandbox`, see [With home-manager](#with-home-manager).
+- **A project's flake**, for everyone working on that project: run from the
+  project's remote, never from a checkout, see
+  [In a project's flake](#in-a-projects-flake).
 
-To update, including the packages inside (Claude Code, gh, ...):
-
-```sh
-nix profile upgrade sandbox
-```
-
-`sandbox` reminds you at start once it's 30 days old (`upgradeNotice.days`).
+Either way a project brings its own tools through its dev shell (a flake or
+devenv, below). For gh, set up [authentication](#authentication) first.
 
 ## Using it in a project
 
@@ -406,10 +401,10 @@ How it stays a sandbox, though the sandbox can edit the file:
 
 A language server it defines replaces one of yours with the same name.
 
-Don't define the sandbox itself in the project's flake (a
-`packages.sandbox = sandbox.lib.mkSandbox { ... }` run with `nix run
-.#sandbox`): the sandbox can edit `flake.nix`, and the next `nix run` runs
-whatever it put there on the host. `sandbox.nix` is the safe way.
+If the sandbox itself is defined in the project's flake, run it from the
+project's remote, never from the checkout (`nix run .#sandbox`): the sandbox
+can edit `flake.nix`, and that `nix run` would run whatever it put there on
+the host. See [In a project's flake](#in-a-projects-flake).
 
 ### Using devenv
 
@@ -493,46 +488,51 @@ What to know:
 
 ## Configuring the sandbox
 
-Your sandbox config is a list of modules with the options in
+A sandbox configuration is a list of modules with the options in
 [Configuration](#configuration). Its top level applies to every project;
 `profiles` narrow some settings to projects under given paths (see
-[Profiles](#profiles)). Keep it in your user config, never in a sandboxed
-project.
+[Profiles](#profiles)). It comes from your home-manager config or from a
+project's flake run from its remote - never from a checkout a sandbox can
+write.
 
-With `nix profile add github:mgnsk/sandbox`, it's `~/.config/sandbox/config.nix`
-(`$XDG_CONFIG_HOME/sandbox`), a module that gets `pkgs`:
+### With home-manager
+
+`programs.sandbox.settings` takes the module, with your home-manager `pkgs`:
 
 ```nix
-{ pkgs, ... }:
-{
-  packages = [ pkgs.neovim pkgs.direnv pkgs.nix-direnv ];
-  env.EDITOR = "nvim";
-  hostPorts = [ "5432" ];               # a host Postgres, always
-  guards.forgejo.enable = true;
-  profiles.work = {
-    paths = [ "~/work" ];
-    guards.claudeApiKey.enable = true;
-  };
-  # pkgs is the sandbox's own nixpkgs; claude-code is allowed either way.
-  # nixpkgs.config.allowUnfree = true;
-}
+modules = [
+  inputs.sandbox.homeManagerModules.default
+  {
+    # Your home-manager pkgs must allow the unfree claude-code
+    # (or set programs.sandbox.settings.claude.package = null to use your own).
+    programs.sandbox.enable = true;
+    programs.sandbox.settings = {
+      packages = [ pkgs.neovim ];
+      env.EDITOR = "nvim";
+      guards.forgejo.enable = true;
+      profiles.work = {
+        paths = [ "~/work" ];
+        guards.claudeApiKey.enable = true;
+      };
+    };
+  }
+];
 ```
 
-`sandbox` builds it on the host with `nix-build` the first time and whenever
-a file in `~/.config/sandbox` changes, or after `nix profile upgrade` - the
-packages come from the sandbox's nixpkgs, so upgrading updates them too. It
-can `imports` other files; ones outside `~/.config/sandbox` aren't watched,
-so run `sandbox --reload` after changing them. The build is kept as a GC
-root in `~/.local/state/sandbox`. `sandbox` refuses a config that is (or
-links into) the project it starts in: a sandbox can write its project, and
-the config is built and run on the host. The same goes for a dotfiles repo
-the config lives in - don't work on it in a sandbox while sandboxes run
-elsewhere.
+Updating is updating the flake input your home-manager config takes it from,
+then switching.
 
-### Your own build: mkSandbox
+The home-manager module also links your current home-manager generation into
+each project's `$HOME` at every start (`homeManager.enable`), so your shell
+config, git config, etc. apply inside. Without it, see
+[Git config without home-manager](#git-config-without-home-manager) and
+[SSH agent](#ssh-agent) for binding your config in.
 
-To pin your own nixpkgs, build the sandbox in your own flake. Its config
-then replaces `config.nix`, which it doesn't read:
+### In a project's flake
+
+A project can ship the sandbox to everyone working on it: its flake builds
+one with `mkSandbox`, and each user runs it from the project's remote, either
+following its default branch or pinned to a commit:
 
 ```nix
 {
@@ -548,44 +548,61 @@ then replaces `config.nix`, which it doesn't read:
         config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";
       };
     in {
-      packages.x86_64-linux.default = sandbox.lib.mkSandbox {
+      packages.x86_64-linux.sandbox = sandbox.lib.mkSandbox {
         inherit pkgs;
-        modules = [ ./config.nix ];       # the same module as above
+        modules = [ { guards.forgejo.enable = true; } ];
       };
+      devShells.x86_64-linux.default = pkgs.mkShell { packages = [ /* ... */ ]; };
     };
 }
 ```
 
 ```sh
-nix profile add ~/my-sandbox-config      # in place of github:mgnsk/sandbox
+cd ~/src/myproject
+
+# The default branch: updates arrive with merges.
+nix run github:owner/myproject#sandbox -- nix develop -c claude
+
+# A commit you reviewed: updates only when you change the rev.
+nix run github:owner/myproject/<rev>#sandbox -- nix develop -c claude
+
+# The same, also checking what GitHub serves against a hash you recorded.
+nix run 'github:owner/myproject/<rev>?narHash=sha256-...#sandbox' -- nix develop -c claude
 ```
 
-Updating is then `nix flake update` in that flake, then `nix profile upgrade`.
+The `narHash` of a commit, to pin it with:
 
-### With home-manager
-
-`programs.sandbox.settings` takes the same module, with your home-manager
-`pkgs`; `config.nix` isn't read:
-
-```nix
-modules = [
-  inputs.sandbox.homeManagerModules.default
-  {
-    # Your home-manager pkgs must allow the unfree claude-code
-    # (or set programs.sandbox.settings.claude.enable = false).
-    programs.sandbox.enable = true;
-    programs.sandbox.settings = {
-      packages = [ pkgs.neovim ];
-    };
-  }
-];
+```sh
+nix flake metadata --json github:owner/myproject/<rev> | jq -r .locked.narHash
 ```
 
-The home-manager module also links your current home-manager generation into
-each project's `$HOME` at every start (`homeManager.enable`), so your shell
-config, git config, etc. apply inside. Without it, see
-[Git config without home-manager](#git-config-without-home-manager) and
-[SSH agent](#ssh-agent) for binding your config in.
+A `github:` ref is fetched as a tarball from GitHub, which nix doesn't check
+against the rev; with `narHash` nix refuses anything else ("NAR hash
+mismatch"). Keep the pinned ref in your shell config (e.g. an alias), outside
+every project.
+
+What makes this safe is where it runs from, so:
+
+- **Always the remote, never a checkout.** Not `nix run .#sandbox`, not
+  `nix run ~/src/myproject#sandbox`: a sandbox can write its project, `.git`
+  included, so a checkout holds whatever sandboxed code put there, and the
+  launcher runs on the host. A short alias for the remote URL helps.
+- **Review what runs.** Following the default branch, that's everything
+  merged into it: protect the branch, so changes need review like any code
+  that runs unsandboxed. Pinned, it's the commit you pin; read the diff
+  before moving the pin. Pushes from inside go over ssh, behind the agent
+  popup.
+- **Updates.** The default branch is cached for up to an hour
+  (`tarball-ttl`; `nix run --refresh` fetches it now). A pinned commit never
+  changes; bump the rev (and `narHash`) to update.
+- **One configuration for everyone.** There's no per-user layer: personal
+  settings (binds, extra packages, your ssh agent socket) need the
+  home-manager module instead. `homeManager.enable = true` still links each
+  user's own home-manager files (shell, git config) into their project
+  `$HOME`.
+
+`sandbox.nix` still works on top, for settings the project's code may
+change; this flake is for what must stay out of its reach.
 
 **gh or fj in `~/.nix-profile`?** Inside, `gh` and `fj` must be this flake's
 wrappers: upstream gh and fj pointed at their guard's proxy and trusting its
@@ -623,15 +640,13 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
-| `claude.enable` / `.package` | on / `pkgs.claude-code` | |
+| `claude.enable` / `.package` | on / `pkgs.claude-code` | `package = null` keeps the managed config but brings no `claude`: one from the dev shell, `~/.nix-profile` or home-manager runs instead. |
 | `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
 | `claude.lspServers.<name>` | `{ }` | `{ package; command; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. |
 | `claude.marketplaces.<name>` | `{ }` | Plugin marketplace directories (store paths); enable their plugins in `claude.settings.enabledPlugins`. |
 | `profiles.<name>` | | Per-project additions, see below. |
-| `upgradeNotice.days` | `30` | Days after which `sandbox` suggests `nix profile upgrade sandbox`; 0 never. Only for `nix profile add github:mgnsk/sandbox`, not your own builds. |
-| `nixpkgs.config` | `{ }` | `config.nix` only: nixpkgs config for its `pkgs`, e.g. `allowUnfree = true`. |
 
 ### Plugins and language servers
 

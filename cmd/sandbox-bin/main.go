@@ -126,7 +126,7 @@ func launch() *cli.Command {
 			&cli.StringFlag{Name: "config", Destination: &config,
 				Usage: "the sandbox's configuration `FILE` (the sandbox command passes its own)", TakesFile: true},
 			&cli.BoolFlag{Name: "reload", Destination: &opts.Reload,
-				Usage: "evaluate sandbox.nix and ~/.config/sandbox/config.nix again, even if unchanged"},
+				Usage: "evaluate sandbox.nix again, even if unchanged"},
 			&cli.BoolFlag{Name: "no-project-config", Destination: &opts.NoProjectConfig,
 				Usage: "ignore sandbox.nix"},
 			&cli.BoolFlag{Name: "claude-api-key", Destination: &opts.ClaudeAPIKey,

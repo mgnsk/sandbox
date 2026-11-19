@@ -1,7 +1,6 @@
-# A user's ~/.config/sandbox/config.nix, for nix/user-check.nix.
+# A user's sandbox settings, for nix/config-check.nix.
 { pkgs, ... }:
 {
-  nixpkgs.config.allowUnfree = true;
   packages = [ pkgs.hello ];
   env.EDITOR = "nvim";
   hostPorts = [ "5432" ];

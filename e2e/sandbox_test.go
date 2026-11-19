@@ -8,7 +8,7 @@
 // launcher's tests'.) They run the `sandbox` built from this flake:
 // $SANDBOX_BIN, else `sandbox` on PATH, e.g.
 //
-//	SANDBOX_BIN=$(nix build --print-out-paths)/bin/sandbox go test ./e2e
+//	SANDBOX_BIN=$(nix build --print-out-paths .#checks.x86_64-linux.default)/bin/sandbox go test ./e2e
 //
 // and need a real host: unprivileged user namespaces are unavailable inside a
 // running sandbox (`--disable-userns` blocks exactly that), so they skip

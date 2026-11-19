@@ -8,18 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 )
 
-const (
-	projectFileName = "sandbox.nix"
-	// Set for the launcher that evaluates sandbox.nix, so it doesn't repeat
-	// the upgrade notice.
-	quietEnv = "SANDBOX_NO_UPGRADE_NOTICE"
-)
+const projectFileName = "sandbox.nix"
 
 // manifest is what project.nix makes of sandbox.nix.
 type manifest struct {
@@ -112,7 +108,7 @@ func (l *launcher) projectManifest(ctx context.Context, base string) (*manifest,
 	// Evaluated with nix inside a sandbox of the project, without its
 	// sandbox.nix.
 	fmt.Fprintf(os.Stderr, "sandbox: evaluating %s\n", projectFile)
-	out, err := l.runCapturing(ctx, append(os.Environ(), quietEnv+"=1"),
+	out, err := l.runCapturing(ctx,
 		l.self, "launch", "--config", l.configPath, "--no-project-config", "--",
 		"nix", "build", "--no-link", "--print-out-paths", "--file", l.cfg.Project.Eval,
 		"--argstr", "nixpkgs", l.cfg.Project.Nixpkgs,
@@ -200,4 +196,17 @@ func applyProject(p profile, m *manifest) profile {
 		p.ClaudeDir = m.ClaudeDir
 	}
 	return p
+}
+
+// runCapturing runs argv with no stdin, its stdout captured and its stderr
+// the launcher's. A signal to the launcher interrupts it.
+func (l *launcher) runCapturing(ctx context.Context, argv ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stderr = os.Stderr
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", errors.New("interrupted")
+	}
+	return string(out), err
 }

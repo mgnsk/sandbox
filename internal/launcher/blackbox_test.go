@@ -381,17 +381,6 @@ func TestClaudeDirAndExchange(t *testing.T) {
 	}
 }
 
-func TestUpgradeNoticeOnce(t *testing.T) {
-	h := newHarness(t)
-	h.cfg.Released = time.Now().Add(-40 * 24 * time.Hour).Unix()
-	if r := h.run("", nil); !strings.Contains(r.stderr, "this sandbox is 40 days old") {
-		t.Errorf("%q", r.stderr)
-	}
-	if r := h.run("", map[string]string{quietEnv: "1"}); strings.Contains(r.stderr, "nix profile upgrade") {
-		t.Errorf("%q", r.stderr)
-	}
-}
-
 // -- sandbox.nix --
 
 // manifestJSON is m as project.nix writes it: null for no command or
@@ -427,7 +416,6 @@ func (h *harness) withProject(m manifest, content, name string) string {
 func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Default.ClaudeDir = "/store/claude"
-	h.cfg.Released = time.Now().Add(-100 * 24 * time.Hour).Unix()
 	h.withProject(manifest{}, "{ ... }: { }\n", "m.json")
 	r := h.run("", nil)
 	if r.code != 0 {
@@ -446,10 +434,6 @@ func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
 	inner, outer := parseInvocation(t, pastas[0]), parseInvocation(t, pastas[1])
 	if !slices.Equal(inner.command()[:2], []string{"nix", "build"}) || inner.chdir != h.project || outer.command() != nil {
 		t.Errorf("inner %q, outer %q", inner.command(), outer.command())
-	}
-	// Not again from the launcher that evaluates sandbox.nix.
-	if n := strings.Count(r.stderr, "nix profile upgrade sandbox"); n != 1 {
-		t.Errorf("notice %d times", n)
 	}
 }
 
@@ -571,81 +555,6 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 	if r := p.wait(); r.code != 1 || !strings.Contains(r.stdout, "host access not approved, not starting") || len(r.calls("pasta")) != 1 {
 		t.Errorf("%d %q", r.code, r.stdout)
 	}
-}
-
-// -- ~/.config/sandbox/config.nix --
-
-func TestUserConfig(t *testing.T) {
-	h := newHarness(t)
-	dir := filepath.Join(h.home, ".config/sandbox")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "config.nix"), []byte("{ ... }: { }\n"), 0o644)
-	built := *h.cfg
-	built.StateDir = filepath.Join(h.tmp, "user-state")
-	h.env["FAKE_NIX_BUILD_OUT"] = h.storeFile("built.json", marshal(t, built))
-	h.cfg.UserConfig = &nixEvaluation{Eval: "/store/user.nix", Nixpkgs: "/store/np", System: "s"}
-	builds := func(args ...string) int {
-		t.Helper()
-		r := h.run("", nil, args...)
-		if r.code != 0 {
-			t.Fatal(r.stderr)
-		}
-		return len(r.calls("nix-build"))
-	}
-	r := h.run("", nil)
-	want := []string{"/store/user.nix", "--argstr", "nixpkgs", "/store/np", "--argstr", "system", "s",
-		"--argstr", "file", filepath.Join(dir, "config.nix"), "--out-link", filepath.Join(h.home, ".local/state/sandbox/config")}
-	if calls := r.calls("nix-build"); len(calls) != 1 || !slices.Equal(calls[0], want) {
-		t.Errorf("%q %s", calls, r.stderr)
-	}
-	// Its stateDir, among the rest, is the one used.
-	if !isDir(filepath.Join(built.StateDir, volumeName(h.project))) {
-		t.Error("the built config's state dir not used")
-	}
-	if builds() != 0 {
-		t.Error("not cached")
-	}
-	// A changed or new file in the dir, or --reload, builds it again.
-	os.WriteFile(filepath.Join(dir, "config.nix"), []byte("{ ... }: { env.A = 1; }\n"), 0o644)
-	if builds() != 1 {
-		t.Error("not rebuilt after a change")
-	}
-	os.Mkdir(filepath.Join(dir, "sub"), 0o755)
-	os.WriteFile(filepath.Join(dir, "sub/more.nix"), []byte("{ }\n"), 0o644)
-	if builds() != 1 || builds() != 0 || builds("--reload") != 1 {
-		t.Error("not rebuilt after a new file or --reload")
-	}
-
-	// A dotfiles repo opened as a project: the sandbox could write what the
-	// host then builds and runs.
-	dotfiles := filepath.Join(h.home, "dotfiles")
-	os.MkdirAll(filepath.Join(dotfiles, ".git"), 0o755)
-	os.MkdirAll(filepath.Join(dotfiles, "sandbox"), 0o755)
-	os.WriteFile(filepath.Join(dotfiles, "sandbox/config.nix"), []byte("{ }\n"), 0o644)
-	os.RemoveAll(dir)
-	os.Symlink(filepath.Join(dotfiles, "sandbox"), dir)
-	h.run(dotfiles, nil).refused(t, "is in this project")
-
-	// Without a config.nix, or with a config of its own, nothing's built.
-	os.Remove(dir)
-	if builds() != 0 {
-		t.Error("built without a config.nix")
-	}
-}
-
-func TestUserConfigFailures(t *testing.T) {
-	h := newHarness(t)
-	dir := filepath.Join(h.home, ".config/sandbox")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "config.nix"), []byte("{ }\n"), 0o644)
-	h.cfg.UserConfig = &nixEvaluation{Eval: "e", Nixpkgs: "n", System: "s"}
-	h.run("", map[string]string{"FAKE_NIX_BUILD_EXIT": "1"}).refused(t, "exit status 1")
-	h.run("", map[string]string{"FAKE_NIX_BUILD_OUT": "/etc/passwd"}).refused(t, "no result")
-	h.run("", map[string]string{"PATH": "/nonexistent"}).refused(t, "needs nix-build on PATH")
-	h.env["FAKE_NIX_BUILD_OUT"] = h.storeFile("garbage", "not json")
-	h.run("", map[string]string{"FAKE_NIX_BUILD_OUT": h.env["FAKE_NIX_BUILD_OUT"]}).refused(t, "bad "+dir+"/config.nix result")
-	h.env["FAKE_NIX_BUILD_OUT"] = h.storeFile("takes.json", `{"userConfig": {"eval": "x"}}`)
-	h.run("", map[string]string{"FAKE_NIX_BUILD_OUT": h.env["FAKE_NIX_BUILD_OUT"]}).refused(t, "takes a config.nix itself")
 }
 
 // -- secrets --

@@ -49,8 +49,8 @@ jobs:
           versions "$base" > "$RUNNER_TEMP/old.json"
           versions "$head" > "$RUNNER_TEMP/new.json"
 
-          old=$(nix build --no-link --print-out-paths "path:$base#default")
-          new=$(nix build --no-link --print-out-paths "path:$head#default")
+          old=$(nix build --no-link --print-out-paths "path:$base#checks.$SYSTEM.default")
+          new=$(nix build --no-link --print-out-paths "path:$head#checks.$SYSTEM.default")
 
           rev() { jq -r .nodes.nixpkgs.locked.rev "$1/flake.lock"; }
           {

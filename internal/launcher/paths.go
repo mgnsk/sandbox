@@ -155,3 +155,11 @@ func cacheKey(parts ...any) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+// xdgDir is $env, or fallback under home when that's unset.
+func xdgDir(env, home, fallback string) string {
+	if dir := os.Getenv(env); dir != "" {
+		return dir
+	}
+	return filepath.Join(home, fallback)
+}
