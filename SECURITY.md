@@ -1,7 +1,9 @@
 # Security model
 
-What the sandbox contains and how. Read `src/sandbox` (the launcher) itself
-for the per-flag reasoning; this file is the threat-model overview.
+What the sandbox contains and how. Read `internal/launcher` (the launcher)
+itself for the per-flag reasoning; this file is the threat-model overview.
+The launcher, `sandbox-init` and the guards are one Go binary, run under
+each program's name (`cmd/sandbox`).
 
 ## Threat model
 
@@ -13,7 +15,7 @@ was invoked in.
 
 ## Isolation
 
-The primitives (all in `src/sandbox`): a fresh user namespace with the invoking
+The primitives (all in `internal/launcher`): a fresh user namespace with the invoking
 uid/gid pinned (not namespace-root) and `--disable-userns` to stop nesting;
 `--unshare-all`; `--cap-drop ALL`; `--clearenv` with a small re-allowlist; a
 fresh pasta network namespace (no host abstract-socket exposure); a seccomp
@@ -99,7 +101,7 @@ else a repo's `.git/` names run sandboxed. Nothing on the host runs git
 against a sandbox-writable repo.
 
 The sandbox's `gh` is upstream gh in a wrapper (`nix/packages.nix`) that sets
-`HTTPS_PROXY` to `src/gh-api-proxy` and `SSL_CERT_FILE` to a bundle with that
+`HTTPS_PROXY` to gh-api-proxy (`internal/ghproxy`) and `SSL_CERT_FILE` to a bundle with that
 proxy's CA, with `GH_TOKEN` set to a fixed placeholder. The proxy runs on the
 host and holds the real token: the project's, if `sandbox --gh-token` set one
 (`github-token` in the volume dir, mode 0600, re-read every request), else the
@@ -137,7 +139,7 @@ only has the placeholder).
 ## Forgejo: fj runs inside, the token stays outside
 
 The same arrangement for `fj` (forgejo-cli): upstream fj, wrapped to use
-`src/forgejo-api-proxy` (sharing `src/api_proxy.py` with gh-api-proxy, with a
+forgejo-api-proxy (`internal/forgejoproxy`, sharing `internal/apiproxy` with gh-api-proxy, with a
 CA, port and secret of its own) as its `HTTPS_PROXY`; the sandbox has no
 Forgejo token at all. The proxy intercepts every host, tunnels none, and per
 request:
@@ -165,7 +167,7 @@ asks for the project's key on the terminal and stores it in the volume dir
 (`claude-api-key`, mode 0600), out of the sandbox's reach. Claude Code inside
 gets a placeholder from the managed `apiKeyHelper`, and `ANTHROPIC_UNIX_SOCKET`
 plus an `http://` `ANTHROPIC_BASE_URL` make it send plain HTTP over a socket
-to `src/claude-api-proxy` on the host, which per request:
+to claude-api-proxy (`internal/claudeproxy`) on the host, which per request:
 
 - forwards only to `api.anthropic.com`, over HTTPS, and only the paths Claude
   Code uses (messages, token counting, models, its own `/api/claude_code/`
@@ -180,8 +182,9 @@ limit, bounds what that costs.
 
 ## Opening URLs: http(s) only, behind a popup
 
-`xdg-open` inside (also at `/usr/bin/xdg-open`) is `src/sandbox-xdg-open`. It
-sends the URL to `src/open-url-guard` on the host, which is the gate: anything in
+`xdg-open` inside (also at `/usr/bin/xdg-open`) is sandbox-xdg-open
+(`internal/xdgopen`). It sends the URL to open-url-guard (`internal/openurl`)
+on the host, which is the gate: anything in
 the sandbox can talk to the socket.
 
 The host's `xdg-open` chooses an application from the scheme or file type, so
@@ -200,7 +203,7 @@ what stands between sandboxed code and that session, so read the host.
 Every popup takes `y` (this request), `A` (always in this sandbox) or `N`, the
 default, followed by Enter. No terminal, or a popup that fails, means no.
 
-The launcher draws the popups itself (`src/popup_relay.py`). It runs the
+The launcher draws the popups itself (`internal/popuprelay`). It runs the
 sandbox on a pty of its own and is the only process holding the real
 terminal, so while a popup is up the sandbox's output is held back and every
 key goes to the popup: sandboxed code can't type an answer, draw over the
@@ -238,8 +241,8 @@ binaries. From the host's `/etc` only identity and name resolution are bound
 CA certificates come from the store too.
 
 The launcher itself runs nothing from the host's `PATH` either: bwrap, pasta,
-dbus-daemon, ip and the guards' python are store paths in its generated
-config. The guards get gh and xdg-utils from the store first on `PATH`,
+dbus-daemon and ip are store paths in its generated config, and the guards
+are its own binary. The guards get gh and xdg-utils from the store first on `PATH`,
 the host's after - xdg-open hands approved URLs to the host's browser. The
 project root is found by looking for `.git`, not by running git, which would
 read a sandbox-writable repo config on the host.

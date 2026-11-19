@@ -1,12 +1,11 @@
-"""Black-box tests for src/sandbox-init, run as a program against a fake
+"""Black-box tests for sandbox-init, run as a program against a fake
 $HOME and fake home-manager generations - it only touches $HOME, so most of
 this needs no real sandbox.
 
 What it reads from the mount namespace - the mounts over the volume, the
 managed Claude Code config at /etc/claude-code - is tested in one made with
 bwrap, so those tests need a host with unprivileged user namespaces and skip
-themselves elsewhere (e.g. inside a sandbox). $SANDBOX_GUARD_CMD (see
-guards.py) runs another implementation."""
+themselves elsewhere (e.g. inside a sandbox)."""
 
 import os
 import shutil
@@ -48,7 +47,11 @@ def env(tmp_path):
                     "sandbox-init", profile, current[0] or "", *(cmd or ["true"])
                 ),
             ],
-            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            env={
+                "HOME": str(home),
+                "PATH": os.environ["PATH"],
+                **{k: v for k, v in os.environ.items() if k == "GOCOVERDIR"},
+            },
             capture_output=True,
             text=True,
             check=False,
@@ -196,6 +199,16 @@ def test_without_profile_or_generation_only_execs(env):
     assert result.stdout == "ran\n"
     assert not (home / ".nix-profile").is_symlink()
     assert not (home / ".local/state/nix/profiles").exists()
+
+
+def test_a_command_that_cannot_run_fails(tmp_path):
+    result = subprocess.run(
+        guard_argv("sandbox-init", "", "", tmp_path / "nonexistent"),
+        env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
 
 
 def test_a_missing_generation_is_skipped(env, tmp_path):

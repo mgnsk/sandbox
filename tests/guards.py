@@ -1,9 +1,6 @@
 """Black-box harness for the guards: each runs as the program the launcher
 starts, `GUARD ARGS...`, and is judged by what it does on its sockets, what
 it asks in popups and what reaches the stand-ins for the real services.
-Nothing here imports a guard, so $SANDBOX_GUARD_CMD - a command template
-with {name}, e.g. "sandbox-go guard {name}" - runs the same tests against
-another implementation.
 
 - Popups: $SANDBOX_POPUP_SOCKET points at a FakePopups, which records each
   {"name", "text"} request and answers as told.
@@ -18,12 +15,10 @@ import http.client
 import ipaddress
 import json
 import os
-import shlex
 import signal
 import socket
 import ssl
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -36,13 +31,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-GUARD_CMD = os.environ.get("SANDBOX_GUARD_CMD")
-
 
 def guard_argv(name, *args):
-    if GUARD_CMD:
-        return [*shlex.split(GUARD_CMD.format(name=name)), *map(str, args)]
-    return [sys.executable, "-E", "-s", str(BIN_DIR / name), *map(str, args)]
+    """The program name with args, as the launcher starts it."""
+    return [str(BIN_DIR / name), *map(str, args)]
 
 
 def short_dir():
@@ -57,7 +49,7 @@ def base_env(**extra):
     env = {
         "PATH": os.environ["PATH"],
         "HOME": "/nonexistent",
-        **{k: v for k, v in os.environ.items() if k.startswith("COVERAGE_")},
+        **{k: v for k, v in os.environ.items() if k == "GOCOVERDIR"},
     }
     env.update({k: str(v) for k, v in extra.items() if v is not None})
     return env

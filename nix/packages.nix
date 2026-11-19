@@ -6,29 +6,16 @@
   writeShellScript,
   writeShellScriptBin,
   python3,
+  callPackage,
   gh,
   forgejo-cli,
   bash,
   coreutils,
 }:
 let
-  # Runs the launcher (on the host), sandbox-init (inside) and the guards
-  # (on the host).
-  python = python3.withPackages (ps: [
-    ps.cryptography
-    ps.dbus-fast
-    ps.graphql-core
-  ]);
-
-  # The launcher, sandbox-init, guards and xdg-open shim, run as
-  # `python -E -s <file>`: -E/-s keep a project shell's PYTHONPATH and user
-  # site-packages out, and the script's own directory on sys.path is what
-  # lets the guards import guard_popup/api_proxy.
-  src = lib.cleanSourceWith {
-    name = "sandbox-src";
-    src = ../src;
-    filter = path: _type: !(lib.hasSuffix ".pyc" path) && baseNameOf path != "__pycache__";
-  };
+  # The launcher, sandbox-init and the guards: one binary, run under each
+  # program's name.
+  sandbox = callPackage ./go.nix { };
 
   # bwrap takes raw cBPF, not a policy, so it's compiled from the libseccomp
   # rules here rather than committed as an opaque blob.
@@ -74,7 +61,7 @@ let
 
   # xdg-open inside: hands the URL to open-url-guard on the host.
   xdg-open = writeShellScriptBin "xdg-open" ''
-    exec ${python.interpreter} -E -s ${src}/sandbox-xdg-open "$@"
+    exec ${sandbox}/bin/sandbox-xdg-open "$@"
   '';
 
   # The few fixed paths programs expect, in place of the host's /bin and
@@ -91,8 +78,7 @@ let
 in
 {
   inherit
-    python
-    src
+    sandbox
     seccomp
     xdg-open
     fhs

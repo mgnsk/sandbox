@@ -1,4 +1,4 @@
-"""Black-box tests for the launcher's terminal (src/popup_relay.py): the
+"""Black-box tests for the launcher's terminal (internal/popuprelay): the
 launcher runs on a pty, with a program inside that echoes what it's typed,
 and popups are asked for on its guards' socket the way a guard does. What
 the user sees is read off a terminal emulator (pyte) fed the launcher's

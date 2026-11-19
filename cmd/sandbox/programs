@@ -1,0 +1,9 @@
+sandbox-init
+open-url-guard
+sandbox-xdg-open
+ssh-agent-guard
+secret-service-guard
+claude-api-proxy
+forgejo-api-proxy
+gh-api-proxy
+sandbox

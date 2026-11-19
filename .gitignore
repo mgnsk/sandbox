@@ -1,5 +1,4 @@
 result
 result-*
 __pycache__/
-.coverage
-.coverage.*
+.build/

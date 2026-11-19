@@ -65,9 +65,7 @@
               (pkgs.python3.withPackages (ps: [
                 ps.cryptography
                 ps.dbus-fast
-                ps.graphql-core
                 ps.pytest
-                ps.pytest-cov
                 ps.pyte
               ]))
               p.gh
@@ -75,6 +73,7 @@
               # For the launcher tests' secret-service guard.
               pkgs.dbus
               pkgs.ruff
+              pkgs.go
               pkgs.procps
             ];
           };

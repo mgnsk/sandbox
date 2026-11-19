@@ -1,10 +1,12 @@
-"""Black-box tests for src/secret-service-guard, run as a program on a
+"""Black-box tests for secret-service-guard, run as a program on a
 private D-Bus bus, as the launcher runs it, and spoken to over D-Bus like
 libsecret clients (gh's go-keyring, Python keyring, ...) do."""
 
 import asyncio
+import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import time
@@ -241,3 +243,98 @@ def test_a_preexisting_database_is_tightened(world):
     os.chmod(world.db, 0o644)
     world.start()
     assert mode(world.db) == 0o600
+
+
+# -- the database, as earlier versions left it -------------------------------------
+
+SCHEMA = """CREATE TABLE items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    attributes TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    secret BLOB NOT NULL
+)"""
+
+
+def test_an_existing_database_carries_over(world):
+    """A project's secrets.sqlite3 from an earlier version: its items are
+    there, replaced in place and added to."""
+    world.guard.stop()
+    world.db.unlink()
+    with sqlite3.connect(world.db) as db:
+        db.execute(SCHEMA)
+        db.execute(
+            "INSERT INTO items (label, attributes, content_type, secret) VALUES (?, ?, ?, ?)",
+            ("old", '{"account": "me", "service": "gh"}', "text/plain", b"kept"),
+        )
+    db.close()
+    world.start()
+    item = "/org/freedesktop/secrets/item/1"
+    assert world.search({"service": "gh"}) == [item]
+    assert world.get(item) == (b"kept", "text/plain")
+    assert world.create("new", {"service": "gh", "account": "me"}, b"v2") == item
+    assert world.get(item) == (b"v2", "text/plain")
+    assert (
+        world.create("x", {"service": "other"}, b"x")
+        == "/org/freedesktop/secrets/item/2"
+    )
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {},
+        {"service": "gh", "account": "me"},
+        {"b": "1", "a": "2", "B": "3", "_": "4"},
+        {
+            "ü": "日本",
+            "emoji": "\U0001f511",
+            "quote": '"\\',
+            "ctl": "\n\t\r\b\f\x01\x7f/",
+            "ab": "",
+            "a": "",
+        },
+    ],
+)
+def test_attributes_are_stored_as_sorted_ascii_json(world, attributes):
+    """The format every version writes, so a database reads the same
+    whichever wrote it."""
+    world.create("label", attributes, b"x")
+    with sqlite3.connect(world.db) as db:
+        [(stored,)] = db.execute("SELECT attributes FROM items").fetchall()
+    db.close()
+    assert stored == json.dumps(attributes, sort_keys=True)
+    assert world.search(attributes) == ["/org/freedesktop/secrets/item/1"]
+
+
+# -- what a client gets wrong ------------------------------------------------------
+
+
+def test_an_item_without_a_label_or_attributes_is_refused(world):
+    for properties in (
+        {f"{ITEM}.Attributes": Variant("a{ss}", {"k": "v"})},
+        {f"{ITEM}.Label": Variant("s", "label")},
+    ):
+        with pytest.raises(RuntimeError):
+            world.call(
+                COLLECTION, "org.freedesktop.Secret.Collection", "CreateItem", "a{sv}(oayays)b",
+                [properties, ["/s", b"", b"x", "text/plain"], True],
+            )  # fmt: skip
+    assert world.search({}) == []
+
+
+def test_an_item_never_stored_does_not_exist(world):
+    with pytest.raises(RuntimeError):
+        world.get("/org/freedesktop/secrets/item/42")
+
+
+def test_objects_can_be_introspected(world):
+    """GDBus-based clients (libsecret) may look before they call."""
+    item = world.create("label", {"k": "v"}, b"x")
+    for path, member in (
+        (SERVICE_PATH, "OpenSession"),
+        (COLLECTION, "SearchItems"),
+        (item, "GetSecret"),
+    ):
+        [xml] = world.call(path, "org.freedesktop.DBus.Introspectable", "Introspect")
+        assert f'name="{member}"' in xml

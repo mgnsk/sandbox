@@ -1,4 +1,4 @@
-"""Black-box tests for src/claude-api-proxy, run as a program: which paths it
+"""Black-box tests for claude-api-proxy, run as a program: which paths it
 forwards, the key swap, and streaming, with a stand-in for the Claude API.
 The shared mechanics (refusals, hop-by-hop headers) are covered through
 gh-api-proxy's tests."""
@@ -177,3 +177,26 @@ def test_a_stale_socket_is_replaced(world):
             pytest.fail("never listened")
     finally:
         assert guard.stop()[0] == 0  # Exits cleanly on SIGTERM.
+
+
+def test_expect_100_continue_is_answered_before_the_body(world):
+    """As curl sends large bodies: the body only after a 100."""
+    sock_path, _, upstream, _ = world
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(10)
+        sock.connect(sock_path)
+        sock.sendall(
+            b"POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n"
+            b"Expect: 100-continue\r\nContent-Length: 2\r\n\r\n"
+        )
+        interim = b""
+        while not interim.endswith(b"\r\n\r\n"):
+            interim += sock.recv(1)
+        assert interim == b"HTTP/1.1 100 Continue\r\n\r\n"
+        sock.sendall(b"{}")
+        response = http.client.HTTPResponse(sock, method="POST")
+        response.begin()
+        assert response.status == 200
+    [seen] = upstream.seen
+    assert seen["body"] == b"{}"
+    assert "Expect" not in seen["headers"]

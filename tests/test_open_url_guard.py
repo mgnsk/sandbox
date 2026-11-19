@@ -1,5 +1,5 @@
-"""Black-box tests for src/open-url-guard, run as a program with a stand-in
-for the host's xdg-open on its PATH, and for src/sandbox-xdg-open, the
+"""Black-box tests for open-url-guard, run as a program with a stand-in
+for the host's xdg-open on its PATH, and for sandbox-xdg-open, the
 client inside."""
 
 import json
@@ -11,10 +11,7 @@ import threading
 import time
 
 import pytest
-from conftest import BIN_DIR
-from guards import FakePopups, Guard, base_env, short_dir
-
-SHIM = BIN_DIR / "sandbox-xdg-open"
+from guards import FakePopups, Guard, base_env, guard_argv, short_dir
 
 XDG_OPEN = """#!{python}
 import json, os, sys
@@ -96,6 +93,9 @@ def guard(world):
         "http://localhost:5173/",
         "http://127.0.0.1:8080",
         "http://[::1]:8080/",
+        "http://[fe80::1%25eth0]/",
+        "http://[v1.fe]/",
+        "HtTp://example.com",
     ],
 )
 def test_web_urls_are_offered_and_opened(guard, url):
@@ -130,6 +130,15 @@ def test_web_urls_are_offered_and_opened(guard, url):
         "https://user:pass@example.com",
         "https://github.com\\.evil.example",
         "https://[::1",
+        "https://::1]/",
+        "https://a]b[/",
+        "https://a[::1]/",
+        "https://[::1]x/",
+        "https://[1.2.3.4]/",
+        "https://[vz]/",
+        "https://[nonsense]/",
+        "h-t+t.p://example.com",
+        "http:example.com",
     ],
 )
 def test_everything_else_is_refused_without_asking(guard, url):
@@ -303,7 +312,7 @@ def test_failing_to_start_xdg_open_is_reported(world):
 
 def run_shim(runtime_dir, *args):
     return subprocess.run(
-        [sys.executable, str(SHIM), *args],
+        guard_argv("sandbox-xdg-open", *args),
         env={**os.environ, "XDG_RUNTIME_DIR": str(runtime_dir)},
         capture_output=True,
         text=True,

@@ -1,4 +1,4 @@
-"""Black-box tests for the launcher (src/sandbox): run as a program against
+"""Black-box tests for the launcher: run as a program against
 stand-in tools, see tests/launcher.py. What a real sandbox then makes of the
 command line is test_sandbox.py's business."""
 
@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import BIN_DIR
+from guards import guard_argv
 from launcher import Invocation, Launcher, store_file
 
 
@@ -257,10 +257,10 @@ def test_user_and_runtime_dir_fallbacks(launcher):
 def test_login_shell_or_command(launcher):
     """sandbox-init first, then a login shell, which runs a given command
     after its startup files."""
-    init = launcher.config["init"]["script"]
     inv = launcher.run().pasta
     assert inv.command is None
-    assert inv.init[inv.init.index(init) + 3 :] == ["/store/bash", "--login"]
+    assert os.path.basename(inv.init_program[-1]) == "sandbox-init"
+    assert inv.shell == ["/store/bash", "--login"]
     result = launcher.run("echo", "hello there")
     assert result.pasta.command == ["echo", "hello there"]
     assert result.stdout == "hello there\n"
@@ -271,13 +271,10 @@ def test_init_gets_the_nix_profile_and_home_manager_generation(launcher):
     target.mkdir()
     (launcher.home / ".nix-profile").symlink_to(target)
     launcher.config["init"].update(nixProfile=True, homeManager=True)
-    init = launcher.run().pasta.init
-    i = init.index(launcher.config["init"]["script"])
     # The home-manager one doesn't exist.
-    assert init[i + 1 : i + 3] == [str(target), ""]
+    assert launcher.run().pasta.init_paths == [str(target), ""]
     launcher.config["init"].update(nixProfile=False)
-    init = launcher.run().pasta.init
-    assert init[i + 1 : i + 3] == ["", ""]
+    assert launcher.run().pasta.init_paths == ["", ""]
 
 
 def test_exit_status_is_the_sandbox_s(launcher):
@@ -1220,7 +1217,7 @@ def open_url(launcher, url):
     xdg.chmod(0o755)
     launcher.config["guards"]["openUrl"] = True
     return launcher.pty(
-        sys.executable, str(BIN_DIR / "sandbox-xdg-open"), url,
+        *guard_argv("sandbox-xdg-open", url),
         env={"XDG_OPEN_LOG": str(launcher.tmp / "xdg.log"), "PYTHONPATH": "/project"},
     )  # fmt: skip
 
@@ -1268,9 +1265,7 @@ def test_open_url_without_a_terminal_is_denied(launcher):
     """No one to ask: the guards answer no."""
     launcher.config["guards"]["openUrl"] = True
     (launcher.host_bin / "xdg-open").write_text("#!/bin/sh\nexit 0\n")
-    result = launcher.run(
-        sys.executable, str(BIN_DIR / "sandbox-xdg-open"), "https://example.org/"
-    )
+    result = launcher.run(*guard_argv("sandbox-xdg-open", "https://example.org/"))
     assert result.returncode == 4
     assert "denied" in result.stderr
 

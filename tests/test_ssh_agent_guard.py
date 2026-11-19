@@ -1,4 +1,4 @@
-"""Black-box tests for src/ssh-agent-guard, run as a program between a client
+"""Black-box tests for ssh-agent-guard, run as a program between a client
 and a stand-in for the user's real agent: what reaches the agent, what's
 answered, and what the popup shows."""
 
@@ -283,6 +283,13 @@ def test_popup_names_the_requester_and_the_key(guard, tmp_path):
 def test_popup_says_unknown_for_a_key_never_listed(guard):
     path, _, popups = guard
     exchange(path, bytes([REQUEST_IDENTITIES]), sign_request(b"other-key", b"session"))
+    assert "  comment:  unknown\n" in popups.texts[0]
+
+
+def test_popup_says_unknown_for_a_key_listed_without_a_comment(guard):
+    path, agent, popups = guard
+    agent.identities = identities_answer([(b"fake-key", b"")])
+    exchange(path, bytes([REQUEST_IDENTITIES]), sign_request(data=b"session"))
     assert "  comment:  unknown\n" in popups.texts[0]
 
 

@@ -127,8 +127,6 @@ let
     };
 
   runtimeConfig = {
-    src = "${sandboxPkgs.src}";
-    python = sandboxPkgs.python.interpreter;
     seccomp = "${sandboxPkgs.seccomp}";
     dbusDaemon = lib.getExe' pkgs.dbus "dbus-daemon";
     tools = {
@@ -198,13 +196,16 @@ let
     userConfig =
       if cfg.userConfig.enable then
         {
-          # With src/, which packages.nix builds from.
+          # With the Go sources, which packages.nix builds from.
           eval = "${
             lib.fileset.toSource {
               root = ../.;
               fileset = lib.fileset.unions [
                 ./.
-                ../src
+                ../go.mod
+                ../go.sum
+                ../cmd
+                ../internal
               ];
             }
           }/nix/user.nix";
@@ -214,7 +215,6 @@ let
       else
         null;
     init = {
-      script = "${sandboxPkgs.src}/sandbox-init";
       nixProfile = cfg.nixProfile.enable;
       homeManager = cfg.homeManager.enable;
     };
@@ -503,7 +503,7 @@ in
       ++ lib.optional cfg.guards.forgejo.enable sandboxPkgs.forgejo-cli;
 
     package = pkgs.writeShellScriptBin "sandbox" ''
-      exec ${sandboxPkgs.python.interpreter} -E -s ${sandboxPkgs.src}/sandbox ${configFile} "$@"
+      exec ${sandboxPkgs.sandbox}/bin/sandbox ${configFile} "$@"
     '';
 
     claude.settings = lib.mkMerge [
