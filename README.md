@@ -64,8 +64,15 @@ Pick one of three ways to get a `sandbox` command:
 - **From this repo, with default settings** - nothing to install:
 
   ```sh
+  cd ~/src/myproject
   nix run github:mgnsk/sandbox -- nix develop -c claude
   ```
+
+  This enters the project's dev shell (`nix develop`) inside the sandbox and
+  runs the `claude` it provides: the sandbox ships no Claude Code, so the
+  project's flake has `pkgs.claude-code` in its dev shell (see
+  [Using it in a project](#using-it-in-a-project)) - or it's in your
+  `~/.nix-profile` or home-manager.
 
   Pin it to a commit with `github:mgnsk/sandbox/<rev>` (and optionally
   `?narHash=sha256-...`, see [Pinning](#pinning)). An alias in your shell
@@ -725,7 +732,9 @@ its credentials live in the project's `~/.claude`. Code running in that
 sandbox can read them (see [SECURITY.md](SECURITY.md)); with an API key, the
 guard below keeps the key outside instead.
 
-1. Start it in the project: `sandbox claude` (or `sandbox nix develop -c claude`).
+1. Start it in the project: `sandbox nix develop -c claude` (the dev shell's
+   Claude Code; plain `sandbox claude` works only with one in your
+   `~/.nix-profile` or home-manager).
 2. Pick the login method; Claude Code shows a login URL and tries to open it.
    Allow the popup to open it in the host's browser, or copy the link and open
    it yourself.
