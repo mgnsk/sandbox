@@ -189,31 +189,6 @@ let
       nixpkgs = "${pkgs.path}";
       system = pkgs.stdenv.hostPlatform.system;
     };
-    # The user's ~/.config/sandbox/config.nix, built on the host by user.nix
-    # against this nixpkgs; only the flake's default package reads it.
-    inherit (cfg) released;
-    upgradeNoticeDays = cfg.upgradeNotice.days;
-    userConfig =
-      if cfg.userConfig.enable then
-        {
-          # With the Go sources, which packages.nix builds from.
-          eval = "${
-            lib.fileset.toSource {
-              root = ../.;
-              fileset = lib.fileset.unions [
-                ./.
-                ../go.mod
-                ../go.sum
-                ../cmd
-                ../internal
-              ];
-            }
-          }/nix/user.nix";
-          nixpkgs = "${pkgs.path}";
-          system = pkgs.stdenv.hostPlatform.system;
-        }
-      else
-        null;
     init = {
       nixProfile = cfg.nixProfile.enable;
       homeManager = cfg.homeManager.enable;
@@ -469,34 +444,6 @@ in
       type = types.package;
       readOnly = true;
       internal = true;
-    };
-
-    upgradeNotice.days = mkOption {
-      type = types.ints.unsigned;
-      default = 30;
-      description = ''
-        How old (in days since its commit) the flake's default package may
-        get before `sandbox` suggests `nix profile upgrade sandbox` at start;
-        0 never. Builds of your own (mkSandbox, home-manager) don't know their
-        age and never suggest it.
-      '';
-    };
-
-    released = mkOption {
-      type = types.nullOr types.int;
-      default = null;
-      internal = true;
-      description = "The flake's lastModified, set for its default package only.";
-    };
-
-    userConfig.enable = mkOption {
-      type = types.bool;
-      default = false;
-      internal = true;
-      description = ''
-        Run with ~/.config/sandbox/config.nix when it exists, in place of
-        this configuration. On for the flake's default package only.
-      '';
     };
   };
 

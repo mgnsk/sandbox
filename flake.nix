@@ -4,7 +4,7 @@
   inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
 
   outputs =
-    { self, nixpkgs }:
+    { nixpkgs, ... }:
     let
       inherit (nixpkgs) lib;
       systems = [
@@ -33,26 +33,18 @@
       # programs.sandbox for home-manager.
       homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
 
+      # No `sandbox` package of its own: build it with mkSandbox, from
+      # home-manager (homeManagerModules) or a project's flake run from its
+      # remote (see the README).
       packages = forAllSystems (pkgs: {
-        # Without a config of your own: ~/.config/sandbox/config.nix, if any.
-        default = mkSandbox {
-          inherit pkgs;
-          modules = [
-            {
-              userConfig.enable = true;
-              # When the installed main was committed, for the upgrade notice.
-              released = self.lastModified;
-            }
-          ];
-        };
         inherit (pkgs.callPackage ./nix/packages.nix { }) gh forgejo-cli;
       });
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
         project = pkgs.callPackage ./nix/project-check.nix { };
-        user = pkgs.callPackage ./nix/user-check.nix { };
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        config = pkgs.callPackage ./nix/config-check.nix { inherit evalSandbox; };
+        default = mkSandbox { inherit pkgs; };
       });
 
       devShells = forAllSystems (pkgs: {

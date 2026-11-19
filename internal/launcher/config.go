@@ -8,14 +8,11 @@ import (
 
 // config is the CONFIG.json nix writes for the launcher (see nix/module.nix).
 type config struct {
-	StateDir          string         `json:"stateDir"`
-	Released          int64          `json:"released"` // Unix time of the flake's commit; 0 for builds of your own.
-	UpgradeNoticeDays int            `json:"upgradeNoticeDays"`
-	UserConfig        *nixEvaluation `json:"userConfig"`
-	HostPorts         []string       `json:"hostPorts"`
-	PassEnv           []string       `json:"passEnv"`
-	HostEtc           []string       `json:"hostEtc"`
-	Guards            struct {
+	StateDir  string   `json:"stateDir"`
+	HostPorts []string `json:"hostPorts"`
+	PassEnv   []string `json:"passEnv"`
+	HostEtc   []string `json:"hostEtc"`
+	Guards    struct {
 		SSHAgent struct {
 			Enable bool   `json:"enable"`
 			Socket string `json:"socket"`

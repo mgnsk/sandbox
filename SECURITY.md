@@ -268,8 +268,8 @@ treated as untrusted input:
   before use. sandbox.nix itself is read on the host only for the cache key,
   and never through a symlink.
 - It can't change anything that runs on the host: the launcher, bwrap, pasta,
-  seccomp, the guards and their settings come from the installed
-  configuration. What it sets otherwise (command, Claude config) runs
+  seccomp, the guards and their settings come from the configuration
+  the sandbox was started with. What it sets otherwise (command, Claude config) runs
   inside.
 - What reaches beyond the inside - `binds` and `hostPorts` - needs a yes on
   the controlling terminal, again whenever it changes. The approval and the
@@ -277,17 +277,21 @@ treated as untrusted input:
   where the sandbox can't write; without a terminal the sandbox doesn't
   start.
 
-## Your config (~/.config/sandbox/config.nix)
+## Where the configuration comes from
 
-The default package runs with `~/.config/sandbox/config.nix` when it exists.
-It is trusted like a home-manager config: built on the host with the host's
-`nix-build`, and the result is the configuration the launcher runs. It must
-therefore stay out of reach of every sandbox. `~/.config` is a host dot
-directory, never in a volume nor allowed as a project; the launcher also
-refuses to start when the config dir or any file in it resolves into the
-current project (a dotfiles repo linked in). It can't see other running
-sandboxes, so a repo holding the config is covered by the next section. The
-cache key and GC root live in `~/.local/state/sandbox`, likewise host state.
+The configuration the launcher runs with is built on the host, so it must
+stay out of reach of every sandbox. There are two supported places:
+
+- **Your home-manager config**, trusted like the rest of it. Don't work on
+  the repo it lives in (e.g. dotfiles) in a sandbox while sandboxes run
+  elsewhere: see the next section.
+- **A project's flake, run from the project's remote** (`nix run
+  github:owner/project#sandbox`). The remote's default branch is then the
+  trusted input, and what protects it is branch protection and review, not
+  the sandbox: anything merged there runs on the host of everyone using it.
+  Running it from a checkout (`nix run .#sandbox`) is never safe - the
+  sandbox writes the checkout, `.git` included - and the launcher can't tell
+  the two apart, so this rests on the user.
 
 ## Projects the host runs
 

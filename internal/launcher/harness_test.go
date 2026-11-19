@@ -15,9 +15,8 @@ package launcher
 //     destination is under the test's $XDG_RUNTIME_DIR become symlinks
 //     there, so a client inside finds a guard's socket where it would in a
 //     real sandbox.
-//   - nix (inside, for sandbox.nix) and nix-build (on the host, for
-//     config.nix) record their argv and print $FAKE_NIX_OUT /
-//     $FAKE_NIX_BUILD_OUT.
+//   - nix (inside, for sandbox.nix) records its argv and prints
+//     $FAKE_NIX_OUT.
 //
 // The guards are the real ones.
 
@@ -48,9 +47,8 @@ import (
 // helpers are what the test binary runs as, linked under their names in
 // the harness's tools dir.
 var helpers = map[string]func() int{
-	"pasta":     fakePasta,
-	"nix":       fakeNix,
-	"nix-build": fakeNix,
+	"pasta": fakePasta,
+	"nix":   fakeNix,
 	// Run inside.
 	"echo-size":   echoSize,
 	"agent-list":  agentList,
@@ -148,15 +146,10 @@ loop:
 }
 
 func fakeNix() int {
-	name := filepath.Base(os.Args[0])
-	writeLog(logEntry{Tool: name, Argv: os.Args[1:]})
-	variable := "FAKE_NIX_OUT"
-	if name == "nix-build" {
-		variable = "FAKE_NIX_BUILD_OUT"
-	}
+	writeLog(logEntry{Tool: "nix", Argv: os.Args[1:]})
 	fmt.Println("some noise from a shell startup file")
-	fmt.Println(os.Getenv(variable))
-	code, _ := strconv.Atoi(os.Getenv(strings.TrimSuffix(variable, "_OUT") + "_EXIT"))
+	fmt.Println(os.Getenv("FAKE_NIX_OUT"))
+	code, _ := strconv.Atoi(os.Getenv("FAKE_NIX_EXIT"))
 	return code
 }
 
@@ -222,16 +215,15 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	cfg := &config{
-		StateDir:          h.state,
-		UpgradeNoticeDays: 30,
-		PassEnv:           []string{"TERM", "LANG"},
-		HostEtc:           []string{"/etc/hosts"},
-		Default:           h.profile("default"),
-		Seccomp:           seccomp,
-		ResolvConf:        h.resolv,
-		HostPath:          h.hostBin,
-		DBusDaemon:        dbus,
-		Project:           nixEvaluation{Eval: "/store/project.nix", Nixpkgs: "/store/nixpkgs", System: "x86_64-linux"},
+		StateDir:   h.state,
+		PassEnv:    []string{"TERM", "LANG"},
+		HostEtc:    []string{"/etc/hosts"},
+		Default:    h.profile("default"),
+		Seccomp:    seccomp,
+		ResolvConf: h.resolv,
+		HostPath:   h.hostBin,
+		DBusDaemon: dbus,
+		Project:    nixEvaluation{Eval: "/store/project.nix", Nixpkgs: "/store/nixpkgs", System: "x86_64-linux"},
 	}
 	cfg.Guards.SSHAgent.Path = "$XDG_RUNTIME_DIR/ssh-agent.sock"
 	cfg.FHS.Bin, cfg.FHS.UsrBin, cfg.FHS.NixLd, cfg.FHS.LdPath, cfg.FHS.SSL =

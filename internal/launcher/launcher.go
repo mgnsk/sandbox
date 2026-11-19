@@ -12,11 +12,6 @@
 // comes from store paths in CONFIG.json or from this binary, never from the
 // host's PATH. The guards and init are subcommands of this binary.
 //
-// Without a config of its own (the flake's default package), it runs with
-// ~/.config/sandbox/config.nix when that exists: a module like any other
-// sandbox config, built on the host with nix-build and cached until a file
-// in ~/.config/sandbox or the sandbox itself changes.
-//
 // A project's sandbox.nix adds to the selected profile. It is evaluated
 // inside a sandbox of the project, and what it asks for beyond the inside
 // (binds, host ports) is shown on the terminal for approval first.
@@ -34,7 +29,6 @@ import (
 	"slices"
 	"strconv"
 	"syscall"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -127,14 +121,6 @@ func run(ctx context.Context, cancel context.CancelCauseFunc, configPath string,
 func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixListener, error) {
 	if err := l.locate(); err != nil {
 		return nil, nil, err
-	}
-	// The installed package's age; a config built from config.nix has none.
-	released := l.cfg.Released
-	if err := l.userConfig(ctx); err != nil {
-		return nil, nil, err
-	}
-	if notice := upgradeNotice(released, l.cfg.UpgradeNoticeDays, time.Now()); notice != "" && os.Getenv(quietEnv) == "" {
-		fmt.Fprintf(os.Stderr, "sandbox: %s\n", notice)
 	}
 	if err := l.makeVolume(); err != nil {
 		return nil, nil, err
@@ -428,19 +414,6 @@ func selectProfile(cfg *config, cwd, project string, vars map[string]string) pro
 		return cfg.Default
 	}
 	return *best
-}
-
-// upgradeNotice suggests an upgrade once the installed flake is `days` old.
-func upgradeNotice(released int64, days int, now time.Time) string {
-	if released == 0 || days == 0 {
-		return ""
-	}
-	age := int(now.Sub(time.Unix(released, 0)).Hours() / 24)
-	if age < days {
-		return ""
-	}
-	return fmt.Sprintf("this sandbox is %d days old; `nix profile upgrade sandbox` updates "+
-		"it and the tools inside (upgradeNotice.days = 0 turns this off)", age)
 }
 
 // runSandbox runs argv in the foreground; its exit status.
