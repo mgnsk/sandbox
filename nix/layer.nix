@@ -42,17 +42,37 @@ let
   };
 
   lspServerType = types.submodule (
-    { config, ... }:
+    { config, name, ... }:
     {
       options = {
         package = mkOption {
           type = types.package;
           description = "The language server; its version is the plugin's, so a new one refreshes Claude Code's cached copy.";
         };
+        executable = mkOption {
+          type = types.strMatching "[^/]+";
+          default =
+            config.package.meta.mainProgram
+              or (throw "claude.lspServers.${name}: ${config.package.name} has no meta.mainProgram; set executable to the server's name in its bin/");
+          defaultText = lib.literalExpression "package.meta.mainProgram";
+          example = "vscode-json-language-server";
+          description = ''
+            The server's name in the package's bin/, for a package whose main
+            program isn't the server. The server is always that file in
+            `package`: never a command looked up on PATH.
+          '';
+        };
+        # Replaced by executable; kept only to say so.
         command = mkOption {
-          type = types.str;
-          default = lib.getExe config.package;
-          defaultText = lib.literalExpression "lib.getExe package";
+          type = types.nullOr types.anything;
+          default = null;
+          visible = false;
+          apply =
+            command:
+            if command == null then
+              null
+            else
+              throw "claude.lspServers.${name}.command is gone: the server is always a file in package, so set executable (its name in bin/) if it isn't the package's main program";
         };
         args = mkOption {
           type = types.listOf types.str;
@@ -84,6 +104,9 @@ let
     }:
     let
       lsp = claude.lspServers;
+      # Each server's executable: always a file in its package. Forcing
+      # `command` reports a config that still sets it.
+      lspExe = lib.mapAttrs (_: s: builtins.seq s.command "${s.package}/bin/${s.executable}") lsp;
       lspPlugins = lib.mapAttrsToList (n: s: {
         name = n;
         inherit (s.package) version;
@@ -91,7 +114,8 @@ let
         # No plugin.json: the marketplace entry is the whole manifest.
         strict = false;
         lspServers.${n} = {
-          inherit (s) command extensionToLanguage;
+          inherit (s) extensionToLanguage;
+          command = lspExe.${n};
         }
         // lib.optionalAttrs (s.args != [ ]) { inherit (s) args; }
         // lib.optionalAttrs (s.settings != null) { inherit (s) settings; };
@@ -106,7 +130,15 @@ let
             plugins = lspPlugins;
           }
         } $out/.claude-plugin/marketplace.json
-        ${lib.concatMapStrings (p: "mkdir -p $out/plugins/${p.name}\n") lspPlugins}
+        ${lib.concatStrings (
+          lib.mapAttrsToList (n: exe: ''
+            if [ ! -x ${lib.escapeShellArg exe} ]; then
+              echo "claude.lspServers.${n}: no executable ${exe}" >&2
+              exit 1
+            fi
+            mkdir -p $out/plugins/${n}
+          '') lspExe
+        )}
       '';
       marketplaces =
         lib.mapAttrs (_: p: {
