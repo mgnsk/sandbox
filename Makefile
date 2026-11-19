@@ -12,32 +12,38 @@ NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix
 BIN := .build/go/bin
 PROGRAMS = $(shell cat cmd/sandbox/programs)
 
-.PHONY: test coverage build lint fmt demo demo-clean
+.PHONY: list test coverage build lint fmt demo demo-clean
+
+.DEFAULT_GOAL := list
+
+# The targets with a `## description` after their name.
+list: ## List the commands
+	@awk -F':.*## ' '/^[a-z-]+:.*## /{printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # Everything: the sandbox.nix evaluation check, the Go tests - the
 # real-sandbox ones (e2e) against a fresh build of the sandbox - and lint.
 # The real-sandbox tests need a host with unprivileged user namespaces;
 # inside a sandbox they skip.
-test:
+test: ## Nix checks, all Go tests (RUN=filter) and lint
 	nix build --no-link .#checks.$(SYSTEM).project
 	SANDBOX_BIN=$$(nix build --no-link --print-out-paths)/bin/sandbox \
 		$(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
 	$(if $(RUN),,$(MAKE) lint)
 
 # Line coverage of the Go code by its tests.
-coverage:
+coverage: ## Line coverage of the Go code
 	mkdir -p .build/go
 	$(DEV) sh -c 'go test -coverpkg=./... -coverprofile=.build/go/cover.txt ./... && go tool cover -func=.build/go/cover.txt'
 
-build:
+build: ## Build the binary into .build/go/bin
 	$(DEV) go build -o $(BIN)/sandbox ./cmd/sandbox
 	for p in $(filter-out sandbox,$(PROGRAMS)); do ln -sf sandbox $(BIN)/$$p; done
 
-lint:
+lint: ## Check formatting and go vet
 	nix fmt -- --check $(NIX_FILES)
 	$(DEV) sh -c 'test -z "$$(gofmt -l cmd internal e2e)" && go vet ./...'
 
-fmt:
+fmt: ## Format the Go and nix files
 	$(DEV) gofmt -w cmd internal e2e
 	nix fmt -- $(NIX_FILES)
 
@@ -53,7 +59,7 @@ ARGS ?=
 
 # The sandbox needs user namespaces (seccomp), a fresh /proc (systempaths)
 # and a tun device for pasta, which docker's defaults all deny.
-demo:
+demo: ## Shell as a fresh user in a container (ARGS='cmd')
 	docker build -t $(DEMO_IMAGE) demo
 	docker run --rm -it \
 		--security-opt seccomp=unconfined \
@@ -64,5 +70,5 @@ demo:
 		-v $(CURDIR):/src:ro \
 		$(DEMO_IMAGE) $(ARGS)
 
-demo-clean:
+demo-clean: ## Drop the demo's nix store volume
 	docker volume rm -f $(DEMO_NIX_VOLUME)
