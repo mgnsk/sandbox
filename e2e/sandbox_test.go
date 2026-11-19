@@ -647,7 +647,7 @@ print(tiocsti())
 EOF
 `
 
-// Each rule class in nix/seccomp.py, as the sandboxed process sees it -
+// Each rule class in internal/seccomp, as the sandboxed process sees it -
 // proves bwrap actually received the fd through pasta, not just that
 // --seccomp is on the command line. TIOCSTI is EIO without the filter under
 // dev.tty.legacy_tiocsti=0, so EPERM shows the filter itself stops it.

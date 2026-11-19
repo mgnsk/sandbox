@@ -19,7 +19,7 @@ The primitives (all in `internal/launcher`): a fresh user namespace with the inv
 uid/gid pinned (not namespace-root) and `--disable-userns` to stop nesting;
 `--unshare-all`; `--cap-drop ALL`; `--clearenv` with a small re-allowlist; a
 fresh pasta network namespace (no host abstract-socket exposure); a seccomp
-denylist (`nix/seccomp.py`) trimming kernel attack surface; and guard
+denylist (`internal/seccomp`) trimming kernel attack surface; and guard
 proxies for ssh-agent, the Secret Service, and the GitHub, Forgejo and Claude
 APIs so host credentials are never bound in directly, and one for opening URLs in the host's
 browser.
