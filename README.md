@@ -674,7 +674,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
-| `claude.lspServers.<name>` | `{ }` | `{ package; command; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. |
+| `claude.lspServers.<name>` | `{ }` | `{ package; executable; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. The server is always `package`'s `bin/<executable>` (default: its `meta.mainProgram`), never a command on `PATH`. |
 | `claude.marketplaces.<name>` | `{ }` | Plugin marketplace directories (store paths); enable their plugins in `claude.settings.enabledPlugins`. |
 | `profiles.<name>` | | Per-project additions, see below. |
 
@@ -691,6 +691,13 @@ claude.lspServers = {
     package = pkgs.ty;
     args = [ "server" ];
     extensionToLanguage = { ".py" = "python"; ".pyi" = "python"; };
+  };
+  # A package whose main program isn't the server: name it in its bin/.
+  json = {
+    package = pkgs.vscode-langservers-extracted;
+    executable = "vscode-json-language-server";
+    args = [ "--stdio" ];
+    extensionToLanguage.".json" = "json";
   };
 };
 claude.marketplaces.mine = ./my-marketplace;   # .claude-plugin/marketplace.json
