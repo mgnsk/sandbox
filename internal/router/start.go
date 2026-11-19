@@ -78,8 +78,10 @@ func commandEnv(environ []string, proxy string) []string {
 	}
 	if ca := env[CAFileEnv]; ca != "" {
 		// Every TLS client that might meet a guard: Go and OpenSSL (gh, curl,
-		// git), nix's fetchers, Node (Claude Code, npm scripts).
-		for _, name := range []string{"SSL_CERT_FILE", "NIX_SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+		// git, Python's ssl), nix's fetchers and nixpkgs' certifi, Node
+		// (Claude Code, npm scripts), and requests with a pip-installed
+		// certifi.
+		for _, name := range []string{"SSL_CERT_FILE", "NIX_SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE"} {
 			set[name] = ca
 		}
 	}

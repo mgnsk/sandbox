@@ -228,6 +228,7 @@ func TestCommandEnv(t *testing.T) {
 		"NIX_SSL_CERT_FILE=/run/ca.pem",
 		"NODE_EXTRA_CA_CERTS=/run/ca.pem",
 		"NO_PROXY=.corp,localhost,127.0.0.1,::1",
+		"REQUESTS_CA_BUNDLE=/run/ca.pem",
 		"SSL_CERT_FILE=/run/ca.pem",
 		"https_proxy=http://sandbox:z@127.0.0.1:3",
 		"no_proxy=localhost,127.0.0.1,::1",

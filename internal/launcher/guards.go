@@ -340,7 +340,7 @@ func (g *guards) forgejo(ctx context.Context, a *bwrapArgs, volumeDir string) er
 
 // caBundle: the system CA bundle plus the HTTPS-intercepting guards' CAs,
 // as SANDBOX_CA_FILE, which init makes every client's SSL_CERT_FILE (and
-// NIX_SSL_CERT_FILE, NODE_EXTRA_CA_CERTS). Only connections the router
+// NIX_SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE). Only connections the router
 // sends to a guard meet these CAs' certificates.
 func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 	if len(g.caCerts) == 0 {

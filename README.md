@@ -615,8 +615,9 @@ gets `HTTPS_PROXY` pointing at a small router on the sandbox's own loopback,
 started before your command. It sends `CONNECT`s for the GitHub API hosts to
 gh-api-proxy, for Forgejo instances with a token to forgejo-api-proxy, and
 everything else straight out over the sandbox's network, as without a
-proxy. `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` add the
-guards' CAs, so any client completes TLS with them; `NO_PROXY` keeps loopback
+proxy. `SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
+`REQUESTS_CA_BUNDLE` add the guards' CAs, so clients complete TLS with them
+(code calling a pip-installed `certifi.where()` itself still won't); `NO_PROXY` keeps loopback
 direct, for dev servers. Clients that ignore `HTTPS_PROXY` simply bypass it
 (and reach the APIs without a token). A host `HTTPS_PROXY` passed in with
 `passEnv` is replaced: the router dials out directly.
