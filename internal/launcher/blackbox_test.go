@@ -239,7 +239,7 @@ func TestNamespacesAndTheBaseFilesystem(t *testing.T) {
 	if inv.bwrap != "/store/bwrap" || inv.bash != h.cfg.Tools.Bash || inv.seccomp != h.cfg.Seccomp {
 		t.Errorf("%+v", inv)
 	}
-	if !slices.Contains(inv.pasta, "--config-net") || !slices.Contains(inv.pasta, "--host-lo-to-ns-lo") || inv.pastaOpt("-T") != "none" {
+	if !slices.Contains(inv.pasta, "--config-net") || !slices.Contains(inv.pasta, "--host-lo-to-ns-lo") || inv.tcpPorts() != "none" {
 		t.Errorf("%q", inv.pasta)
 	}
 }
@@ -253,6 +253,13 @@ func TestInsideEnvironment(t *testing.T) {
 		"TERM": "xterm", "LANG": "C.UTF-8",
 		"PATH": "/env/bin:" + h.home + "/.nix-profile/bin", "B": h.home + "/x", "E": h.runtime + "/e",
 		"SANDBOX_EXCHANGE": filepath.Join(h.volume(), "exchange"),
+	}
+	// The GitHub guard, which always runs, adds its own.
+	for _, name := range []string{"GH_TOKEN", "SANDBOX_GH_PROXY", "SANDBOX_CA_FILE"} {
+		if got[name] == "" {
+			t.Errorf("no %s", name)
+		}
+		delete(got, name)
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("got  %v\nwant %v", got, want)
@@ -319,7 +326,7 @@ func TestHostPortsAndDNS(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.HostPorts = []string{"5037", "9000-9010"}
 	inv := h.run("", map[string]string{"SANDBOX_HOST_PORTS": "8080/udp, 22/tcp 7"}).pasta(t)
-	if inv.pastaOpt("-T") != "5037,9000-9010,22,7" || inv.pastaOpt("-U") != "8080" {
+	if inv.tcpPorts() != "5037,9000-9010,22,7" || inv.pastaOpt("-U") != "8080" {
 		t.Errorf("%q", inv.pasta)
 	}
 	h.run("", map[string]string{"SANDBOX_HOST_PORTS": "22/sctp"}).refused(t, "SANDBOX_HOST_PORTS")
@@ -551,7 +558,7 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 	p.send("y\r")
 	r := p.wait()
 	inv := r.pasta(t)
-	if r.code != 0 || !slices.Contains(inv.mounts(), "--bind "+h.home+"/d "+h.home+"/d") || !slices.Contains(inv.mounts(), "--ro-bind-try /srv/x /x") || inv.pastaOpt("-T") != "5432" {
+	if r.code != 0 || !slices.Contains(inv.mounts(), "--bind "+h.home+"/d "+h.home+"/d") || !slices.Contains(inv.mounts(), "--ro-bind-try /srv/x /x") || inv.tcpPorts() != "5432" {
 		t.Errorf("%d %q", r.code, inv.mounts())
 	}
 	// Not again, even without a terminal.
@@ -576,7 +583,6 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 // without asking; a Claude key from it gets the managed apiKeyHelper.
 func TestLocalConfig(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Guards.GitHub = true
 	h.cfg.Default.ClaudeDir = filepath.Join(h.tmp, "claude")
 	os.MkdirAll(h.cfg.Default.ClaudeDir, 0o755)
 	os.WriteFile(filepath.Join(h.cfg.Default.ClaudeDir, "managed-settings.json"), []byte(`{"env": {"A": "1"}}`), 0o644)
@@ -739,7 +745,6 @@ func TestClaudeAPIKey(t *testing.T) {
 // start.
 func TestTokenCommands(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Guards.GitHub = true
 	token := "github_pat_" + strings.Repeat("t", 30)
 	noToken := "no GitHub token"
 
@@ -907,7 +912,9 @@ func TestHTTPSProxyGuards(t *testing.T) {
 	for name, variable := range map[string]string{"github": "SANDBOX_GH_PROXY", "forgejo": "SANDBOX_FJ_PROXY"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
-			h.cfg.Guards.GitHub, h.cfg.Guards.Forgejo = name == "github", name == "forgejo"
+			if name == "forgejo" {
+				h.cfg.Default.ForgejoTokenCommands = map[string]string{"forgejo.example": "echo forgejo-token"}
+			}
 			h.cfg.HostPorts = []string{"5037"}
 			r := h.run("", map[string]string{"VAR": variable}, h.tool("proxy-check"))
 			fields := strings.Fields(r.stdout)
@@ -915,7 +922,7 @@ func TestHTTPSProxyGuards(t *testing.T) {
 				t.Fatalf("%d %q %q", r.code, r.stdout, r.stderr)
 			}
 			inv := r.pasta(t)
-			if inv.pastaOpt("-T") != "5037,"+fields[0] || fields[1] == "407" || fields[2] != "407" {
+			if inv.tcpPorts() != "5037" || !strings.Contains(inv.pastaOpt("-T"), fields[0]) || fields[1] == "407" || fields[2] != "407" {
 				t.Errorf("%q %q", inv.pastaOpt("-T"), fields)
 			}
 			env := inv.setenv()
@@ -923,10 +930,6 @@ func TestHTTPSProxyGuards(t *testing.T) {
 				t.Errorf("%v", env)
 			}
 		})
-	}
-	h := newHarness(t)
-	if _, ok := h.run("", nil).pasta(t).setenv()["SANDBOX_CA_FILE"]; ok {
-		t.Error("a CA bundle without intercepting guards")
 	}
 }
 

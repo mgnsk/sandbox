@@ -2,6 +2,7 @@
 # config.package is the result.
 {
   config,
+  options,
   lib,
   pkgs,
   ...
@@ -23,6 +24,16 @@ let
         throw "${lib.concatStringsSep "." path} is gone: the sandbox adds no tools or variables - they come from the project's dev shell (or your ~/.nix-profile, home-manager)";
     });
   };
+
+  # The API guards' switches are gone too: they always run, and the token
+  # commands decide what they do.
+  goneSwitch = mkOption {
+    type = types.unspecified;
+    visible = false;
+  };
+  withoutGuardSwitches =
+    lib.throwIf (options.guards.github.enable.isDefined || options.guards.forgejo.enable.isDefined)
+      "guards.github.enable and guards.forgejo.enable are gone: both guards are always on, and a host gets a token once a token command is set for it";
 
   layer' = import ./layer.nix { inherit lib pkgs; };
   layerOptions = layer'.options;
@@ -252,13 +263,11 @@ let
       "LC_ALL"
     ]
     ++ cfg.passEnv;
-    guards = {
+    guards = withoutGuardSwitches {
       sshAgent = {
         inherit (cfg.guards.sshAgent) enable socket path;
       };
       secretService = cfg.guards.secretService.enable;
-      github = cfg.guards.github.enable;
-      forgejo = cfg.guards.forgejo.enable;
       openUrl = cfg.guards.openUrl.enable;
     };
     # A project's sandbox.nix, evaluated inside a sandbox by project.nix
@@ -407,29 +416,25 @@ in
         default = true;
         description = "A private D-Bus bus with a per-project Secret Service, for libsecret users (gh, ...).";
       };
-      github.enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the token from tokenCommand and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
-      };
+      github.enable = goneSwitch;
+      forgejo.enable = goneSwitch;
       github.tokenCommand = mkOption {
         type = types.nullOr types.str;
         default = null;
         example = "op read op://Employee/GitHub/token";
         description = ''
           A shell command, run on the host at each start, that prints the
-          GitHub token, e.g. from a secret manager. The token is handed to
+          GitHub token, e.g. from a secret manager. GitHub API requests
+          from inside - any gh's, or any other client's - are routed (by the
+          router, the HTTPS_PROXY inside) to a host proxy that holds it and
+          gates writes. gh itself isn't provided: bring it in the project's
+          dev shell, ~/.nix-profile or home-manager. The token is handed to
           the guard in memory: never written to disk, never inside the
           sandbox. Trusted, as your config: run without asking. It wins over
           a project's sandbox.nix, whose command is run only once you
           approve it. Without either, GitHub API requests from inside are
           refused.
         '';
-      };
-      forgejo.enable = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Forgejo API requests from inside, to instances in tokenCommands, routed to a host proxy (as for GitHub) holding their tokens. fj itself isn't provided.";
       };
       forgejo.tokenCommands = mkOption {
         type = types.attrsOf types.str;
@@ -498,7 +503,7 @@ in
         # A store path can't update itself.
         env.DISABLE_AUTOUPDATER = 1;
       }
-      (lib.mkIf cfg.guards.github.enable {
+      {
         hooks.PreToolUse = [
           {
             matcher = "Bash";
@@ -510,13 +515,13 @@ in
             ];
           }
         ];
-      })
+      }
     ];
 
     claude.memory = lib.mkMerge [
       (builtins.readFile ./claude/sandbox.md)
-      (lib.mkIf cfg.guards.github.enable (builtins.readFile ./claude/github.md))
-      (lib.mkIf cfg.guards.forgejo.enable (builtins.readFile ./claude/forgejo.md))
+      (builtins.readFile ./claude/github.md)
+      (builtins.readFile ./claude/forgejo.md)
     ];
   };
 }

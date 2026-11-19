@@ -19,8 +19,6 @@ type config struct {
 			Path   string `json:"path"`
 		} `json:"sshAgent"`
 		SecretService bool `json:"secretService"`
-		GitHub        bool `json:"github"`
-		Forgejo       bool `json:"forgejo"`
 		OpenURL       bool `json:"openUrl"`
 	} `json:"guards"`
 	Default    profile   `json:"default"`

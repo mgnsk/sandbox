@@ -7,6 +7,7 @@ inside and outside coming from nix - nothing from the host's `/usr`.
 ```sh
 cd ~/src/some-project
 sandbox                         # a login shell in the sandbox (see Install for the command)
+sandbox nix develop             # enters the project's dev shell, in the sandbox
 sandbox nix develop -c claude   # Claude Code, from the project's dev shell
 sandbox nix develop -c make     # or any command
 ```
@@ -90,8 +91,8 @@ Pick one of two ways to get a `sandbox` command:
   be [pinned](#pinning) to a commit.
 - **Your home-manager config**, with settings of your own for every
   project: `programs.sandbox`, see [Your sandbox config](#your-sandbox-config).
-  The only way to change what applies on the host: which guards run,
-  `passEnv`, the ssh agent socket, profiles, ...
+  The only way to change what applies on the host: `passEnv`, the ssh
+  agent socket and guard, profiles, ...
 
 `sandbox` in the rest of this README is whichever of these you use. The repo
 you work on brings its own tools through its dev shell (a flake or devenv,
@@ -288,7 +289,7 @@ What to know:
 
 | Where | What it can set | Trust |
 | --- | --- | --- |
-| **Your sandbox config**: home-manager's `programs.sandbox.settings` | Every [option](#options), including `profiles`; the only place for everything `sandbox.nix` can't set (which guards run, the ssh agent socket, `passEnv`, `stateDir`, ...) | Trusted: applies without asking, and wins over the project's settings |
+| **Your sandbox config**: home-manager's `programs.sandbox.settings` | Every [option](#options), including `profiles`; the only place for everything `sandbox.nix` can't set (the ssh agent, open-URL and Secret Service guards, the ssh agent socket, `passEnv`, `stateDir`, ...) | Trusted: applies without asking, and wins over the project's settings |
 | **The project's [`sandbox.nix`](#the-projects-sandboxnix)**, committed | `command`, `claude.*`, `hostPorts`, `binds`, the guards' token commands, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: binds, host ports and commands run on the host need your yes on the terminal, asked the first time and again only if they change |
 | **The project's [`.sandbox.yml`](#per-user-project-settings-sandboxyml)**, gitignored, each user's own | The guards' token commands and `git.*` (identity, signing, `fromHost`) | As `sandbox.nix`; its token commands and git settings override `sandbox.nix`'s |
 | **The project's dev shell** (a flake's `devShells`, devenv) | Tools - Claude Code, gh, fj, linters - and the project's environment variables | Runs inside |
@@ -487,7 +488,7 @@ modules = [
     programs.sandbox.enable = true;
     programs.sandbox.settings = {
       passEnv = [ "EDITOR" ];
-      guards.forgejo.enable = true;
+      guards.openUrl.enable = false;
       profiles.work = {
         paths = [ "~/work" ];
         guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
@@ -522,8 +523,8 @@ can also be set by a project's `sandbox.nix`.
 | `homeManager.enable` | off (on with the home-manager module) | Link your current home-manager generation into each project's `$HOME` at every start. |
 | `locales` | C.UTF-8, en_US.UTF-8 | glibcLocales build for `LOCALE_ARCHIVE`; override to add yours. |
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `enable`, `socket` (host) and `path` (inside). See [SSH agent](#ssh-agent). |
-| `guards.github.enable` / `.tokenCommand` | on / none | A shell command printing the token, run on the host at each start (see [Authentication](#authentication)); the host's gh is never used. |
-| `guards.forgejo.enable` / `.tokenCommands.<host>` | off / `{ }` | The same per Forgejo host; the host's fj is never used. |
+| `guards.github.tokenCommand` | none | A shell command printing the token, run on the host at each start (see [Authentication](#authentication)); the host's gh is never used. |
+| `guards.forgejo.tokenCommands.<host>` | `{ }` | The same per Forgejo host; the host's fj is never used. |
 | `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key, run on the host at each start: Claude Code then runs on it, held outside. See [Claude Code](#claude-code). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
@@ -617,8 +618,8 @@ and runs them only once you say yes - asked the first time, and again only
 if they change (sandboxed code can edit `sandbox.nix`). The same options in your own
 sandbox config are trusted: they run without asking, and win over the
 project's. There, a [profile](#profiles) can set them for the projects it
-matches. The Forgejo guard is off by default: turn it on with
-`guards.forgejo.enable = true;` in your sandbox config.
+matches. The GitHub and Forgejo guards have no switch: they always run, and
+the token commands decide which hosts get a token.
 
 The command runs from `/`, with your terminal, so `op` can ask you to unlock
 it, and your `PATH`. If it fails or prints no token, the sandbox doesn't
@@ -651,8 +652,8 @@ would bypass the proxy and its popups.
 
 **How gh and fj reach the proxies.** The sandbox ships neither: bring them
 like any other tool, in the project's dev shell, `~/.nix-profile` or
-home-manager. Whichever one runs reaches the guards the same way. With the
-GitHub or Forgejo guard on, every process inside gets `HTTPS_PROXY`
+home-manager. Whichever one runs reaches the guards the same way. Every
+process inside gets `HTTPS_PROXY`
 pointing at a small router on the sandbox's own loopback, started before
 your command. It sends `CONNECT`s for the GitHub API hosts to gh-api-proxy,
 for Forgejo instances with a token to forgejo-api-proxy, and everything else

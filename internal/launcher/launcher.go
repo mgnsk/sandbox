@@ -143,7 +143,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		}
 	}
 	if m != nil {
-		projectTokenCommands(l.cfg, prof, m)
+		projectTokenCommands(prof, m)
 		if err := l.approveProject(m); err != nil {
 			return nil, nil, err
 		}
@@ -319,7 +319,7 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 			return err
 		}
 	}
-	if gc.GitHub {
+	{
 		token := ""
 		if command := prof.GitHubTokenCommand; command != "" {
 			var err error
@@ -331,7 +331,8 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 			fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
 		}
 	}
-	if gc.Forgejo {
+	// Forgejo's guard has nothing to do without a host with a token.
+	if len(prof.ForgejoTokenCommands) > 0 {
 		commands, err := forgejoHosts("guards.forgejo.tokenCommands", prof.ForgejoTokenCommands)
 		if err != nil {
 			return err
