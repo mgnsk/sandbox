@@ -7,9 +7,9 @@
 // its API requests through it, via the router (internal/router), with only
 // a placeholder token. This proxy
 // holds the real token, which never enters the sandbox: the project's own
-// (`sandbox --gh-token`, from PROJECT_TOKEN_FILE, read per request) if it
-// has one, else the host gh's. It decides per request (the mechanics are
-// apiproxy's):
+// (`sandbox --gh-token`, from PROJECT_TOKEN_FILE, read per request). The
+// host's gh, and any login it has, is never used. It decides per request
+// (the mechanics are apiproxy's):
 //
 //   - REST GET/HEAD, and GraphQL documents containing only queries, are
 //     forwarded as they are;
@@ -30,7 +30,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 
@@ -55,9 +54,8 @@ var (
 	tunnelHostSuffixes = []string{".githubusercontent.com", ".blob.core.windows.net"}
 )
 
-var errNoToken = errors.New("no GitHub token - on the host, outside the sandbox, run `sandbox --gh-token`" +
-	" in the project (a token for this project) or `gh auth login` (the host's," +
-	" for every project; restart the sandbox after it)")
+var errNoToken = errors.New("no GitHub token for this project - on the host, outside the sandbox," +
+	" run `sandbox --gh-token` in the project")
 
 // tunnel says whether a CONNECT to hostport passes through unread.
 func tunnel(hostport string) bool {
@@ -70,14 +68,8 @@ func tunnel(hostport string) bool {
 	})
 }
 
-// New is the GitHub guard: the token in tokenFile, else hostToken.
-func New(tokenFile, hostToken string) *apiproxy.Proxy {
-	token := func() string {
-		if token := tokens.Read(tokenFile); token != "" {
-			return token
-		}
-		return hostToken
-	}
+// New is the GitHub guard: the token in tokenFile.
+func New(tokenFile string) *apiproxy.Proxy {
 	return &apiproxy.Proxy{Guard: apiproxy.Guard{
 		Name:  "gh-api-proxy",
 		Title: "Allow sandboxed GitHub API write?",
@@ -85,7 +77,7 @@ func New(tokenFile, hostToken string) *apiproxy.Proxy {
 			if !slices.Contains(TokenHosts, host) {
 				return apiproxy.Route{}, fmt.Errorf("host not allowed: %s", host)
 			}
-			token := token()
+			token := tokens.Read(tokenFile)
 			if token == "" {
 				return apiproxy.Route{}, errNoToken
 			}
@@ -96,23 +88,12 @@ func New(tokenFile, hostToken string) *apiproxy.Proxy {
 	}}
 }
 
-// hostToken is the host gh's token, for the proxy's lifetime only; "" if gh
-// isn't logged in (or there's no gh).
-func hostToken() string {
-	out, err := exec.Command("gh", "auth", "token").Output()
-	if token := strings.TrimSpace(string(out)); err == nil && tokens.Valid(token) {
-		return token
-	}
-	return ""
-}
-
 // Run serves on the launcher's listener until stopped.
 func Run(ctx context.Context, tokenFile string) error {
-	hostToken := hostToken()
-	if tokens.Read(tokenFile) == "" && hostToken == "" {
+	if tokens.Read(tokenFile) == "" {
 		fmt.Fprintf(os.Stderr, "sandbox: %v\n", errNoToken)
 	}
-	proxy, err := apiproxy.NewHTTPS(New(tokenFile, hostToken))
+	proxy, err := apiproxy.NewHTTPS(New(tokenFile))
 	if err != nil {
 		return err
 	}

@@ -134,10 +134,9 @@ let
       bash = lib.getExe pkgs.bash;
       shell = lib.getExe pkgs.bashInteractive;
     };
-    # Host-side tools the guards run: gh for the host's token, xdg-open to
-    # hand URLs to the browser.
+    # Host-side tools the guards run: xdg-open to hand URLs to the browser.
+    # No gh or fj: the guards only use the projects' own tokens.
     hostPath = lib.makeBinPath [
-      pkgs.gh
       pkgs.xdg-utils
       pkgs.coreutils
     ];
@@ -378,12 +377,12 @@ in
       github.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the token (the project's from `sandbox --gh-token`, else the host gh's) and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
+        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the project's token (`sandbox --gh-token`; the host's gh is never used) and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
       };
       forgejo.enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Forgejo API requests from inside, to instances with a token, routed to a host proxy (as for GitHub) holding the tokens (the project's from `sandbox --fj-token HOST`, else the host fj's). fj itself isn't provided.";
+        description = "Forgejo API requests from inside, to instances with a token, routed to a host proxy (as for GitHub) holding the project's tokens (`sandbox --fj-token HOST`; the host's fj is never used). fj itself isn't provided.";
       };
       claudeApiKey.enable = mkOption {
         type = types.bool;

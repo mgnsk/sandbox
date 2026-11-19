@@ -2,7 +2,6 @@ package forgejoproxy
 
 import (
 	"encoding/json/v2"
-	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,53 +26,11 @@ func writeJSON(t *testing.T, path string, v any) {
 	}
 }
 
-func keys(hosts map[string]any) map[string]any {
-	return map[string]any{"hosts": hosts, "aliases": map[string]any{}, "default_ssh": []any{}}
-}
-
-func app(token string) map[string]string {
-	return map[string]string{"type": "Application", "token": token}
-}
-
-func TestHostTokens(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keys.json")
-	writeJSON(t, path, keys(map[string]any{
-		"a.example": app("app-token"),
-		"B.example:3000/forgejo": map[string]any{
-			"type": "OAuth", "token": "oauth-token", "refresh_token": "r", "expires_at": "2030-01-01T00:00:00Z",
-		},
-		"c.example": 1,
-		"d.example": app("bad token"),
-	}))
-	want := map[string]string{"a.example": "app-token", "b.example:3000": "oauth-token"}
-	if got := hostTokens(path); !maps.Equal(got, want) {
-		t.Errorf("hostTokens = %v", got)
-	}
-	for _, content := range []string{"", "not json", "[]", `{"hosts": []}`} {
-		os.WriteFile(path, []byte(content), 0o600)
-		if got := hostTokens(path); len(got) != 0 {
-			t.Errorf("%q: %v", content, got)
-		}
-	}
-}
-
-func TestKeysPath(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", "/data")
-	if got := KeysPath(); got != "/data/forgejo-cli/keys.json" {
-		t.Errorf("KeysPath = %q", got)
-	}
-	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("HOME", "/home/u")
-	if got := KeysPath(); got != "/home/u/.local/share/forgejo-cli/keys.json" {
-		t.Errorf("KeysPath = %q", got)
-	}
-}
-
 type world struct {
-	upstream         *apiproxytest.Upstream
-	popups           *apiproxytest.Popups
-	keys, tokensFile string
-	client           *http.Client
+	upstream   *apiproxytest.Upstream
+	popups     *apiproxytest.Popups
+	tokensFile string
+	client     *http.Client
 }
 
 func newWorld(t *testing.T) *world {
@@ -81,10 +38,9 @@ func newWorld(t *testing.T) *world {
 	w := &world{
 		upstream:   apiproxytest.NewUpstream(t),
 		popups:     &apiproxytest.Popups{},
-		keys:       filepath.Join(dir, "keys.json"),
 		tokensFile: filepath.Join(dir, "forgejo-tokens.json"),
 	}
-	p := New(w.tokensFile, w.keys)
+	p := New(w.tokensFile)
 	p.Ask = w.popups.Ask
 	w.upstream.Wire(p)
 	h, u := apiproxytest.ServeHTTPS(t, p)
@@ -124,17 +80,19 @@ func (w *world) lastAuth() string {
 	return seen[len(seen)-1].Header.Get("Authorization")
 }
 
-// Both sources are read per request: a login on the host or a project
-// token applies without a restart, the project's winning. A host without a
-// token isn't the guard's at all.
+// Only the project's tokens count, read per request so a new one applies
+// without a restart. A host without one isn't the guard's at all - even
+// when the host's fj is logged in to it.
 func TestTokensPerRequest(t *testing.T) {
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	os.MkdirAll(filepath.Join(data, "forgejo-cli"), 0o755)
+	writeJSON(t, filepath.Join(data, "forgejo-cli", "keys.json"), map[string]any{
+		"hosts": map[string]any{host: map[string]string{"type": "Application", "token": "host-token"}},
+	})
 	w := newWorld(t)
 	if !w.notHandled(t, "https://"+host+"/api/v1/user") {
-		t.Error("no token: handled")
-	}
-	writeJSON(t, w.keys, keys(map[string]any{host: app("host-token")}))
-	if status, _ := w.do(t, "GET", "https://"+host+"/x"); status != 200 || w.lastAuth() != "token host-token" {
-		t.Errorf("host token: %d %q", status, w.lastAuth())
+		t.Error("no project token: handled")
 	}
 	writeJSON(t, w.tokensFile, map[string]string{"Forgejo.Example": "project1"})
 	if w.do(t, "GET", "https://"+host+"/x"); w.lastAuth() != "token project1" {
@@ -148,7 +106,7 @@ func TestTokensPerRequest(t *testing.T) {
 
 func TestWritesAsk(t *testing.T) {
 	w := newWorld(t)
-	writeJSON(t, w.keys, keys(map[string]any{host: app("real-token")}))
+	writeJSON(t, w.tokensFile, map[string]string{host: "real-token"})
 	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
 		if status, msg := w.do(t, method, "https://"+host+"/api/v1/repos/o/r/issues"); status != 403 || !strings.Contains(msg, "declined by user") {
 			t.Errorf("%s: %d %q", method, status, msg)
@@ -181,7 +139,7 @@ func TestFj(t *testing.T) {
 		tokensFile := filepath.Join(dir, "forgejo-tokens.json")
 		writeJSON(t, tokensFile, map[string]string{host: "real-token"})
 		popups := &apiproxytest.Popups{Answer: answer}
-		p := New(tokensFile, filepath.Join(dir, "none.json"))
+		p := New(tokensFile)
 		p.Ask = popups.Ask
 		upstream.Wire(p)
 		h, u := apiproxytest.ServeHTTPS(t, p)

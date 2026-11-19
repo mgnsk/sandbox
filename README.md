@@ -133,42 +133,31 @@ home-manager files (with the home-manager module) and your `binds`.
 
 **gh and fj** talk to their APIs through host proxies that add a token to
 each request (writes behind a popup); the token itself never enters the
-sandbox. It comes from either place, the project's own winning:
+sandbox. Each project has tokens of its own, and only those: gh or fj on
+the host, and any login they have, are never used, so the host needn't
+have either. Set them in the project, in a terminal on the host - not
+inside the sandbox, which includes Claude Code's `!` commands:
 
-- **Per project**, no gh or fj needed on the host. Run in the project, in a
-  terminal on the host - not inside the sandbox, which includes Claude Code's
-  `!` commands:
+```sh
+sandbox --gh-token                 # asks for a GitHub token
+sandbox --fj-token codeberg.org    # asks for a token for that Forgejo instance
+```
 
-  ```sh
-  sandbox --gh-token                 # asks for a GitHub token
-  sandbox --fj-token codeberg.org    # asks for a token for that Forgejo instance
-  ```
-
-  The token is read on the terminal (hidden input) and kept in the project's
-  folder under `~/.local/share/sandbox`, next to its `$HOME` but outside the
-  sandbox; running sandboxes pick it up. For GitHub,
-  use a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
-  limited to the project's repositories, with what gh needs there: typically
-  read-only Contents and Actions, read-write Issues and Pull requests. Pushes go
-  over ssh, so the token needn't write Contents. Run it again to replace the
-  token. To remove it, delete `github-token` (or the host's entry in
-  `forgejo-tokens.json`) from the project's folder under
-  `~/.local/share/sandbox` - the folder named after the project's path.
-
-- **The host's login**, shared by every project without a token of its own:
-
-  ```sh
-  gh auth login                            # on the host
-  fj --host codeberg.org auth login        # on the host, if you enabled guards.forgejo
-  ```
-
-  The gh proxy reads the host's token when the sandbox starts, so after
-  logging in again on the host (or switching accounts) restart the sandbox;
-  fj's proxy reads it per request.
+The token is read on the terminal (hidden input) and kept in the project's
+folder under `~/.local/share/sandbox`, next to its `$HOME` but outside the
+sandbox; running sandboxes pick it up. For GitHub,
+use a [fine-grained token](https://github.com/settings/personal-access-tokens/new)
+limited to the project's repositories, with what gh needs there: typically
+read-only Contents and Actions, read-write Issues and Pull requests. Pushes go
+over ssh, so the token needn't write Contents. Run it again to replace the
+token. To remove it, delete `github-token` (or the host's entry in
+`forgejo-tokens.json`) from the project's folder under
+`~/.local/share/sandbox` - the folder named after the project's path.
 
 Don't run `gh auth login` or `fj auth login` inside: a token stored inside
-would bypass the proxy and its popups. A request without any token is refused
-with a message saying which command to run.
+would bypass the proxy and its popups. Without a project token, a GitHub API
+request is refused with a message saying which command to run, and a Forgejo
+one goes to the instance without a token.
 
 **Claude Code** is logged in per project, inside the sandbox, since its
 credentials live in the project's `~/.claude`. Code running in that sandbox
@@ -665,8 +654,8 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `homeManager.enable` | off (on with the home-manager module) | Link your current home-manager generation into each project's `$HOME` at every start. |
 | `locales` | C.UTF-8, en_US.UTF-8 | glibcLocales build for `LOCALE_ARCHIVE`; override to add yours. |
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). See [SSH agent](#ssh-agent). |
-| `guards.github.enable` | on | Needs `sandbox --gh-token` per project, or `gh auth login` on the host. |
-| `guards.forgejo.enable` | off | Needs `sandbox --fj-token HOST` per project, or `fj --host HOST auth login` on the host. |
+| `guards.github.enable` | on | Needs `sandbox --gh-token` per project; the host's gh is never used. |
+| `guards.forgejo.enable` | off | Needs `sandbox --fj-token HOST` per project; the host's fj is never used. |
 | `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
