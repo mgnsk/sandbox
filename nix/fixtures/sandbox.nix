@@ -12,6 +12,8 @@
     "nix"
     "develop"
   ];
+  guards.github.tokenCommand = "op read op://v/gh/token";
+  guards.forgejo.tokenCommands."codeberg.org" = "op read op://v/cb/token";
   claude.lspServers.gopls = {
     package = pkgs.gopls;
     extensionToLanguage.".go" = "go";

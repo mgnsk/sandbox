@@ -1,15 +1,16 @@
 // Package ghproxy is gh-api-proxy, the sandbox's GitHub API guard.
 //
-//	sandbox-bin gh-api-proxy PROJECT_TOKEN_FILE
+//	sandbox-bin gh-api-proxy   (the token on guard.SecretFD)
 //
 // It runs outside the sandbox as an intercepting HTTPS_PROXY on the host's
 // loopback, which the launcher maps into the sandbox. Any gh inside sends
 // its API requests through it, via the router (internal/router), with only
 // a placeholder token. This proxy
-// holds the real token, which never enters the sandbox: the project's own
-// (`sandbox --gh-token`, from PROJECT_TOKEN_FILE, read per request). The
-// host's gh, and any login it has, is never used. It decides per request
-// (the mechanics are apiproxy's):
+// holds the real token, which never enters the sandbox: the one the token
+// command printed at start (guards.github.tokenCommand, from the user's
+// config or an approved sandbox.nix), which the launcher pipes in and this
+// keeps in memory only. The host's gh, and any login it has, is never used. It
+// decides per request (the mechanics are apiproxy's):
 //
 //   - REST GET/HEAD, and GraphQL documents containing only queries, are
 //     forwarded as they are;
@@ -54,8 +55,9 @@ var (
 	tunnelHostSuffixes = []string{".githubusercontent.com", ".blob.core.windows.net"}
 )
 
-var errNoToken = errors.New("no GitHub token for this project - on the host, outside the sandbox," +
-	" run `sandbox --gh-token` in the project")
+var errNoToken = errors.New("no GitHub token - set guards.github.tokenCommand, in the project's" +
+	" sandbox.nix or your sandbox config, to a command printing one (e.g. `op read op://...`)," +
+	" and restart the sandbox")
 
 // tunnel says whether a CONNECT to hostport passes through unread.
 func tunnel(hostport string) bool {
@@ -68,8 +70,8 @@ func tunnel(hostport string) bool {
 	})
 }
 
-// New is the GitHub guard: the token in tokenFile.
-func New(tokenFile string) *apiproxy.Proxy {
+// New is the GitHub guard with token; "" refuses every request.
+func New(token string) *apiproxy.Proxy {
 	return &apiproxy.Proxy{Guard: apiproxy.Guard{
 		Name:  "gh-api-proxy",
 		Title: "Allow sandboxed GitHub API write?",
@@ -77,7 +79,6 @@ func New(tokenFile string) *apiproxy.Proxy {
 			if !slices.Contains(TokenHosts, host) {
 				return apiproxy.Route{}, fmt.Errorf("host not allowed: %s", host)
 			}
-			token := tokens.Read(tokenFile)
 			if token == "" {
 				return apiproxy.Route{}, errNoToken
 			}
@@ -89,11 +90,18 @@ func New(tokenFile string) *apiproxy.Proxy {
 }
 
 // Run serves on the launcher's listener until stopped.
-func Run(ctx context.Context, tokenFile string) error {
-	if tokens.Read(tokenFile) == "" {
-		fmt.Fprintf(os.Stderr, "sandbox: %v\n", errNoToken)
+func Run(ctx context.Context) error {
+	secret, err := guard.Secret()
+	if err != nil {
+		return err
 	}
-	proxy, err := apiproxy.NewHTTPS(New(tokenFile))
+	token := strings.TrimSpace(string(secret))
+	if token == "" {
+		fmt.Fprintf(os.Stderr, "sandbox: %v\n", errNoToken)
+	} else if !tokens.Valid(token) {
+		return errors.New("the launcher's token isn't one")
+	}
+	proxy, err := apiproxy.NewHTTPS(New(token))
 	if err != nil {
 		return err
 	}

@@ -64,9 +64,12 @@ type profile struct {
 	Binds        []bind            `json:"binds"`
 	ClaudeDir    string            `json:"claudeDir"`
 	ClaudeAPIKey bool              `json:"claudeApiKey"`
-	Paths        []string          `json:"paths"`
-	ProjectFiles []string          `json:"projectFiles"`
-	Priority     int               `json:"priority"`
+	// Shell commands run on the host at start, printing the guards' tokens.
+	GitHubTokenCommand   string            `json:"githubTokenCommand"`
+	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
+	Paths                []string          `json:"paths"`
+	ProjectFiles         []string          `json:"projectFiles"`
+	Priority             int               `json:"priority"`
 }
 
 type bind struct {

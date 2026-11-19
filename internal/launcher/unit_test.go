@@ -378,3 +378,31 @@ func TestHostAccessString(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+func TestProjectTokenCommands(t *testing.T) {
+	cfg := &config{}
+	cfg.Guards.GitHub, cfg.Guards.Forgejo = true, true
+	prof := profile{GitHubTokenCommand: "mine", ForgejoTokenCommands: map[string]string{"a.example": "mine-a"}}
+	m := &manifest{GitHubTokenCommand: "theirs", ForgejoTokenCommands: map[string]string{"a.example": "theirs-a", "b.example": "theirs-b"}}
+	projectTokenCommands(cfg, prof, m)
+	if m.GitHubTokenCommand != "" || !maps.Equal(m.ForgejoTokenCommands, map[string]string{"b.example": "theirs-b"}) {
+		t.Errorf("left to approve: %+v", m)
+	}
+	got := withProjectTokenCommands(prof, m)
+	if got.GitHubTokenCommand != "mine" || !maps.Equal(got.ForgejoTokenCommands, map[string]string{"a.example": "mine-a", "b.example": "theirs-b"}) {
+		t.Errorf("used: %+v", got)
+	}
+	// Off guards: nothing to approve or run.
+	cfg.Guards.GitHub, cfg.Guards.Forgejo = false, false
+	m = &manifest{GitHubTokenCommand: "x", ForgejoTokenCommands: map[string]string{"c.example": "x"}}
+	projectTokenCommands(cfg, profile{}, m)
+	if m.GitHubTokenCommand != "" || len(m.ForgejoTokenCommands) != 0 {
+		t.Errorf("off: %+v", m)
+	}
+	if _, err := forgejoHosts("x", map[string]string{"not a host": "c"}); err == nil {
+		t.Error("bad host taken")
+	}
+	if h, _ := forgejoHosts("x", map[string]string{"https://A.example:443/": "c"}); !maps.Equal(h, map[string]string{"a.example": "c"}) {
+		t.Errorf("normalized %v", h)
+	}
+}

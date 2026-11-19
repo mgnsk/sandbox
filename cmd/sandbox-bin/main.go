@@ -96,13 +96,13 @@ func root() *cli.Command {
 				nil, func(ctx context.Context, _ []string) error {
 					return openurl.Run(ctx)
 				}),
-			guardCommand("gh-api-proxy", "the GitHub API, with the project's token",
-				[]string{"PROJECT_TOKEN_FILE"}, func(ctx context.Context, a []string) error {
-					return ghproxy.Run(ctx, a[0])
+			guardCommand("gh-api-proxy", "the GitHub API, with the token the launcher pipes in",
+				nil, func(ctx context.Context, _ []string) error {
+					return ghproxy.Run(ctx)
 				}),
-			guardCommand("forgejo-api-proxy", "Forgejo APIs, with the project's tokens",
-				[]string{"PROJECT_TOKENS_FILE"}, func(ctx context.Context, a []string) error {
-					return forgejoproxy.Run(ctx, a[0])
+			guardCommand("forgejo-api-proxy", "Forgejo APIs, with the tokens the launcher pipes in",
+				nil, func(ctx context.Context, _ []string) error {
+					return forgejoproxy.Run(ctx)
 				}),
 			guardCommand("claude-api-proxy", "the Claude API, with the project's key",
 				[]string{"KEY_FILE"}, func(ctx context.Context, a []string) error {
@@ -133,9 +133,6 @@ func launch() *cli.Command {
 				Usage: "ignore sandbox.nix"},
 			&cli.BoolFlag{Name: "claude-api-key", Destination: &opts.ClaudeAPIKey,
 				Usage: "set this project's Claude API key and exit"},
-			&cli.BoolFlag{Name: "gh-token", Destination: &opts.GHToken,
-				Usage: "set this project's GitHub token and exit"},
-			&cli.StringFlag{Name: "fj-token", Destination: &opts.FJToken, Usage: "set this project's token for a Forgejo `HOST` and exit"},
 		},
 		OnUsageError: usageError("sandbox", " (put -- before a command starting with -)", 1),
 		Action: func(_ context.Context, cmd *cli.Command) error {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,9 @@ type manifest struct {
 	Binds     []bind   `json:"binds"`
 	HostPorts []string `json:"hostPorts"`
 	Command   []string `json:"command"`
+	// Token commands, run on the host once approved (see tokencmd.go).
+	GitHubTokenCommand   string            `json:"githubTokenCommand"`
+	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
@@ -53,6 +57,17 @@ func (m *manifest) check() error {
 	}
 	if m.Command != nil && len(m.Command) == 0 {
 		return errors.New("empty command")
+	}
+	hosts, err := forgejoHosts("guards.forgejo.tokenCommands", m.ForgejoTokenCommands)
+	if err != nil {
+		return err
+	}
+	m.ForgejoTokenCommands = hosts
+	m.GitHubTokenCommand = strings.TrimSpace(m.GitHubTokenCommand)
+	for _, c := range m.ForgejoTokenCommands {
+		if strings.TrimSpace(c) == "" {
+			return errors.New("empty token command")
+		}
 	}
 	return nil
 }
@@ -137,6 +152,10 @@ func (l *launcher) projectManifest(ctx context.Context, base string) (*manifest,
 type hostAccess struct {
 	Binds     []bind   `json:"binds"`
 	HostPorts []string `json:"hostPorts"`
+	// Left out when empty, so approvals from before these existed still
+	// match.
+	GitHubTokenCommand   string            `json:"githubTokenCommand,omitempty"`
+	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
 }
 
 func (h hostAccess) String() string {
@@ -155,16 +174,25 @@ func (h hostAccess) String() string {
 	for _, p := range h.HostPorts {
 		lines = append(lines, "  host port "+p)
 	}
+	if h.GitHubTokenCommand != "" {
+		lines = append(lines, "  run on this host at each start, for the GitHub token:\n    "+h.GitHubTokenCommand)
+	}
+	for _, host := range slices.Sorted(maps.Keys(h.ForgejoTokenCommands)) {
+		lines = append(lines, "  run on this host at each start, for the "+host+" token:\n    "+h.ForgejoTokenCommands[host])
+	}
 	return strings.Join(lines, "\n")
 }
 
-// approveProject asks for a yes on the terminal to binds and host ports
-// from sandbox.nix, again whenever they change: the sandbox can edit
-// sandbox.nix, so its say-so alone must never widen the next sandbox. The
-// approval is stored in the volume dir, out of the sandbox's reach.
+// approveProject asks for a yes on the terminal to binds, host ports and
+// token commands from sandbox.nix, again whenever they change: the sandbox
+// can edit sandbox.nix, so its say-so alone must never widen the next
+// sandbox, nor run anything on the host. The approval is stored in the
+// volume dir, out of the sandbox's reach.
 func (l *launcher) approveProject(m *manifest) error {
-	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts}
-	if len(access.Binds) == 0 && len(access.HostPorts) == 0 {
+	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts,
+		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands}
+	if len(access.Binds) == 0 && len(access.HostPorts) == 0 &&
+		access.GitHubTokenCommand == "" && len(access.ForgejoTokenCommands) == 0 {
 		return nil
 	}
 	approved := filepath.Join(l.volumeDir, "project-approved.json")
@@ -181,7 +209,9 @@ func (l *launcher) approveProject(m *manifest) error {
 		return fmt.Errorf("%s asks for host access that isn't approved yet; start the sandbox from a terminal to approve it", projectFile)
 	}
 	defer t.Close()
-	if !t.confirm(fmt.Sprintf("sandbox: %s asks for host access:\n%s\nAllow? [y/N] ", projectFile, access)) {
+	if !t.confirm(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
+		"Read it before allowing: the commands run on this host as you, outside the sandbox.\n"+
+		"This is asked once, and again only if it changes. Allow? [y/N] ", projectFile, access)) {
 		return errors.New("host access not approved, not starting")
 	}
 	return writeJSON(approved, access)

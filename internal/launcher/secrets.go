@@ -81,35 +81,6 @@ func askToken(intro, prompt string) (string, error) {
 	return token, nil
 }
 
-// setGitHubToken asks for the project's GitHub token and keeps it in the
-// volume dir, out of the sandbox's reach: the only token gh-api-proxy uses.
-func setGitHubToken(volumeDir string) error {
-	token, err := askToken(
-		"sandbox: gh in this project uses a token that stays outside the sandbox.\n"+
-			"Create a fine-grained token limited to this project's repositories at\n"+
-			"https://github.com/settings/personal-access-tokens/new\n"+
-			"(a token, not a `gh auth login`: GitHub caps how many OAuth logins stay valid).\n",
-		"GitHub token (Enter to keep the current one): ")
-	if err != nil || token == "" {
-		return err
-	}
-	return tokens.Write(filepath.Join(volumeDir, tokens.GitHubFile), token)
-}
-
-// setForgejoToken asks for the project's token for the Forgejo instance at
-// host and adds it to the volume dir's {host: token} file;
-// forgejo-api-proxy uses it for that host; the project's are its only tokens.
-func setForgejoToken(volumeDir, host string) error {
-	token, err := askToken(
-		fmt.Sprintf("sandbox: fj in this project uses a token for %[1]s that stays outside the sandbox.\n"+
-			"Create one at https://%[1]s/user/settings/applications\n", host),
-		fmt.Sprintf("Token for %s (Enter to keep the current one): ", host))
-	if err != nil || token == "" {
-		return err
-	}
-	return tokens.WriteHost(filepath.Join(volumeDir, tokens.ForgejoFile), host, token)
-}
-
 // claudeAPIKey asks for the project's Claude API key on the terminal when
 // there's none yet (or askAgain). It's kept in the volume dir, out of the
 // sandbox's reach; claude-api-proxy reads it per request, so a key set

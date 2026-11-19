@@ -23,6 +23,16 @@ let
         default = null;
         description = "The top-level guards.claudeApiKey.enable for projects of this profile; null keeps it.";
       };
+      guards.github.tokenCommand = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "guards.github.tokenCommand for projects of this profile; null keeps the top level's.";
+      };
+      guards.forgejo.tokenCommands = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        description = "guards.forgejo.tokenCommands for projects of this profile, over the top level's.";
+      };
       paths = mkOption {
         type = types.listOf types.str;
         default = [ ];
@@ -122,6 +132,12 @@ let
       binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
       inherit claudeApiKey;
+      githubTokenCommand =
+        let
+          own = l.guards.github.tokenCommand or null;
+        in
+        if own != null then own else cfg.guards.github.tokenCommand;
+      forgejoTokenCommands = cfg.guards.forgejo.tokenCommands // (l.guards.forgejo.tokenCommands or { });
     };
 
   runtimeConfig = {
@@ -377,12 +393,39 @@ in
       github.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the project's token (`sandbox --gh-token`; the host's gh is never used) and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
+        description = "GitHub API requests from inside - any gh's, or any other client's - routed (by the router, the HTTPS_PROXY inside) to a host proxy that holds the token from tokenCommand and gates writes. gh itself isn't provided: bring it in the project's dev shell, ~/.nix-profile or home-manager.";
+      };
+      github.tokenCommand = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "op read op://Employee/GitHub/token";
+        description = ''
+          A shell command, run on the host at each start, that prints the
+          GitHub token, e.g. from a secret manager. The token is handed to
+          the guard in memory: never written to disk, never inside the
+          sandbox. Trusted, as your config: run without asking. It wins over
+          a project's sandbox.nix, whose command is run only once you
+          approve it. Without either, GitHub API requests from inside are
+          refused.
+        '';
       };
       forgejo.enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Forgejo API requests from inside, to instances with a token, routed to a host proxy (as for GitHub) holding the project's tokens (`sandbox --fj-token HOST`; the host's fj is never used). fj itself isn't provided.";
+        description = "Forgejo API requests from inside, to instances in tokenCommands, routed to a host proxy (as for GitHub) holding their tokens. fj itself isn't provided.";
+      };
+      forgejo.tokenCommands = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = {
+          "codeberg.org" = "op read op://Employee/Codeberg/token";
+        };
+        description = ''
+          Shell commands, by Forgejo host (host[:port]), run on the host at
+          each start, each printing that instance's token; as for
+          github.tokenCommand, they win over sandbox.nix's for the same
+          host.
+        '';
       };
       claudeApiKey.enable = mkOption {
         type = types.bool;

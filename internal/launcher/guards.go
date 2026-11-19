@@ -95,7 +95,7 @@ func (g *guards) tempdir() (string, error) {
 // with listener (if any) passed in, and waits for its ready line (see
 // package guard). Failing here names the guard, rather than leaving bwrap to
 // trip over a missing socket.
-func (g *guards) start(ctx context.Context, name string, argv []string, listener *os.File) ([]byte, error) {
+func (g *guards) start(ctx context.Context, name string, argv []string, listener *os.File, secret []byte) ([]byte, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -109,8 +109,29 @@ func (g *guards) start(ctx context.Context, name string, argv []string, listener
 	if listener != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, listener)
 	}
+	// The guard's secret (guard.SecretFD), over a pipe: never on disk,
+	// argv or the environment.
+	var sw *os.File
+	if secret != nil {
+		sr, pw, err := os.Pipe()
+		if err != nil {
+			w.Close()
+			return nil, err
+		}
+		defer sr.Close()
+		sw = pw
+		cmd.ExtraFiles = append(cmd.ExtraFiles, sr)
+	}
 	err = cmd.Start()
 	w.Close()
+	if sw != nil {
+		// Small enough for the pipe's buffer, so this doesn't block.
+		_, werr := sw.Write(secret)
+		sw.Close()
+		if err == nil && werr != nil {
+			err = werr
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("can't start %s: %w", name, err)
 	}
@@ -152,12 +173,17 @@ func (g *guards) program(name string, args ...string) []string {
 
 // guard starts the guard name with a listener made for it.
 func (g *guards) guard(ctx context.Context, name string, ln listener, args ...string) ([]byte, error) {
+	return g.guardWithSecret(ctx, name, ln, nil, args...)
+}
+
+// guardWithSecret is guard, with secret handed over on guard.SecretFD.
+func (g *guards) guardWithSecret(ctx context.Context, name string, ln listener, secret []byte, args ...string) ([]byte, error) {
 	f, err := ln.File()
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return g.start(ctx, name, g.program(name, args...), f)
+	return g.start(ctx, name, g.program(name, args...), f, secret)
 }
 
 type listener interface {
@@ -265,7 +291,7 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, run
 	// The bus first, which prints its address once it listens.
 	address, err := g.start(ctx, "dbus-daemon", []string{g.cfg.DBusDaemon,
 		"--config-file=" + conf, "--nofork", "--nopidfile", "--print-address=" + strconv.Itoa(guard.ReadyFD),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -273,7 +299,7 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, run
 	// only the user can enter.
 	db := filepath.Join(volumeDir, "secrets.sqlite3")
 	argv := g.program("secret-service-guard", strings.TrimSpace(string(address)), db)
-	if _, err := g.start(ctx, "secret-service-guard", argv, nil); err != nil {
+	if _, err := g.start(ctx, "secret-service-guard", argv, nil, nil); err != nil {
 		return err
 	}
 	inside := runtimeDir + "/bus"
@@ -290,13 +316,13 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, run
 // certificate (the key stays in the guard) goes into the bundle clients
 // inside trust, see caBundle. The URL goes to the router (internal/router),
 // which init starts inside and every client reaches the guards through.
-func (g *guards) httpsProxy(ctx context.Context, name string, args ...string) (string, error) {
+func (g *guards) httpsProxy(ctx context.Context, name string, secret []byte) (string, error) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		return "", err
 	}
 	defer ln.Close()
-	line, err := g.guard(ctx, name, ln, args...)
+	line, err := g.guardWithSecret(ctx, name, ln, secret)
 	if err != nil {
 		return "", err
 	}
@@ -311,12 +337,12 @@ func (g *guards) httpsProxy(ctx context.Context, name string, args ...string) (s
 }
 
 // github: gh inside (any gh, through the router) has just a placeholder
-// token; gh-api-proxy, out here, intercepts its requests, swaps in the real token - the project's
-// (`sandbox --gh-token`) or else the host's - and gates writes behind a
-// popup. Never a per-sandbox OAuth login: those hit GitHub's cap on
-// simultaneously valid tokens.
-func (g *guards) github(ctx context.Context, a *bwrapArgs, volumeDir string) error {
-	url, err := g.httpsProxy(ctx, "gh-api-proxy", filepath.Join(volumeDir, tokens.GitHubFile))
+// token; gh-api-proxy, out here, intercepts its requests, swaps in token -
+// from the token command, held only in its memory; "" for none - and gates
+// writes behind a popup. Never a per-sandbox OAuth login: those hit
+// GitHub's cap on simultaneously valid tokens.
+func (g *guards) github(ctx context.Context, a *bwrapArgs, token string) error {
+	url, err := g.httpsProxy(ctx, "gh-api-proxy", []byte(token))
 	if err != nil {
 		return err
 	}
@@ -326,11 +352,14 @@ func (g *guards) github(ctx context.Context, a *bwrapArgs, volumeDir string) err
 	return nil
 }
 
-// forgejo: the same for fj: forgejo-api-proxy adds the project's token for
-// the host (`sandbox --fj-token`) or else the one the host's fj is logged
-// in with, read per request, so no login is needed to start.
-func (g *guards) forgejo(ctx context.Context, a *bwrapArgs, volumeDir string) error {
-	url, err := g.httpsProxy(ctx, "forgejo-api-proxy", filepath.Join(volumeDir, tokens.ForgejoFile))
+// forgejo: the same for fj: forgejo-api-proxy adds hostTokens' token for
+// each host, from the token commands, held only in its memory.
+func (g *guards) forgejo(ctx context.Context, a *bwrapArgs, hostTokens map[string]string) error {
+	secret, err := json.Marshal(hostTokens)
+	if err != nil {
+		return err
+	}
+	url, err := g.httpsProxy(ctx, "forgejo-api-proxy", secret)
 	if err != nil {
 		return err
 	}

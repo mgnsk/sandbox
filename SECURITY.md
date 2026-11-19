@@ -104,10 +104,11 @@ Inside, `GH_TOKEN` is a fixed placeholder, and every process's
 `HTTPS_PROXY` is the router (`internal/router`, see "The router" below),
 which chains `CONNECT`s for the GitHub API hosts to gh-api-proxy
 (`internal/ghproxy`). Any `gh` works, wherever it comes from; the sandbox
-ships none. The proxy runs on the host and holds the real token: the project's,
-set with `sandbox --gh-token` (`github-token` in the volume dir, mode 0600,
-re-read every request). Nothing on the host runs gh or reads its login, so
-a project without a token of its own gets no GitHub access at all. It listens on a free port of the host's
+ships none. The proxy runs on the host and holds the real token, in memory
+only: the one a token command printed at start (see "Token commands" below),
+piped to the proxy by the launcher - never on disk, in argv or in an
+environment. Nothing on the host runs gh or reads its login, so a sandbox
+without a token command gets no GitHub access at all. It listens on a free port of the host's
 loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
 carrying a random per-launch secret (`SANDBOX_GH_PROXY`, handed to the
 router and left out of the command's environment, sent as Basic
@@ -175,12 +176,33 @@ proxy didn't take to this one first. The proxy answers 404 at once, unread,
 for a host it has no token for (the router then dials it itself), and
 intercepts the rest; it tunnels none, and per request:
 
-- forwards only to instances the project has a token for, over HTTPS,
-  dropping the client's `Authorization` and adding that token
-  (`sandbox --fj-token HOST`, in `forgejo-tokens.json` in the volume dir,
-  mode 0600, re-read every request, so a new token reaches running
-  sandboxes). The host fj's `keys.json` is never read;
+- forwards only to instances there's a token for, over HTTPS, dropping the
+  client's `Authorization` and adding that token - printed by that host's
+  token command at start and held in memory, as for GitHub. The host fj's
+  `keys.json` is never read;
 - forwards `GET`/`HEAD`, and holds everything else for a popup.
+
+## Token commands
+
+The GitHub and Forgejo tokens come from shell commands the launcher runs on
+the host at each start, with bash from the store, the user's environment
+(their `PATH`, so a secret manager's CLI is their own) and terminal (so it
+can prompt). Each command's output must be a valid token; the launcher hands
+it to its guard over a pipe, and nothing else keeps it.
+
+A command is code run on the host as the user, outside the sandbox, so where
+it comes from is the boundary:
+
+- **The user's config** (home-manager, a flake with `mkSandbox`, a profile):
+  trusted like the rest of it, run without asking. It wins over the
+  project's for the same guard or host.
+- **The project's `sandbox.nix`**: sandboxed code can edit it, so its
+  commands are shown on the terminal and run only after a yes, stored with
+  the project's other approvals and asked again whenever any of them
+  changes; without a terminal the sandbox doesn't start. A command the
+  user's config overrides, or for a guard that's off, is neither shown nor
+  run. The approval is the only check: a user who approves a command that
+  does more than print a token has run it.
 
 ## Claude Code: a login inside, or an API key outside
 
@@ -302,8 +324,9 @@ treated as untrusted input:
   seccomp, the guards and their settings come from the configuration
   the sandbox was started with. What it sets otherwise (command, Claude config) runs
   inside.
-- What reaches beyond the inside - `binds` and `hostPorts` - needs a yes on
-  the controlling terminal, again whenever it changes. The approval and the
+- What reaches beyond the inside - `binds`, `hostPorts` and token commands,
+  which run on the host - needs a yes on the controlling terminal, again
+  whenever it changes. The approval and the
   evaluation cache live in the project's volume dir, outside the home volume,
   where the sandbox can't write; without a terminal the sandbox doesn't
   start.

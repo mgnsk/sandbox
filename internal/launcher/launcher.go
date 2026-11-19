@@ -32,7 +32,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/mgnsk/sandbox/internal/hostname"
 	"github.com/mgnsk/sandbox/internal/popuprelay"
 )
 
@@ -78,13 +77,6 @@ func Main(configPath string, opts Options, command []string) int {
 }
 
 func run(ctx context.Context, cancel context.CancelCauseFunc, configPath string, opts Options, command []string, signals chan os.Signal) (int, error) {
-	if opts.FJToken != "" {
-		host, ok := hostname.Normalize(opts.FJToken)
-		if !ok {
-			return 0, fmt.Errorf("not a Forgejo host: %s", opts.FJToken)
-		}
-		opts.FJToken = host
-	}
 	self, err := os.Executable()
 	if err != nil {
 		return 0, err
@@ -137,16 +129,6 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 			return nil, nil, fmt.Errorf("--claude-api-key needs guards.claudeApiKey.enable for this project's profile (%s)", name)
 		}
 		return nil, nil, claudeAPIKey(l.volumeDir, true)
-	case l.opts.GHToken:
-		if !l.cfg.Guards.GitHub {
-			return nil, nil, errors.New("--gh-token needs guards.github.enable")
-		}
-		return nil, nil, setGitHubToken(l.volumeDir)
-	case l.opts.FJToken != "":
-		if !l.cfg.Guards.Forgejo {
-			return nil, nil, errors.New("--fj-token needs guards.forgejo.enable")
-		}
-		return nil, nil, setForgejoToken(l.volumeDir, l.opts.FJToken)
 	}
 
 	hostPorts := l.cfg.HostPorts
@@ -155,10 +137,11 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		if err != nil {
 			return nil, nil, err
 		}
+		projectTokenCommands(l.cfg, prof, m)
 		if err := l.approveProject(m); err != nil {
 			return nil, nil, err
 		}
-		prof = applyProject(prof, m)
+		prof = withProjectTokenCommands(applyProject(prof, m), m)
 		hostPorts = slices.Concat(hostPorts, m.HostPorts)
 		if len(l.command) == 0 {
 			l.command = m.Command
@@ -317,12 +300,29 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 		}
 	}
 	if gc.GitHub {
-		if err := g.github(ctx, a, l.volumeDir); err != nil {
+		token := ""
+		if command := prof.GitHubTokenCommand; command != "" {
+			var err error
+			if token, err = l.runTokenCommand(ctx, "guards.github.tokenCommand", command); err != nil {
+				return err
+			}
+		}
+		if err := g.github(ctx, a, token); err != nil {
 			fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
 		}
 	}
 	if gc.Forgejo {
-		if err := g.forgejo(ctx, a, l.volumeDir); err != nil {
+		commands, err := forgejoHosts("guards.forgejo.tokenCommands", prof.ForgejoTokenCommands)
+		if err != nil {
+			return err
+		}
+		hostTokens := map[string]string{}
+		for host, command := range commands {
+			if hostTokens[host], err = l.runTokenCommand(ctx, "guards.forgejo.tokenCommands."+host, command); err != nil {
+				return err
+			}
+		}
+		if err := g.forgejo(ctx, a, hostTokens); err != nil {
 			return err
 		}
 	}

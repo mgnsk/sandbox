@@ -27,20 +27,19 @@ func writeJSON(t *testing.T, path string, v any) {
 }
 
 type world struct {
-	upstream   *apiproxytest.Upstream
-	popups     *apiproxytest.Popups
-	tokensFile string
-	client     *http.Client
+	upstream *apiproxytest.Upstream
+	popups   *apiproxytest.Popups
+	tokens   map[string]string
+	client   *http.Client
 }
 
 func newWorld(t *testing.T) *world {
-	dir := t.TempDir()
 	w := &world{
-		upstream:   apiproxytest.NewUpstream(t),
-		popups:     &apiproxytest.Popups{},
-		tokensFile: filepath.Join(dir, "forgejo-tokens.json"),
+		upstream: apiproxytest.NewUpstream(t),
+		popups:   &apiproxytest.Popups{},
+		tokens:   map[string]string{},
 	}
-	p := New(w.tokensFile)
+	p := New(w.tokens)
 	p.Ask = w.popups.Ask
 	w.upstream.Wire(p)
 	h, u := apiproxytest.ServeHTTPS(t, p)
@@ -80,9 +79,9 @@ func (w *world) lastAuth() string {
 	return seen[len(seen)-1].Header.Get("Authorization")
 }
 
-// Only the project's tokens count, read per request so a new one applies
-// without a restart. A host without one isn't the guard's at all - even
-// when the host's fj is logged in to it.
+// Only the tokens the launcher gives it count (looked up per request, the
+// map shared with the test). A host without one isn't the guard's at all -
+// even when the host's fj is logged in to it.
 func TestTokensPerRequest(t *testing.T) {
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
@@ -94,7 +93,7 @@ func TestTokensPerRequest(t *testing.T) {
 	if !w.notHandled(t, "https://"+host+"/api/v1/user") {
 		t.Error("no project token: handled")
 	}
-	writeJSON(t, w.tokensFile, map[string]string{"Forgejo.Example": "project1"})
+	w.tokens[host] = "project1"
 	if w.do(t, "GET", "https://"+host+"/x"); w.lastAuth() != "token project1" {
 		t.Errorf("project token: %q", w.lastAuth())
 	}
@@ -106,7 +105,7 @@ func TestTokensPerRequest(t *testing.T) {
 
 func TestWritesAsk(t *testing.T) {
 	w := newWorld(t)
-	writeJSON(t, w.tokensFile, map[string]string{host: "real-token"})
+	w.tokens[host] = "real-token"
 	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
 		if status, msg := w.do(t, method, "https://"+host+"/api/v1/repos/o/r/issues"); status != 403 || !strings.Contains(msg, "declined by user") {
 			t.Errorf("%s: %d %q", method, status, msg)
@@ -136,10 +135,8 @@ func TestFj(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			json.MarshalWrite(w, map[string]any{"login": "someone", "id": 1})
 		}
-		tokensFile := filepath.Join(dir, "forgejo-tokens.json")
-		writeJSON(t, tokensFile, map[string]string{host: "real-token"})
 		popups := &apiproxytest.Popups{Answer: answer}
-		p := New(tokensFile)
+		p := New(map[string]string{host: "real-token"})
 		p.Ask = popups.Ask
 		upstream.Wire(p)
 		h, u := apiproxytest.ServeHTTPS(t, p)
