@@ -6,6 +6,8 @@
   cacert,
   callPackage,
   dbus,
+  libseccomp,
+  pkg-config,
 }:
 let
   p = callPackage ./packages.nix { };
@@ -13,7 +15,11 @@ in
 p.sandbox.overrideAttrs {
   pname = "sandbox-tests";
   doCheck = true;
+  # internal/seccomp links libseccomp; cgo only for the tests, so the
+  # binary built before them doesn't refer to go.
+  buildInputs = [ libseccomp ];
   nativeCheckInputs = [
+    pkg-config
     dbus
     p.gh
     p.forgejo-cli
@@ -25,7 +31,7 @@ p.sandbox.overrideAttrs {
     # rustls-platform-verifier (fj) wants a system bundle even when a test
     # replaces it.
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
-    go test ./...
+    CGO_ENABLED=1 go test ./...
     runHook postCheck
   '';
 }

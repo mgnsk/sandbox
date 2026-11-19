@@ -18,7 +18,7 @@ buildGoModule {
     ];
   };
   # Update with lib.fakeHash and the hash nix reports after a go.mod change.
-  vendorHash = "sha256-Hbz9vYdeD610hQGiLLQrPzCxxMhDapZ7UoEWluDBk2o=";
+  vendorHash = "sha256-4RW1FCeXlDKqz1ji0yNEn3p9yY4Pef2QibvUL+UDZWg=";
   subPackages = [ "cmd/sandbox" ];
   # The tests are a check of their own, see tests.nix.
   doCheck = false;

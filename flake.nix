@@ -68,6 +68,9 @@
               p.gh
               p.forgejo-cli
               pkgs.dbus
+              # libseccomp for internal/seccomp, the one cgo package.
+              pkgs.pkg-config
+              pkgs.libseccomp
             ];
           };
       });

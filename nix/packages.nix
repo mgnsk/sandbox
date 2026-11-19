@@ -5,8 +5,9 @@
   symlinkJoin,
   writeShellScript,
   writeShellScriptBin,
-  python3,
   callPackage,
+  libseccomp,
+  pkg-config,
   gh,
   forgejo-cli,
   bash,
@@ -17,14 +18,25 @@ let
   # program's name.
   sandbox = callPackage ./go.nix { };
 
-  # bwrap takes raw cBPF, not a policy, so it's compiled from the libseccomp
-  # rules here rather than committed as an opaque blob.
-  seccomp =
-    runCommand "sandbox-seccomp.bpf"
-      { nativeBuildInputs = [ (python3.withPackages (p: [ p.seccomp ])) ]; }
-      ''
-        python3 ${./seccomp.py} > $out
-      '';
+  # Writes the seccomp filter: the rules in internal/seccomp through
+  # libseccomp, so it needs cgo, which the sandbox binary goes without.
+  seccomp-bpf = sandbox.overrideAttrs (old: {
+    pname = "sandbox-seccomp-bpf";
+    subPackages = [ "cmd/seccomp-bpf" ];
+    env = old.env // {
+      CGO_ENABLED = 1;
+    };
+    nativeBuildInputs = old.nativeBuildInputs ++ [ pkg-config ];
+    buildInputs = [ libseccomp ];
+    postInstall = "";
+    meta.mainProgram = "seccomp-bpf";
+  });
+
+  # bwrap takes raw cBPF, not a policy, so it's generated here rather than
+  # committed as an opaque blob.
+  seccomp = runCommand "sandbox-seccomp.bpf" { } ''
+    ${lib.getExe seccomp-bpf} > $out
+  '';
 
   # Upstream gh and fj, pointed at their guard: with the launcher's
   # SANDBOX_GH_PROXY / SANDBOX_FJ_PROXY set, the wrapper makes it the
