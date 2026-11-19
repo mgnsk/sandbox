@@ -3,10 +3,21 @@
 All GitHub interactions (REST/GraphQL API, issues, PRs, releases,
 Actions runs, gists, file contents, github.com pages) go through the
 `gh` CLI - never curl, wget or other HTTP clients against github.com,
-api.github.com or *.githubusercontent.com; a hook rejects those. `gh`
-is authenticated through a host proxy that gates writes behind a popup.
+api.github.com or *.githubusercontent.com.
 `gh` comes from the project's dev shell or the user's own packages; if
 it's missing, say so rather than installing it.
+
+Whether `gh` is authenticated depends on how the sandbox was started:
+
+- `$GH_TOKEN` is `sandbox-placeholder`: a token command is set, so a host
+  proxy adds the real token to API requests and gates writes behind a
+  popup. A hook rejects HTTP clients against GitHub.
+- `$GH_TOKEN` is unset: no token command, so no proxy and no token. `gh`
+  only reaches what is public, and writes fail. Say so, and that the fix is
+  `guards.github.tokenCommand` in the project's `sandbox.nix` or
+  `.sandbox.yml` (or the user's sandbox config) and a restart. Never run
+  `gh auth login` or put a token inside.
+
 Prefer the dedicated subcommands (`gh pr view`, `gh issue list`,
 `gh release download`, `gh run view --log`, ...) and fall back to
 `gh api` (`--paginate`, `--jq`, `gh api graphql`) for anything else.

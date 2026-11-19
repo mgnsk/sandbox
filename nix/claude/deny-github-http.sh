@@ -1,3 +1,6 @@
+# Only with the GitHub guard running (a token command is set): without it
+# there's no proxy to keep requests on.
+[ "${GH_TOKEN:-}" = sandbox-placeholder ] || exit 0
 cmd=$(jq -r '.tool_input.command // ""')
 hosts='(^|[^[:alnum:].-])([[:alnum:]-]+\.)*(github\.com|githubusercontent\.com|githubassets\.com)'
 clients='(^|[[:space:];&|(`])(fetch-url|curl|wget|xh|aria2c)([[:space:]]|$)'
