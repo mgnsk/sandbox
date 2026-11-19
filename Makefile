@@ -12,7 +12,7 @@ NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix
 BIN := .build/go/bin
 PROGRAMS = $(shell cat cmd/sandbox/programs)
 
-.PHONY: test coverage build lint fmt
+.PHONY: test coverage build lint fmt demo demo-clean
 
 # Everything: the sandbox.nix evaluation check, the Go tests - the
 # real-sandbox ones (e2e) against a fresh build of the sandbox - and lint.
@@ -40,3 +40,29 @@ lint:
 fmt:
 	$(DEV) gofmt -w cmd internal e2e
 	nix fmt -- $(NIX_FILES)
+
+# A shell as a fresh user, without dotfiles or config, in a Debian container
+# with multi-user nix and this checkout installed: `sandbox` as a new user
+# meets it. Run on the host (no docker inside a sandbox). The nix store is
+# kept in a volume between runs, the home isn't; make demo-clean drops the
+# store, e.g. after changing demo/Dockerfile. A command instead of the
+# shell: make demo ARGS='sandbox claude'
+DEMO_IMAGE := sandbox-demo
+DEMO_NIX_VOLUME := sandbox-demo-nix
+ARGS ?=
+
+# The sandbox needs user namespaces (seccomp), a fresh /proc (systempaths)
+# and a tun device for pasta, which docker's defaults all deny.
+demo:
+	docker build -t $(DEMO_IMAGE) demo
+	docker run --rm -it \
+		--security-opt seccomp=unconfined \
+		--security-opt apparmor=unconfined \
+		--security-opt systempaths=unconfined \
+		--device /dev/net/tun \
+		-v $(DEMO_NIX_VOLUME):/nix \
+		-v $(CURDIR):/src:ro \
+		$(DEMO_IMAGE) $(ARGS)
+
+demo-clean:
+	docker volume rm -f $(DEMO_NIX_VOLUME)
