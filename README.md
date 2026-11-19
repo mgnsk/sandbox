@@ -17,8 +17,11 @@ What you get, per project:
 - **Your project, read-write**: the git work tree you start in (or just the
   current directory outside a repo). Nothing else of your home is visible
   unless you bind it in.
-- **No host userland.** `PATH` is a nix package set (bash, coreutils, git,
-  openssh, curl, python3, nix, claude, ...), plus `~/.nix-profile/bin`.
+- **No host userland, and no tools of its own.** `PATH` has a fixed
+  minimum - bash, nix, and the coreutils/grep/sed/tar/make set that
+  `nix develop` adds anyway - plus `~/.nix-profile/bin`. Everything else,
+  Claude Code and git included, comes from the project's dev shell (or
+  your `~/.nix-profile`, home-manager); no configuration adds tools.
   `/bin/sh`, `/usr/bin/env` and nix-ld for prebuilt binaries are provided.
 - **Nix builds** through the host's daemon (`/nix` is read-only inside).
 - **Network** out, but not to the host's own services, except the ports you
@@ -78,7 +81,7 @@ Pick one of three ways to get a `sandbox` command:
   project: `programs.sandbox`, see [With home-manager](#with-home-manager).
 - **The flake of the repo you work on**, so everyone working on it gets the
   same settings - only needed for settings `sandbox.nix` can't change (they
-  apply on the host: guards, `packages`, `env`, ...). Run it from the repo's
+  apply on the host: guards, `env`, ...). Run it from the repo's
   remote, never from your local clone, which the sandbox can write; see
   [In a project's flake](#in-a-projects-flake).
 
@@ -98,11 +101,17 @@ Say a project has just a `flake.nix` with a dev shell:
     let pkgs = nixpkgs.legacyPackages.x86_64-linux;
     in {
       devShells.x86_64-linux.default = pkgs.mkShell {
-        packages = [ pkgs.go pkgs.gopls pkgs.golangci-lint ];
+        packages = [ pkgs.go pkgs.gopls pkgs.golangci-lint pkgs.git ];
       };
     };
 }
 ```
+
+The sandbox brings no tools beyond a shell, nix and the basics `nix develop`
+adds anyway; the dev shell brings the rest. Claude Code too: add
+`pkgs.claude-code` to it (it's unfree, so import nixpkgs with
+`config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";`),
+or have it in your `~/.nix-profile` or home-manager.
 
 Start the sandbox in the project and enter the dev shell inside it:
 
@@ -120,9 +129,8 @@ sandbox nix develop -c claude          # Claude Code with the project's tools on
 sandbox nix develop -c go test ./...   # a one-off command
 ```
 
-With direnv, `use flake` in `.envrc` does the same whenever you `cd` in. Put
-`direnv` and `nix-direnv` in `packages` in
-[your sandbox config](#configuring-the-sandbox), or in `~/.nix-profile`.
+With direnv, `use flake` in `.envrc` does the same whenever you `cd` in.
+`direnv` and `nix-direnv` come from your `~/.nix-profile` or home-manager.
 
 The project's `$HOME` (`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ...)
 persists between runs and isn't shared with other projects. From your real
@@ -342,7 +350,7 @@ project, on top of yours - like `devenv.nix`, a module that gets `pkgs`:
 
 It can set `command`, `claude.*` (settings, memory, MCP and language
 servers, marketplaces), `hostPorts`, `binds` and the guards' token commands -
-not `packages` or `env`.
+not `env`; and no configuration adds tools.
 The project's tools and variables belong in its dev shell (a flake's
 `devShells`, devenv), which `command` enters, so they're defined once; your
 own tools come from your sandbox config, `~/.nix-profile` or home-manager.
@@ -517,8 +525,8 @@ git.signingKeyCommand = ''op read "op://Employee/GitHub SSH key/public key"'';
 devenv on `PATH`. Its shell, scripts, tasks, processes and services all run
 sandboxed.
 
-devenv itself comes from your side: `packages = [ pkgs.devenv ]` in your
-sandbox config, or installed in `~/.nix-profile` or through home-manager.
+devenv itself comes from your side: installed in `~/.nix-profile` or
+through home-manager.
 
 ```nix
 # sandbox.nix, next to devenv.nix
@@ -607,11 +615,8 @@ never from a checkout a sandbox can write.
 modules = [
   inputs.sandbox.homeManagerModules.default
   {
-    # Your home-manager pkgs must allow the unfree claude-code
-    # (or set programs.sandbox.settings.claude.package = null to use your own).
     programs.sandbox.enable = true;
     programs.sandbox.settings = {
-      packages = [ pkgs.neovim ];
       env.EDITOR = "nvim";
       guards.forgejo.enable = true;
       profiles.work = {
@@ -649,7 +654,7 @@ following its default branch or pinned to a commit:
     let
       pkgs = import nixpkgs {
         system = "x86_64-linux";
-        # claude-code is unfree
+        # For the dev shell's claude-code, which is unfree.
         config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";
       };
     in {
@@ -657,7 +662,7 @@ following its default branch or pinned to a commit:
         inherit pkgs;
         modules = [ { guards.forgejo.enable = true; } ];
       };
-      devShells.x86_64-linux.default = pkgs.mkShell { packages = [ /* ... */ ]; };
+      devShells.x86_64-linux.default = pkgs.mkShell { packages = [ pkgs.claude-code pkgs.git /* ... */ ]; };
     };
 }
 ```
@@ -704,7 +709,7 @@ What makes this safe is where it runs from, so:
   (`tarball-ttl`; `nix run --refresh` fetches it now). A pinned commit never
   changes; bump the rev (and `narHash`) to update.
 - **One configuration for everyone.** There's no per-user layer: personal
-  settings (binds, extra packages, your ssh agent socket) need the
+  settings (binds, your ssh agent socket) need the
   home-manager module instead. `homeManager.enable = true` still links each
   user's own home-manager files (shell, git config) into their project
   `$HOME`.
@@ -735,8 +740,6 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 
 | Option | Default | |
 | --- | --- | --- |
-| `packages` | `[ ]` | Extra packages on `PATH` inside. |
-| `basePackages` | small userland | Replace to trim or swap the base set. |
 | `env` | `{ }` | Variables inside; `~`, `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` expanded. |
 | `passEnv` | `[ ]` | Host variables passed in, besides TERM/COLORTERM/LANG/LC_ALL. |
 | `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; one whose src is the project is left to the project bind. |
@@ -753,7 +756,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key, run on the host at each start: Claude Code then runs on it, held outside; a profile can set its own. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
-| `claude.enable` / `.package` | on / `pkgs.claude-code` | `package = null` keeps the managed config but brings no `claude`: one from the dev shell, `~/.nix-profile` or home-manager runs instead. |
+| `claude.enable` | on | Claude Code's managed config (settings, memory, MCP and language servers) at `/etc/claude-code`, for the `claude` your dev shell or profile brings: the sandbox ships none. |
 | `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
@@ -801,7 +804,7 @@ matching one with the highest `priority` (the first by name on a tie), so
 profiles don't combine with each other. It adds `binds` and `claude.*`
 (language servers and marketplaces included) on top of the top level, and
 can set its own token commands (`guards.github.tokenCommand`,
-`guards.forgejo.tokenCommands`, `guards.claudeApiKey.tokenCommand`). `packages` and `env` are
+`guards.forgejo.tokenCommands`, `guards.claudeApiKey.tokenCommand`). `env` is
 top-level only, the same in every project.
 
 ```nix
