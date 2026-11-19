@@ -227,7 +227,7 @@ echo "HOME=[$HOME]"; echo "TERM=[$TERM]"
 
 // /usr/bin, /bin and the dynamic loader are the store's, not the host's.
 func TestNoHostUserland(t *testing.T) {
-	r := newProject(t).run(t, "readlink -f /usr/bin/env /bin/sh; ls /usr/bin; ls /lib 2>&1 | head -1\ncommand -v bash nix sed\n", nil).ok(t)
+	r := newProject(t).run(t, "readlink -f /usr/bin/env /bin/sh; ls /usr/bin; ls /lib 2>&1 | head -1\ncommand -v bash nix git\n", nil).ok(t)
 	lines := strings.Split(strings.TrimSpace(r.stdout), "\n")
 	if !strings.HasPrefix(lines[0], "/nix/store/") || !strings.HasPrefix(lines[1], "/nix/store/") {
 		t.Errorf("%q", lines[:2])

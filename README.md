@@ -18,9 +18,9 @@ What you get, per project:
   current directory outside a repo). Nothing else of your home is visible
   unless you bind it in.
 - **No host userland, and no tools of its own.** `PATH` has a fixed
-  minimum - bash, nix, and the coreutils/grep/sed/tar/make set that
-  `nix develop` adds anyway - plus `~/.nix-profile/bin`. Everything else,
-  Claude Code and git included, comes from the project's dev shell (or
+  minimum - bash, nix, git and ssh, and the coreutils/grep/sed/tar/make set
+  that `nix develop` adds anyway - plus `~/.nix-profile/bin`. Everything
+  else, Claude Code included, comes from the project's dev shell (or
   your `~/.nix-profile`, home-manager); no configuration adds tools.
   `/bin/sh`, `/usr/bin/env` and nix-ld for prebuilt binaries are provided.
 - **Nix builds** through the host's daemon (`/nix` is read-only inside).
@@ -101,14 +101,14 @@ Say a project has just a `flake.nix` with a dev shell:
     let pkgs = nixpkgs.legacyPackages.x86_64-linux;
     in {
       devShells.x86_64-linux.default = pkgs.mkShell {
-        packages = [ pkgs.go pkgs.gopls pkgs.golangci-lint pkgs.git ];
+        packages = [ pkgs.go pkgs.gopls pkgs.golangci-lint ];
       };
     };
 }
 ```
 
-The sandbox brings no tools beyond a shell, nix and the basics `nix develop`
-adds anyway; the dev shell brings the rest. Claude Code too: add
+The sandbox brings no tools beyond a shell, nix, git and ssh, and the basics
+`nix develop` adds anyway; the dev shell brings the rest. Claude Code too: add
 `pkgs.claude-code` to it (it's unfree, so import nixpkgs with
 `config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";`),
 or have it in your `~/.nix-profile` or home-manager.
@@ -662,7 +662,7 @@ following its default branch or pinned to a commit:
         inherit pkgs;
         modules = [ { guards.forgejo.enable = true; } ];
       };
-      devShells.x86_64-linux.default = pkgs.mkShell { packages = [ pkgs.claude-code pkgs.git /* ... */ ]; };
+      devShells.x86_64-linux.default = pkgs.mkShell { packages = [ pkgs.claude-code /* ... */ ]; };
     };
 }
 ```

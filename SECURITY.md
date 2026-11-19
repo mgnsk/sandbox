@@ -285,7 +285,7 @@ So `A` takes the user out of the loop for anything sandboxed code does next:
 
 Nothing of the host's `/usr`, `/bin` or `/lib` is bound in. Every program
 inside comes from the nix store: a fixed minimal set on `PATH` (bash, nix,
-terminfo and stdenv's basics - no configuration adds to it; other tools come
+git, ssh, terminfo and stdenv's basics - no configuration adds to it; other tools come
 from the project's dev shell or the user's profile),
 `/bin/sh`, `/bin/env`, `/usr/bin/env` and `/usr/bin/xdg-open` from a small
 store directory, and nix-ld at the dynamic loader's path for prebuilt

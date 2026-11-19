@@ -82,14 +82,18 @@ let
   };
 
   # The userland inside, fixed: what the sandbox itself needs (a shell, nix
-  # to enter the project's dev shell, terminfo) plus the tools `nix develop`
-  # puts on PATH anyway (stdenv's initialPath). Every other tool - Claude
-  # Code, git, ... - comes from the project's dev shell, or the user's
-  # ~/.nix-profile or home-manager; no configuration adds any.
+  # to enter the project's dev shell, terminfo; git and ssh, which its
+  # ssh-agent guard and commit signing are for - pushes run ssh, ssh signing
+  # runs ssh-keygen) plus the tools `nix develop` puts on PATH anyway
+  # (stdenv's initialPath). Every other tool - Claude Code, ... - comes from
+  # the project's dev shell, or the user's ~/.nix-profile or home-manager;
+  # no configuration adds any.
   basePackages = [
     pkgs.bashInteractive
     pkgs.nix
     pkgs.ncurses
+    pkgs.git
+    pkgs.openssh
   ]
   ++ pkgs.stdenv.initialPath
   ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;

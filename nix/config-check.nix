@@ -61,8 +61,8 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
          == [{name: "work", paths: ["~/work"], claudeApiKeyCommand: "op read op://v/claude/key"}])
   ' ${config}
   bin=$(jq -r '.default.env.PATH | split(":")[0]' ${config})
-  for tool in bash nix sed make tic xdg-open; do test -x "$bin/$tool"; done
-  for tool in claude git curl python3 hello; do test ! -e "$bin/$tool"; done
+  for tool in bash nix sed make tic git ssh ssh-keygen xdg-open; do test -x "$bin/$tool"; done
+  for tool in claude curl python3 hello; do test ! -e "$bin/$tool"; done
   test -f "$(jq -r '.default.claudeDir' ${config})/managed-settings.json"
   settings="$(jq -r '.default.claudeDir' ${withLsp})/managed-settings.json"
   jq -e \
