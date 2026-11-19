@@ -1,5 +1,10 @@
 # GitHub
 
+**NEVER run `gh auth login` (or set a real `GH_TOKEN`) inside the sandbox.**
+A token inside is readable by all sandboxed code and bypasses the host
+proxy's write popups. If `gh` has no access, tell the user to set
+`guards.github.tokenCommand` and restart.
+
 All GitHub interactions (REST/GraphQL API, issues, PRs, releases,
 Actions runs, gists, file contents, github.com pages) go through the
 `gh` CLI - never curl, wget or other HTTP clients against github.com,
@@ -15,8 +20,7 @@ Whether `gh` is authenticated depends on how the sandbox was started:
 - `$GH_TOKEN` is unset: no token command, so no proxy and no token. `gh`
   only reaches what is public, and writes fail. Say so, and that the fix is
   `guards.github.tokenCommand` in the project's `sandbox.nix` or
-  `.sandbox.yml` (or the user's sandbox config) and a restart. Never run
-  `gh auth login` or put a token inside.
+  `.sandbox.yml` (or the user's sandbox config) and a restart.
 
 Prefer the dedicated subcommands (`gh pr view`, `gh issue list`,
 `gh release download`, `gh run view --log`, ...) and fall back to

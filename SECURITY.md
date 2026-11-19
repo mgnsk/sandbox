@@ -187,6 +187,10 @@ intercepts the rest; it tunnels none, and per request:
 
 ## Token commands
 
+Never run `gh auth login` or `fj auth login` inside the sandbox: a token
+stored inside is readable by all sandboxed code and bypasses the proxies
+and their popups.
+
 The GitHub and Forgejo tokens, and the Claude API key, come from shell
 commands the launcher runs on the host at each start, with bash from the store, the user's environment
 (their `PATH`, so a secret manager's CLI is their own) and terminal (so it

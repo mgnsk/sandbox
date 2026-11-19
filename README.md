@@ -597,6 +597,15 @@ programs.sandbox.settings = { lib, pkgs, ... }: {
 
 ### GitHub and Forgejo
 
+> [!WARNING]
+> ## Never run `gh auth login` or `fj auth login` inside the sandbox
+>
+> **A token stored inside the sandbox is readable by everything that runs
+> there, and requests made with it skip the host proxy and its write
+> popups.** Tokens come only from a token command, which runs on the host
+> (see below). If you already logged in inside, run `gh auth logout` /
+> `fj auth logout` there and revoke that token.
+
 **gh and fj** talk to their APIs through host proxies that add a token to
 each request (writes behind a popup). The token never enters the sandbox and
 is never written to disk: a **token command** prints it on the host at each
@@ -645,9 +654,6 @@ though - every repository and organization you can reach - so a
 fine-grained token limited to the project bounds what a misbehaving
 sandbox can do better. Put it in your own sandbox config or `.sandbox.yml`
 rather than a project's `sandbox.nix`, since it depends on your host's gh.
-
-Don't run `gh auth login` or `fj auth login` inside: a token stored inside
-would bypass the proxy and its popups.
 
 **How gh and fj reach the proxies.** The sandbox ships neither: bring them
 like any other tool, in the project's dev shell, `~/.nix-profile` or
