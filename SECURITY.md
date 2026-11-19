@@ -285,10 +285,14 @@ stay out of reach of every sandbox. There are two supported places:
 - **Your home-manager config**, trusted like the rest of it. Don't work on
   the repo it lives in (e.g. dotfiles) in a sandbox while sandboxes run
   elsewhere: see the next section.
-- **A project's flake, run from the project's remote** (`nix run
-  github:owner/project#sandbox`). The remote's default branch is then the
-  trusted input, and what protects it is branch protection and review, not
-  the sandbox: anything merged there runs on the host of everyone using it.
+- **A project's flake, run from the project's remote**, following its
+  default branch (`nix run github:owner/project#sandbox`) or pinned to a
+  commit (`github:owner/project/<rev>`, optionally `?narHash=...`). The
+  trusted input is then that branch - protected by branch protection and
+  review, not the sandbox: anything merged there runs on the host of
+  everyone following it - or the pinned commit, which the user reviewed.
+  Without `narHash`, a pinned `github:` ref still trusts GitHub to serve
+  that commit's contents; with it, nix checks them.
   Running it from a checkout (`nix run .#sandbox`) is never safe - the
   sandbox writes the checkout, `.git` included - and the launcher can't tell
   the two apart, so this rests on the user.

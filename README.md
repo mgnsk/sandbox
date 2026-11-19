@@ -531,7 +531,8 @@ config, git config, etc. apply inside. Without it, see
 ### In a project's flake
 
 A project can ship the sandbox to everyone working on it: its flake builds
-one with `mkSandbox`, and each user runs it from the project's remote:
+one with `mkSandbox`, and each user runs it from the project's remote, either
+following its default branch or pinned to a commit:
 
 ```nix
 {
@@ -558,8 +559,27 @@ one with `mkSandbox`, and each user runs it from the project's remote:
 
 ```sh
 cd ~/src/myproject
+
+# The default branch: updates arrive with merges.
 nix run github:owner/myproject#sandbox -- nix develop -c claude
+
+# A commit you reviewed: updates only when you change the rev.
+nix run github:owner/myproject/<rev>#sandbox -- nix develop -c claude
+
+# The same, also checking what GitHub serves against a hash you recorded.
+nix run 'github:owner/myproject/<rev>?narHash=sha256-...#sandbox' -- nix develop -c claude
 ```
+
+The `narHash` of a commit, to pin it with:
+
+```sh
+nix flake metadata --json github:owner/myproject/<rev> | jq -r .locked.narHash
+```
+
+A `github:` ref is fetched as a tarball from GitHub, which nix doesn't check
+against the rev; with `narHash` nix refuses anything else ("NAR hash
+mismatch"). Keep the pinned ref in your shell config (e.g. an alias), outside
+every project.
 
 What makes this safe is where it runs from, so:
 
@@ -567,11 +587,14 @@ What makes this safe is where it runs from, so:
   `nix run ~/src/myproject#sandbox`: a sandbox can write its project, `.git`
   included, so a checkout holds whatever sandboxed code put there, and the
   launcher runs on the host. A short alias for the remote URL helps.
-- **Protect the branch.** The default branch is what runs on everyone's host,
-  so changes to it need review, like any code that runs unsandboxed. Pushes
-  from inside go over ssh, behind the agent popup.
-- **Updates arrive with merges.** nix caches the branch for up to an hour
-  (`tarball-ttl`); `nix run --refresh` fetches it now.
+- **Review what runs.** Following the default branch, that's everything
+  merged into it: protect the branch, so changes need review like any code
+  that runs unsandboxed. Pinned, it's the commit you pin; read the diff
+  before moving the pin. Pushes from inside go over ssh, behind the agent
+  popup.
+- **Updates.** The default branch is cached for up to an hour
+  (`tarball-ttl`; `nix run --refresh` fetches it now). A pinned commit never
+  changes; bump the rev (and `narHash`) to update.
 - **One configuration for everyone.** There's no per-user layer: personal
   settings (binds, extra packages, your ssh agent socket) need the
   home-manager module instead. `homeManager.enable = true` still links each
