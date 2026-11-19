@@ -24,7 +24,7 @@ list: ## List the commands
 # inside a sandbox they skip.
 test: ## Nix checks, all Go tests (RUN=filter) and lint
 	nix build --no-link .#checks.$(SYSTEM).project
-	SANDBOX_BIN=$$(nix build --no-link --print-out-paths)/bin/sandbox \
+	SANDBOX_BIN=$$(nix build --no-link --print-out-paths .#checks.$(SYSTEM).default)/bin/sandbox \
 		$(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
 	$(if $(RUN),,$(MAKE) lint)
 

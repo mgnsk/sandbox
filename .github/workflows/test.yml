@@ -41,7 +41,7 @@ jobs:
       - name: Root cached outputs
         run: |
           mkdir -p "$RUNNER_TEMP/gcroots"
-          nix build .#gh .#forgejo-cli .#default --out-link "$RUNNER_TEMP/gcroots/out"
+          nix build .#gh .#forgejo-cli .#checks.x86_64-linux.default --out-link "$RUNNER_TEMP/gcroots/out"
           nix develop --profile "$RUNNER_TEMP/gcroots/dev" -c true
 
       # Ubuntu 24.04's AppArmor denies unprivileged user namespaces to
