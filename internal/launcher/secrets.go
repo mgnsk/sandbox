@@ -82,8 +82,7 @@ func askToken(intro, prompt string) (string, error) {
 }
 
 // setGitHubToken asks for the project's GitHub token and keeps it in the
-// volume dir, out of the sandbox's reach; gh-api-proxy prefers it to the
-// host gh's.
+// volume dir, out of the sandbox's reach: the only token gh-api-proxy uses.
 func setGitHubToken(volumeDir string) error {
 	token, err := askToken(
 		"sandbox: gh in this project uses a token that stays outside the sandbox.\n"+
@@ -99,7 +98,7 @@ func setGitHubToken(volumeDir string) error {
 
 // setForgejoToken asks for the project's token for the Forgejo instance at
 // host and adds it to the volume dir's {host: token} file;
-// forgejo-api-proxy prefers it to the host fj's.
+// forgejo-api-proxy uses it for that host; the project's are its only tokens.
 func setForgejoToken(volumeDir, host string) error {
 	token, err := askToken(
 		fmt.Sprintf("sandbox: fj in this project uses a token for %[1]s that stays outside the sandbox.\n"+

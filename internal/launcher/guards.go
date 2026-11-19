@@ -57,8 +57,8 @@ type proc struct {
 
 func newGuards(self string, cfg *config) *guards {
 	g := &guards{self: self, cfg: cfg}
-	// gh, xdg-open, ... from the store first; the host's PATH after, for
-	// what xdg-open hands URLs to (the browser).
+	// xdg-open from the store first; the host's PATH after, for what
+	// xdg-open hands URLs to (the browser).
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "PATH=") {
 			g.env = append(g.env, kv)

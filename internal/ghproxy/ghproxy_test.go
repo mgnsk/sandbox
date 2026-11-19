@@ -171,7 +171,11 @@ func TestTunnel(t *testing.T) {
 func TestTokens(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "github-token")
 	upstream := apiproxytest.NewUpstream(t)
-	p := New(file, "")
+	// A gh logged in on the host is never asked.
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho gho_host0123456\n"), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	p := New(file)
 	upstream.Wire(p)
 	h, u := apiproxytest.ServeHTTPS(t, p)
 	c := apiproxytest.Client(h, u)
@@ -187,21 +191,12 @@ func TestTokens(t *testing.T) {
 		return resp.StatusCode, ""
 	}
 	if status, _ := auth(); status != 403 {
-		t.Errorf("no token: %d", status)
+		t.Errorf("no project token: %d", status)
 	}
 	// Set later: applies at once.
 	os.WriteFile(file, []byte(projectToken+"\n"), 0o600)
 	if _, got := auth(); got != "token "+projectToken {
 		t.Errorf("project token: %q", got)
-	}
-
-	// The host gh's token is the fallback.
-	p = New(filepath.Join(t.TempDir(), "none"), "gho_host0123456")
-	upstream.Wire(p)
-	h, u = apiproxytest.ServeHTTPS(t, p)
-	c = apiproxytest.Client(h, u)
-	if _, got := auth(); got != "token gho_host0123456" {
-		t.Errorf("host token: %q", got)
 	}
 }
 
@@ -216,7 +211,7 @@ func gh(t *testing.T, upstream *apiproxytest.Upstream, answer popup.Answer, args
 	tokenFile := filepath.Join(dir, "github-token")
 	os.WriteFile(tokenFile, []byte(projectToken+"\n"), 0o600)
 	popups := &apiproxytest.Popups{Answer: answer}
-	p := New(tokenFile, "")
+	p := New(tokenFile)
 	p.Ask = popups.Ask
 	upstream.Wire(p)
 	h, u := apiproxytest.ServeHTTPS(t, p)

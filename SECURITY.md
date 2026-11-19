@@ -104,9 +104,10 @@ Inside, `GH_TOKEN` is a fixed placeholder, and every process's
 `HTTPS_PROXY` is the router (`internal/router`, see "The router" below),
 which chains `CONNECT`s for the GitHub API hosts to gh-api-proxy
 (`internal/ghproxy`). Any `gh` works, wherever it comes from; the sandbox
-ships none. The proxy runs on the host and holds the real token: the project's, if `sandbox --gh-token` set one
-(`github-token` in the volume dir, mode 0600, re-read every request), else the
-host gh's, read at start. It listens on a free port of the host's
+ships none. The proxy runs on the host and holds the real token: the project's,
+set with `sandbox --gh-token` (`github-token` in the volume dir, mode 0600,
+re-read every request). Nothing on the host runs gh or reads its login, so
+a project without a token of its own gets no GitHub access at all. It listens on a free port of the host's
 loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
 carrying a random per-launch secret (`SANDBOX_GH_PROXY`, handed to the
 router and left out of the command's environment, sent as Basic
@@ -174,11 +175,11 @@ proxy didn't take to this one first. The proxy answers 404 at once, unread,
 for a host it has no token for (the router then dials it itself), and
 intercepts the rest; it tunnels none, and per request:
 
-- forwards only to instances there's a token for, over HTTPS, dropping the
-  client's `Authorization` and adding that instance's token: the project's
-  (`sandbox --fj-token HOST`, in `forgejo-tokens.json` in the volume dir, mode
-  0600) if it has one, else the one from the host fj's `keys.json` - both
-  re-read every request, so a new token reaches running sandboxes;
+- forwards only to instances the project has a token for, over HTTPS,
+  dropping the client's `Authorization` and adding that token
+  (`sandbox --fj-token HOST`, in `forgejo-tokens.json` in the volume dir,
+  mode 0600, re-read every request, so a new token reaches running
+  sandboxes). The host fj's `keys.json` is never read;
 - forwards `GET`/`HEAD`, and holds everything else for a popup.
 
 ## Claude Code: a login inside, or an API key outside
