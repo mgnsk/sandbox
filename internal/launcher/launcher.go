@@ -162,7 +162,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 
 	inside := insideEnv(l.cfg, prof, l.vars)
-	if env != nil {
+	if env = withProjectSigning(env, m); env != nil {
 		if err := env.resolveSigningKey(ctx, l); err != nil {
 			return nil, nil, err
 		}

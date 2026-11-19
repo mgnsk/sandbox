@@ -144,7 +144,10 @@ func (env *sandboxEnv) overlay(m *manifest) {
 	if env.ClaudeAPIKeyCommand != "" {
 		m.ClaudeAPIKeyCommand = env.ClaudeAPIKeyCommand
 	}
-	m.GitSigningKeyCommand = env.GitSigningKeyCommand
+	// Either of its own replaces sandbox.nix's key and command both.
+	if env.GitSigningKey != "" || env.GitSigningKeyCommand != "" {
+		m.GitSigningKey, m.GitSigningKeyCommand = "", env.GitSigningKeyCommand
+	}
 	if len(env.ForgejoTokenCommands) > 0 {
 		all := maps.Clone(m.ForgejoTokenCommands)
 		if all == nil {
@@ -190,13 +193,29 @@ func (env *sandboxEnv) resolveSigningKey(ctx context.Context, l *launcher) error
 	if env.GitSigningKeyCommand == "" {
 		return nil
 	}
-	key, err := l.runHostCommand(ctx, "GIT_SIGNING_KEY_COMMAND", env.GitSigningKeyCommand)
+	key, err := l.runHostCommand(ctx, "the git signing key command", env.GitSigningKeyCommand)
 	if err != nil {
 		return err
 	}
 	if !isSSHPublicKey(key) || strings.Contains(key, "\n") {
-		return fmt.Errorf("GIT_SIGNING_KEY_COMMAND (%s) didn't print an ssh public key", env.GitSigningKeyCommand)
+		return fmt.Errorf("the git signing key command (%s) didn't print an ssh public key", env.GitSigningKeyCommand)
 	}
 	env.GitSigningKey = key
 	return nil
+}
+
+// withProjectSigning is env (nil for none) with sandbox.nix's approved
+// signing key or command when it has neither of its own; nil if neither
+// sets anything.
+func withProjectSigning(env *sandboxEnv, m *manifest) *sandboxEnv {
+	if m == nil || m.GitSigningKey == "" && m.GitSigningKeyCommand == "" {
+		return env
+	}
+	if env == nil {
+		env = &sandboxEnv{}
+	}
+	if env.GitSigningKey == "" && env.GitSigningKeyCommand == "" {
+		env.GitSigningKey, env.GitSigningKeyCommand = m.GitSigningKey, m.GitSigningKeyCommand
+	}
+	return env
 }

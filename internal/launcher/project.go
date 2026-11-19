@@ -28,8 +28,10 @@ type manifest struct {
 	GitHubTokenCommand   string            `json:"githubTokenCommand"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
-	// From .sandbox.env only.
-	GitSigningKeyCommand string `json:"-"`
+	// Git's signing key, or a command printing it (approved like the
+	// token commands); a user's .sandbox.env wins.
+	GitSigningKey        string `json:"gitSigningKey"`
+	GitSigningKeyCommand string `json:"gitSigningKeyCommand"`
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
@@ -68,6 +70,13 @@ func (m *manifest) check() error {
 	m.ForgejoTokenCommands = hosts
 	m.GitHubTokenCommand = strings.TrimSpace(m.GitHubTokenCommand)
 	m.ClaudeAPIKeyCommand = strings.TrimSpace(m.ClaudeAPIKeyCommand)
+	m.GitSigningKeyCommand = strings.TrimSpace(m.GitSigningKeyCommand)
+	if m.GitSigningKey != "" && !isSSHPublicKey(m.GitSigningKey) {
+		return errors.New("git.signingKey must be an ssh public key")
+	}
+	if m.GitSigningKey != "" && m.GitSigningKeyCommand != "" {
+		return errors.New("git.signingKey and git.signingKeyCommand: set one")
+	}
 	for _, c := range m.ForgejoTokenCommands {
 		if strings.TrimSpace(c) == "" {
 			return errors.New("empty token command")

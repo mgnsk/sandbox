@@ -488,6 +488,15 @@ Every key is optional:
 
 The git settings only affect the inside, so they apply without asking
 (but a signing key command, which runs on the host, is approved).
+
+`sandbox.nix` can set the signing key or its command for everyone - useful
+when the team keeps the key under the same item name, which each user's
+secret manager resolves in their own vault - and a user's `.sandbox.env`
+overrides it:
+
+```nix
+git.signingKeyCommand = ''op read "op://Employee/GitHub SSH key/public key"'';
+```
 They're git config from the environment, so they override `~/.gitconfig`.
 
 ### Using devenv

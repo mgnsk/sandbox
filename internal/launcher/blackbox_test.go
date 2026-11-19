@@ -384,7 +384,14 @@ func TestClaudeDirAndExchange(t *testing.T) {
 // config or GitHub token command.
 func manifestJSON(t *testing.T, m manifest) string {
 	v := map[string]any{"claudeDir": nil, "binds": []bind{}, "hostPorts": []string{}, "command": nil,
-		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil}
+		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil,
+		"gitSigningKey": nil, "gitSigningKeyCommand": nil}
+	if m.GitSigningKey != "" {
+		v["gitSigningKey"] = m.GitSigningKey
+	}
+	if m.GitSigningKeyCommand != "" {
+		v["gitSigningKeyCommand"] = m.GitSigningKeyCommand
+	}
 	if m.ClaudeAPIKeyCommand != "" {
 		v["claudeApiKeyCommand"] = m.ClaudeAPIKeyCommand
 	}
@@ -635,6 +642,24 @@ func TestSandboxEnv(t *testing.T) {
 	p.send("y\r")
 	if r := p.wait(); r.code == 0 || !strings.Contains(r.stdout, "didn't print an ssh public key") {
 		t.Errorf("bad key: %d %q", r.code, r.stdout)
+	}
+
+	// From sandbox.nix, for everyone: approved and used without a
+	// .sandbox.env; a .sandbox.env's own key wins, and the command then
+	// isn't asked about.
+	os.Remove(filepath.Join(h.project, sandboxEnvFileName))
+	h.withProject(manifest{GitSigningKeyCommand: "echo ssh-ed25519 AAAAteam"}, "{ ... }: { y = 1; }\n", "m3.json")
+	p = h.pty(nil)
+	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "for git's signing key:") {
+		t.Errorf("not shown: %q", shown)
+	}
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAteam" {
+		t.Errorf("sandbox.nix's key: %d %q", r.code, r.stdout)
+	}
+	write("GIT_SIGNING_KEY=ssh-ed25519 AAAAmine\n")
+	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAmine" {
+		t.Errorf(".sandbox.env's key: %d %q", r.code, r.stderr)
 	}
 
 	// A bad file stops the start.

@@ -52,6 +52,22 @@ let
               default = { };
               description = "Shell commands printing each Forgejo host's token, approved like guards.github.tokenCommand.";
             };
+            git.signingKey = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "ssh-ed25519 AAAA...";
+              description = "An ssh public key in the user's agent: git inside signs commits and tags with it. A user's .sandbox.env wins.";
+            };
+            git.signingKeyCommand = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "op read \"op://Employee/GitHub SSH key/public key\"";
+              description = ''
+                A shell command printing that public key, run on the host at
+                each start once the user approves it, like the token
+                commands. A user's .sandbox.env wins.
+              '';
+            };
             guards.claudeApiKey.tokenCommand = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
@@ -91,6 +107,8 @@ layer.json.generate "sandbox-project.json" {
   inherit (cfg) hostPorts command;
   githubTokenCommand = cfg.guards.github.tokenCommand;
   claudeApiKeyCommand = cfg.guards.claudeApiKey.tokenCommand;
+  gitSigningKey = cfg.git.signingKey;
+  gitSigningKeyCommand = cfg.git.signingKeyCommand;
   forgejoTokenCommands = cfg.guards.forgejo.tokenCommands;
   binds = map (b: {
     inherit (b)
