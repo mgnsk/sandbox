@@ -89,10 +89,13 @@ func (l *launcher) runTokenCommand(ctx context.Context, what, command string) (s
 	return token, nil
 }
 
-// runHostCommand runs command on the host as runTokenCommand does; its
-// output, trimmed.
+// runHostCommand runs command with bash on the host, from /, with the
+// user's environment and terminal; its output, trimmed.
 func (l *launcher) runHostCommand(ctx context.Context, what, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, l.cfg.Tools.Bash, "-c", command)
+	// From /, never the project: nothing the sandbox wrote there (a
+	// .git/config, an .envrc, a tool's project config) reaches the command.
+	cmd.Dir = "/"
 	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 	var out bytes.Buffer
 	cmd.Stdout = &out

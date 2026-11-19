@@ -32,6 +32,7 @@ type manifest struct {
 	// token commands); a user's .sandbox.env wins.
 	GitSigningKey        string `json:"gitSigningKey"`
 	GitSigningKeyCommand string `json:"gitSigningKeyCommand"`
+	GitFromHost          bool   `json:"gitFromHost"`
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read

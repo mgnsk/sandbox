@@ -162,7 +162,14 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 
 	inside := insideEnv(l.cfg, prof, l.vars)
-	if env = withProjectSigning(env, m); env != nil {
+	env = withProjectSigning(env, m)
+	if gitFromHost(env, m) {
+		if env == nil {
+			env = &sandboxEnv{}
+		}
+		readHostGit(ctx, l.home).fill(env)
+	}
+	if env != nil {
 		if err := env.resolveSigningKey(ctx, l); err != nil {
 			return nil, nil, err
 		}

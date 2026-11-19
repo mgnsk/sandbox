@@ -52,6 +52,16 @@ let
               default = { };
               description = "Shell commands printing each Forgejo host's token, approved like guards.github.tokenCommand.";
             };
+            git.fromHost = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = ''
+                Take git's name, email and ssh signing key inside from each
+                user's global git config on the host (`git config --global`,
+                run from /), where nothing more specific sets them. A user's
+                .sandbox.env can turn it off (GIT_FROM_HOST=0).
+              '';
+            };
             git.signingKey = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
@@ -107,6 +117,7 @@ layer.json.generate "sandbox-project.json" {
   inherit (cfg) hostPorts command;
   githubTokenCommand = cfg.guards.github.tokenCommand;
   claudeApiKeyCommand = cfg.guards.claudeApiKey.tokenCommand;
+  gitFromHost = cfg.git.fromHost;
   gitSigningKey = cfg.git.signingKey;
   gitSigningKeyCommand = cfg.git.signingKeyCommand;
   forgejoTokenCommands = cfg.guards.forgejo.tokenCommands;

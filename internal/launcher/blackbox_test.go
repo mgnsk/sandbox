@@ -385,7 +385,7 @@ func TestClaudeDirAndExchange(t *testing.T) {
 func manifestJSON(t *testing.T, m manifest) string {
 	v := map[string]any{"claudeDir": nil, "binds": []bind{}, "hostPorts": []string{}, "command": nil,
 		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil,
-		"gitSigningKey": nil, "gitSigningKeyCommand": nil}
+		"gitSigningKey": nil, "gitSigningKeyCommand": nil, "gitFromHost": m.GitFromHost}
 	if m.GitSigningKey != "" {
 		v["gitSigningKey"] = m.GitSigningKey
 	}
@@ -660,6 +660,32 @@ func TestSandboxEnv(t *testing.T) {
 	write("GIT_SIGNING_KEY=ssh-ed25519 AAAAmine\n")
 	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAmine" {
 		t.Errorf(".sandbox.env's key: %d %q", r.code, r.stderr)
+	}
+
+	// Host commands run from /, not the project.
+	write("GH_TOKEN_COMMAND=[ \"$PWD\" = / ] && echo " + token + "\n")
+	p = h.pty(nil)
+	p.expect("Allow? [y/N] ")
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 {
+		t.Errorf("not run from /: %d %q", r.code, r.stdout)
+	}
+
+	// The host's git identity, for sandbox.nix's git.fromHost: under what
+	// .sandbox.env sets, and off with GIT_FROM_HOST=0.
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\ncase \"$4\" in user.name) echo Host;; user.email) echo host@example.com;; *) exit 1;; esac\n"), 0o755)
+	withGit := map[string]string{"PATH": bin + ":" + h.env["PATH"]}
+	h.withProject(manifest{GitFromHost: true}, "{ ... }: { z = 1; }\n", "m4.json")
+	write("GIT_USER_NAME=Mine\n")
+	r = h.run("", withGit)
+	env = r.pasta(t).setenv()
+	if r.code != 0 || env["GIT_AUTHOR_NAME"] != "Mine" || env["GIT_AUTHOR_EMAIL"] != "host@example.com" {
+		t.Errorf("fromHost: %d %q %v", r.code, r.stderr, env)
+	}
+	write("GIT_FROM_HOST=0\n")
+	if r := h.run("", withGit); r.code != 0 || r.pasta(t).setenv()["GIT_AUTHOR_EMAIL"] != "" {
+		t.Errorf("GIT_FROM_HOST=0: %d %q", r.code, r.stderr)
 	}
 
 	// A bad file stops the start.

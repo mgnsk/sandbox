@@ -32,6 +32,9 @@ type sandboxEnv struct {
 	// Prints GitSigningKey on the host at start; approved like the token
 	// commands.
 	GitSigningKeyCommand string
+	// Fill the git settings it doesn't have from the host's global git
+	// config (see hostGit); nil leaves it to sandbox.nix.
+	GitFromHost *bool
 }
 
 const forgejoTokenCommandPrefix = "FORGEJO_TOKEN_COMMAND_"
@@ -101,6 +104,12 @@ func parseSandboxEnv(data []byte) (*sandboxEnv, error) {
 			env.GitSigningKey = value
 		case key == "GIT_SIGNING_KEY_COMMAND":
 			env.GitSigningKeyCommand = value
+		case key == "GIT_FROM_HOST":
+			on, err := strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: GIT_FROM_HOST must be true or false (1 or 0)", n)
+			}
+			env.GitFromHost = &on
 		default:
 			return nil, fmt.Errorf("line %d: unknown key %s", n, key)
 		}

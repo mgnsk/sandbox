@@ -68,6 +68,7 @@ runCommand "sandbox-project-check" { nativeBuildInputs = [ jq ]; } ''
     and .githubTokenCommand == "op read op://v/gh/token"
     and .forgejoTokenCommands == {"codeberg.org": "op read op://v/cb/token"}
     and .claudeApiKeyCommand == "op read op://v/claude/key"
+    and .gitFromHost == true
     and .gitSigningKey == null
     and .gitSigningKeyCommand == "op read op://v/ssh/public-key"
   ' ${manifest}

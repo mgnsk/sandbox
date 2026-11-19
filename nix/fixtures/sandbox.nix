@@ -16,6 +16,7 @@
   guards.forgejo.tokenCommands."codeberg.org" = "op read op://v/cb/token";
   guards.claudeApiKey.tokenCommand = "op read op://v/claude/key";
   git.signingKeyCommand = "op read op://v/ssh/public-key";
+  git.fromHost = true;
   claude.lspServers.gopls = {
     package = pkgs.gopls;
     extensionToLanguage.".go" = "go";
