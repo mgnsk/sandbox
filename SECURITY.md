@@ -310,7 +310,14 @@ treated as untrusted input:
 ## Where the configuration comes from
 
 The configuration the launcher runs with is built on the host, so it must
-stay out of reach of every sandbox. There are two supported places:
+stay out of reach of every sandbox. There are three supported places:
+
+- **This repo's default package, run from its remote** (`nix run
+  github:mgnsk/sandbox`, optionally pinned to `/<rev>` and `?narHash=...`):
+  the default settings, reading no user config. The trusted input is this
+  repo's default branch, or the commit pinned. A local clone of it is a
+  checkout like any other: don't run the sandbox from one you work on in a
+  sandbox.
 
 - **Your home-manager config**, trusted like the rest of it. Don't work on
   the repo it lives in (e.g. dotfiles) in a sandbox while sandboxes run
