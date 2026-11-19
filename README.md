@@ -138,7 +138,9 @@ start - typically your secret manager - and it's handed to the proxy in
 memory. gh or fj on the host, and any login they have, are never used.
 
 The project can declare its commands in its `sandbox.nix`, so everyone
-working on it is set up by starting the sandbox:
+working on it is set up by starting the sandbox (or each user in their own
+[.sandbox.yml](#per-user-project-settings-sandboxyml), when the commands
+differ per user):
 
 ```nix
 guards.github.tokenCommand = "op read op://Employee/GitHub/token";
@@ -444,6 +446,69 @@ can edit `flake.nix`, and that `nix run` would run whatever it put there on
 the host. See [In a project's flake](#in-a-projects-flake). The same goes for
 a clone of this repo: run `github:mgnsk/sandbox`, not a checkout you work on
 in a sandbox.
+
+### Per-user project settings: .sandbox.yml
+
+`sandbox.nix` is the project's, committed. What differs per user - the
+token commands' secret-manager items, the git identity - goes in a
+`.sandbox.yml` next to it, which the project gitignores (ship a
+`.sandbox.example.yml` for reference). Its settings have `sandbox.nix`'s
+option names, and every one is optional:
+
+```yaml
+# .sandbox.yml - mine, not committed
+guards:
+  github:
+    tokenCommand: op read op://Employee/GitHub/token
+  forgejo:
+    tokenCommands:
+      codeberg.org: op read op://Employee/Codeberg/token
+  claudeApiKey:
+    tokenCommand: op read op://Employee/Claude/credential
+git:
+  fromHost: true          # name, email and signing key from the host's git config
+  userName: Some One
+  userEmail: some.one@example.com
+  signingKeyCommand: op read "op://Employee/GitHub SSH key/public key"
+  # or signingKey: ssh-ed25519 AAAA...
+```
+
+```gitignore
+.sandbox.yml
+```
+
+A field it doesn't know (a typo) stops the start.
+
+- **Token commands** go over `sandbox.nix`'s. They're still the project's
+  to the sandbox - sandboxed code can write this file like any other in
+  the project - so they're shown and approved like `sandbox.nix`'s, once
+  and again when they change. Your own config's still win.
+- **`git.userName`, `git.userEmail`**: git's author and committer inside.
+- **`git.signingKey`**: an ssh public key in your agent; commits and tags
+  inside are signed with it (`gpg.format = ssh`), through the ssh agent
+  guard, which doesn't ask for signatures. **`git.signingKeyCommand`**,
+  instead, prints that public key on the host at each start, so it's
+  approved like the token commands.
+- **`git.fromHost`**: fill in what isn't set from your global git config on
+  the host - `git config --global` for `user.name`, `user.email` and, with
+  `gpg.format = ssh`, `user.signingKey` (the key, or a key file whose `.pub`
+  is read). Only that runs, from `/`, never in the project. Here it can
+  also turn `sandbox.nix`'s `git.fromHost` off.
+
+The git settings only affect the inside, so they apply without asking
+(but a signing key command, which runs on the host, is approved). They're
+git config from the environment, so they override `~/.gitconfig` inside.
+
+`sandbox.nix` can set the git options for everyone, except name and email,
+which are each user's: `git.fromHost = true;` works for any team, and a
+signing key command does when the team keeps the key under the same item
+name, which each user's secret manager resolves in their own vault. A
+user's `.sandbox.yml` overrides them:
+
+```nix
+git.fromHost = true;
+git.signingKeyCommand = ''op read "op://Employee/GitHub SSH key/public key"'';
+```
 
 ### Using devenv
 

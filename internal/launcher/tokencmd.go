@@ -3,11 +3,13 @@ package launcher
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/mgnsk/sandbox/internal/hostname"
@@ -77,7 +79,23 @@ func withProjectTokenCommands(prof profile, m *manifest) profile {
 // and terminal (so it can prompt); the token it prints. Nothing is written
 // anywhere: the token goes to its guard over a pipe.
 func (l *launcher) runTokenCommand(ctx context.Context, what, command string) (string, error) {
+	token, err := l.runHostCommand(ctx, what, command)
+	if err != nil {
+		return "", err
+	}
+	if !tokens.Valid(token) {
+		return "", fmt.Errorf("%s (%s) didn't print a token", what, command)
+	}
+	return token, nil
+}
+
+// runHostCommand runs command with bash on the host, from /, with the
+// user's environment and terminal; its output, trimmed.
+func (l *launcher) runHostCommand(ctx context.Context, what, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, l.cfg.Tools.Bash, "-c", command)
+	// From /, never the project: nothing the sandbox wrote there (a
+	// .git/config, an .envrc, a tool's project config) reaches the command.
+	cmd.Dir = "/"
 	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -87,9 +105,41 @@ func (l *launcher) runTokenCommand(ctx context.Context, what, command string) (s
 		}
 		return "", fmt.Errorf("%s (%s): %w", what, command, err)
 	}
-	token := strings.TrimSpace(out.String())
-	if !tokens.Valid(token) {
-		return "", fmt.Errorf("%s (%s) didn't print a token", what, command)
+	return strings.TrimSpace(out.String()), nil
+}
+
+// claudeKeySettings binds a copy of claudeDir's managed settings with the
+// apiKeyHelper placeholder over the original, when they lack it: a key
+// command from .sandbox.yml comes with no managed config of its own (one
+// from the user's config or sandbox.nix already has it). Without it Claude
+// Code would ask to log in.
+func claudeKeySettings(g *guards, a *bwrapArgs, claudeDir string) error {
+	path := filepath.Join(claudeDir, "managed-settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	return token, nil
+	settings := map[string]any{}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	if _, ok := settings["apiKeyHelper"]; ok {
+		return nil
+	}
+	settings["apiKeyHelper"] = "echo sandbox-placeholder"
+	dir, err := g.tempdir()
+	if err != nil {
+		return err
+	}
+	out := filepath.Join(dir, "managed-settings.json")
+	if data, err = json.Marshal(settings, json.Deterministic(true)); err != nil {
+		return err
+	}
+	if err := os.WriteFile(out, data, 0o644); err != nil {
+		return err
+	}
+	a.roBind(out, "/etc/claude-code/managed-settings.json")
+	return nil
 }

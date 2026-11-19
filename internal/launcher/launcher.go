@@ -120,11 +120,29 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 
 	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
 	hostPorts := l.cfg.HostPorts
-	if !l.opts.NoProjectConfig && lexists(filepath.Join(l.project, projectFileName)) {
-		m, err := l.projectManifest(ctx, prof.ClaudeDir)
-		if err != nil {
+	// The project's settings: sandbox.nix (committed) and .sandbox.yml
+	// (each user's), the latter's token commands over the former's.
+	var m *manifest
+	var env *localConfig
+	if !l.opts.NoProjectConfig {
+		if lexists(filepath.Join(l.project, projectFileName)) {
+			var err error
+			if m, err = l.projectManifest(ctx, prof.ClaudeDir); err != nil {
+				return nil, nil, err
+			}
+		}
+		var err error
+		if env, err = readLocalConfig(l.project); err != nil {
 			return nil, nil, err
 		}
+		if env != nil {
+			if m == nil {
+				m = &manifest{}
+			}
+			env.overlay(m)
+		}
+	}
+	if m != nil {
 		projectTokenCommands(l.cfg, prof, m)
 		if err := l.approveProject(m); err != nil {
 			return nil, nil, err
@@ -143,7 +161,21 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		return nil, nil, fmt.Errorf("missing seccomp filter %s", l.cfg.Seccomp)
 	}
 
-	a := baseArgs(l.cfg, insideEnv(l.cfg, prof, l.vars))
+	inside := insideEnv(l.cfg, prof, l.vars)
+	env = withProjectSigning(env, m)
+	if gitFromHost(env, m) {
+		if env == nil {
+			env = &localConfig{}
+		}
+		readHostGit(ctx, l.home).fill(env)
+	}
+	if env != nil {
+		if err := env.resolveSigningKey(ctx, l); err != nil {
+			return nil, nil, err
+		}
+		env.setGit(inside)
+	}
+	a := baseArgs(l.cfg, inside)
 	// Must precede every mount under $HOME - bwrap layers mounts in argv
 	// order, so those narrower binds shadow the volume, not the other way
 	// round.
@@ -164,6 +196,11 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	// can't override them.
 	if prof.ClaudeDir != "" {
 		a.roBind(prof.ClaudeDir, "/etc/claude-code")
+		if prof.ClaudeAPIKeyCommand != "" {
+			if err := claudeKeySettings(g, &a, prof.ClaudeDir); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 	resolver, err := l.resolvConf(g, &a)
 	if err != nil {

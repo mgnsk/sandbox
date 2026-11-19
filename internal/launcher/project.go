@@ -28,6 +28,11 @@ type manifest struct {
 	GitHubTokenCommand   string            `json:"githubTokenCommand"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
+	// Git's signing key, or a command printing it (approved like the
+	// token commands); a user's .sandbox.yml wins.
+	GitSigningKey        string `json:"gitSigningKey"`
+	GitSigningKeyCommand string `json:"gitSigningKeyCommand"`
+	GitFromHost          bool   `json:"gitFromHost"`
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
@@ -66,6 +71,13 @@ func (m *manifest) check() error {
 	m.ForgejoTokenCommands = hosts
 	m.GitHubTokenCommand = strings.TrimSpace(m.GitHubTokenCommand)
 	m.ClaudeAPIKeyCommand = strings.TrimSpace(m.ClaudeAPIKeyCommand)
+	m.GitSigningKeyCommand = strings.TrimSpace(m.GitSigningKeyCommand)
+	if m.GitSigningKey != "" && !isSSHPublicKey(m.GitSigningKey) {
+		return errors.New("git.signingKey must be an ssh public key")
+	}
+	if m.GitSigningKey != "" && m.GitSigningKeyCommand != "" {
+		return errors.New("git.signingKey and git.signingKeyCommand: set one")
+	}
 	for _, c := range m.ForgejoTokenCommands {
 		if strings.TrimSpace(c) == "" {
 			return errors.New("empty token command")
@@ -159,6 +171,7 @@ type hostAccess struct {
 	GitHubTokenCommand   string            `json:"githubTokenCommand,omitempty"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand,omitempty"`
+	GitSigningKeyCommand string            `json:"gitSigningKeyCommand,omitempty"`
 }
 
 func (h hostAccess) String() string {
@@ -186,6 +199,9 @@ func (h hostAccess) String() string {
 	if h.ClaudeAPIKeyCommand != "" {
 		lines = append(lines, "  run on this host at each start, for Claude Code's API key:\n    "+h.ClaudeAPIKeyCommand)
 	}
+	if h.GitSigningKeyCommand != "" {
+		lines = append(lines, "  run on this host at each start, for git's signing key:\n    "+h.GitSigningKeyCommand)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -197,9 +213,9 @@ func (h hostAccess) String() string {
 func (l *launcher) approveProject(m *manifest) error {
 	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts,
 		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands,
-		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand}
+		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand, GitSigningKeyCommand: m.GitSigningKeyCommand}
 	if len(access.Binds) == 0 && len(access.HostPorts) == 0 && access.GitHubTokenCommand == "" &&
-		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" {
+		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" && access.GitSigningKeyCommand == "" {
 		return nil
 	}
 	approved := filepath.Join(l.volumeDir, "project-approved.json")
@@ -210,15 +226,19 @@ func (l *launcher) approveProject(m *manifest) error {
 	if have, err := os.ReadFile(approved); err == nil && bytes.Equal(bytes.TrimSpace(have), want) {
 		return nil
 	}
-	projectFile := filepath.Join(l.project, projectFileName)
+	from := filepath.Join(l.project, projectFileName)
+	if access.GitHubTokenCommand != "" || len(access.ForgejoTokenCommands) > 0 || access.ClaudeAPIKeyCommand != "" ||
+		access.GitSigningKeyCommand != "" {
+		from = fmt.Sprintf("%s (or %s)", from, localConfigFileName)
+	}
 	t, err := openTTY()
 	if err != nil {
-		return fmt.Errorf("%s asks for host access that isn't approved yet; start the sandbox from a terminal to approve it", projectFile)
+		return fmt.Errorf("%s asks for host access that isn't approved yet; start the sandbox from a terminal to approve it", from)
 	}
 	defer t.Close()
 	if !t.confirm(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
 		"Read it before allowing: the commands run on this host as you, outside the sandbox.\n"+
-		"This is asked once, and again only if it changes. Allow? [y/N] ", projectFile, access)) {
+		"This is asked once, and again only if it changes. Allow? [y/N] ", from, access)) {
 		return errors.New("host access not approved, not starting")
 	}
 	return writeJSON(approved, access)
