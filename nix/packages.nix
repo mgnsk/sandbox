@@ -14,8 +14,7 @@
   coreutils,
 }:
 let
-  # The launcher, sandbox-init and the guards: one binary, run under each
-  # program's name.
+  # sandbox-bin: the launcher, init and the guards, as subcommands.
   sandbox = callPackage ./go.nix { };
 
   # Writes the seccomp filter: the rules in internal/seccomp through
@@ -28,7 +27,6 @@ let
     };
     nativeBuildInputs = old.nativeBuildInputs ++ [ pkg-config ];
     buildInputs = [ libseccomp ];
-    postInstall = "";
     meta.mainProgram = "seccomp-bpf";
   });
 
@@ -73,7 +71,7 @@ let
 
   # xdg-open inside: hands the URL to open-url-guard on the host.
   xdg-open = writeShellScriptBin "xdg-open" ''
-    exec ${sandbox}/bin/sandbox-xdg-open "$@"
+    exec ${lib.getExe sandbox} xdg-open "$@"
   '';
 
   # The few fixed paths programs expect, in place of the host's /bin and

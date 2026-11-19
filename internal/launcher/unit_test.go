@@ -1,8 +1,6 @@
 package launcher
 
 import (
-	"errors"
-	"flag"
 	"maps"
 	"os"
 	"os/exec"
@@ -322,32 +320,6 @@ func TestUpgradeNotice(t *testing.T) {
 		if got := upgradeNotice(tc.released, tc.days, now); got != "" {
 			t.Errorf("%+v: %q", tc, got)
 		}
-	}
-}
-
-func TestParseOptions(t *testing.T) {
-	o, command, err := parseOptions([]string{"--reload", "echo", "--reload"})
-	if err != nil || !o.reload || !slices.Equal(command, []string{"echo", "--reload"}) {
-		t.Errorf("%+v %q %v", o, command, err)
-	}
-	o, command, err = parseOptions([]string{"--no-project-config", "--", "--weird"})
-	if err != nil || !o.noProjectConfig || !slices.Equal(command, []string{"--weird"}) {
-		t.Errorf("%+v %q %v", o, command, err)
-	}
-	if o, _, err := parseOptions([]string{"--fj-token", "https://A.example/x/"}); err != nil || o.fjToken != "a.example" {
-		t.Errorf("%+v %v", o, err)
-	}
-	for args, want := range map[string]string{
-		"--nope":         "not defined: -nope (put -- before",
-		"--fj-token":     "needs an argument",
-		"--fj-token|a b": "not a Forgejo host: a b",
-	} {
-		if _, _, err := parseOptions(strings.Split(args, "|")); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: %v", args, err)
-		}
-	}
-	if _, _, err := parseOptions([]string{"-h"}); !errors.Is(err, flag.ErrHelp) {
-		t.Errorf("-h: %v", err)
 	}
 }
 

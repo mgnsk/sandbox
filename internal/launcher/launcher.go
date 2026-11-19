@@ -1,7 +1,7 @@
 // Package launcher is the sandbox launcher: it runs a command (default: a
 // login bash) in a per-project sandbox.
 //
-//	sandbox CONFIG.json [OPTIONS] [--] [COMMAND...]
+//	sandbox-bin launch --config CONFIG.json [OPTIONS] [--] [COMMAND...]
 //
 // bwrap + pasta + seccomp, with guard proxies on the host for ssh-agent, a
 // Secret Service, the GitHub, Forgejo and Claude APIs and opening URLs. See
@@ -10,8 +10,7 @@
 //
 // Everything it runs - bwrap, pasta, the guards, the environment inside -
 // comes from store paths in CONFIG.json or from this binary, never from the
-// host's PATH. The guards and sandbox-init are this binary under their own
-// names, next to it.
+// host's PATH. The guards and init are subcommands of this binary.
 //
 // Without a config of its own (the flake's default package), it runs with
 // ~/.config/sandbox/config.nix when that exists: a module like any other
@@ -26,7 +25,6 @@ package launcher
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -40,15 +38,16 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/mgnsk/sandbox/internal/hostname"
 	"github.com/mgnsk/sandbox/internal/popuprelay"
 )
 
 // launcher is one start of a sandbox.
 type launcher struct {
-	self       string // This binary, which the guards and sandbox-init are too.
+	self       string // This binary, whose subcommands the guards and init are.
 	configPath string
 	cfg        *config
-	opts       options
+	opts       Options
 	command    []string
 
 	home, user, runtimeDir string
@@ -62,18 +61,14 @@ type signalError struct{ sig syscall.Signal }
 
 func (e signalError) Error() string { return "interrupted" }
 
-// Main runs the launcher with argv; its exit status.
-func Main(argv []string) int {
+// Main runs command in the sandbox configured at configPath; the exit status.
+func Main(configPath string, opts Options, command []string) int {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 
-	code, err := run(ctx, cancel, argv, signals)
-	if errors.Is(err, flag.ErrHelp) {
-		printUsage(os.Stderr)
-		return 0
-	}
+	code, err := run(ctx, cancel, configPath, opts, command, signals)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sandbox: %v\n", err)
 		code = 1
@@ -88,19 +83,20 @@ func Main(argv []string) int {
 	return code
 }
 
-func run(ctx context.Context, cancel context.CancelCauseFunc, argv []string, signals chan os.Signal) (int, error) {
-	if len(argv) < 2 {
-		return 0, errors.New("usage: sandbox CONFIG.json [OPTIONS] [--] [COMMAND...]")
+func run(ctx context.Context, cancel context.CancelCauseFunc, configPath string, opts Options, command []string, signals chan os.Signal) (int, error) {
+	if opts.FJToken != "" {
+		host, ok := hostname.Normalize(opts.FJToken)
+		if !ok {
+			return 0, fmt.Errorf("not a Forgejo host: %s", opts.FJToken)
+		}
+		opts.FJToken = host
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return 0, err
 	}
-	l := &launcher{self: self, configPath: argv[1]}
+	l := &launcher{self: self, configPath: configPath, opts: opts, command: command}
 	if l.cfg, err = readConfig(l.configPath); err != nil {
-		return 0, err
-	}
-	if l.opts, l.command, err = parseOptions(argv[2:]); err != nil {
 		return 0, err
 	}
 
@@ -146,7 +142,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 
 	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
 	switch {
-	case l.opts.claudeAPIKey:
+	case l.opts.ClaudeAPIKey:
 		if !prof.ClaudeAPIKey {
 			name := prof.Name
 			if name == "" {
@@ -155,20 +151,20 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 			return nil, nil, fmt.Errorf("--claude-api-key needs guards.claudeApiKey.enable for this project's profile (%s)", name)
 		}
 		return nil, nil, claudeAPIKey(l.volumeDir, true)
-	case l.opts.ghToken:
+	case l.opts.GHToken:
 		if !l.cfg.Guards.GitHub {
 			return nil, nil, errors.New("--gh-token needs guards.github.enable")
 		}
 		return nil, nil, setGitHubToken(l.volumeDir)
-	case l.opts.fjToken != "":
+	case l.opts.FJToken != "":
 		if !l.cfg.Guards.Forgejo {
 			return nil, nil, errors.New("--fj-token needs guards.forgejo.enable")
 		}
-		return nil, nil, setForgejoToken(l.volumeDir, l.opts.fjToken)
+		return nil, nil, setForgejoToken(l.volumeDir, l.opts.FJToken)
 	}
 
 	hostPorts := l.cfg.HostPorts
-	if !l.opts.noProjectConfig && lexists(filepath.Join(l.project, projectFileName)) {
+	if !l.opts.NoProjectConfig && lexists(filepath.Join(l.project, projectFileName)) {
 		m, err := l.projectManifest(ctx, prof.ClaudeDir)
 		if err != nil {
 			return nil, nil, err
@@ -312,7 +308,7 @@ func (l *launcher) makeVolume() error {
 
 // homeVolume is the per-project persistent $HOME, nested at $HOME's own path
 // inside the volume dir, so secrets.sqlite3 and exchange/ next to it stay
-// out of reach. Only ever written from inside the sandbox (sandbox-init) -
+// out of reach. Only ever written from inside the sandbox (init) -
 // the sandbox can plant symlinks in it, which host-side writes would
 // follow.
 func (l *launcher) homeVolume() string {
@@ -386,12 +382,12 @@ func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (string, error) {
 	return resolver, nil
 }
 
-// initArgs runs sandbox-init, which links the nix profile and home-manager
+// initArgs runs sandbox-bin init, which links the nix profile and home-manager
 // generation into the volume, then execs the login shell; --login reads
 // .bash_profile/.profile, and the exec trick runs a given command after
 // that same chain.
 func (l *launcher) initArgs(a *bwrapArgs) {
-	a.add("--chdir", l.cwd, filepath.Join(filepath.Dir(l.self), "sandbox-init"))
+	a.add("--chdir", l.cwd, l.self, "init")
 	for _, p := range []struct {
 		on   bool
 		path string

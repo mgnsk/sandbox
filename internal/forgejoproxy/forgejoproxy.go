@@ -1,7 +1,7 @@
 // Package forgejoproxy is forgejo-api-proxy, the sandbox's Forgejo API
 // guard.
 //
-//	forgejo-api-proxy PROJECT_TOKENS_FILE
+//	sandbox-bin forgejo-api-proxy PROJECT_TOKENS_FILE
 //
 // It runs outside the sandbox as an intercepting HTTPS_PROXY on the host's
 // loopback, which the launcher maps into the sandbox. The sandbox's fj
@@ -94,20 +94,18 @@ func New(tokensFile, keysFile string) *apiproxy.Proxy {
 	}}
 }
 
-// Main serves on the launcher's listener until stopped.
-func Main(argv []string) int {
-	return guard.Main(argv, "forgejo-api-proxy PROJECT_TOKENS_FILE", 1, func(ctx context.Context, args []string) error {
-		proxy, err := apiproxy.NewHTTPS(New(args[0], KeysPath()))
-		if err != nil {
-			return err
-		}
-		ln, err := guard.Listener()
-		if err != nil {
-			return err
-		}
-		if err := guard.Ready(proxy.Info()); err != nil {
-			return err
-		}
-		return proxy.Serve(ctx, ln)
-	})
+// Run serves on the launcher's listener until stopped.
+func Run(ctx context.Context, tokensFile string) error {
+	proxy, err := apiproxy.NewHTTPS(New(tokensFile, KeysPath()))
+	if err != nil {
+		return err
+	}
+	ln, err := guard.Listener()
+	if err != nil {
+		return err
+	}
+	if err := guard.Ready(proxy.Info()); err != nil {
+		return err
+	}
+	return proxy.Serve(ctx, ln)
 }

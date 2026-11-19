@@ -1,9 +1,9 @@
 // Package openurl is open-url-guard: it opens web URLs from a sandbox in the
 // host's browser, behind a popup.
 //
-//	open-url-guard
+//	sandbox-bin open-url-guard
 //
-// The sandbox has no display, so its xdg-open (sandbox-xdg-open) sends the
+// The sandbox has no display, so its xdg-open (sandbox-bin xdg-open) sends the
 // URL here instead. The host's xdg-open picks a handler by scheme, and for a
 // path by file type, so it only ever gets a URL that passed Validate:
 // anything else could start an arbitrary host application on sandbox-chosen
@@ -161,16 +161,14 @@ func xdgOpen(rawURL string) error {
 	return nil
 }
 
-// Main serves on the launcher's socket until stopped.
-func Main(argv []string) int {
-	return guard.Main(argv, "open-url-guard", 0, func(ctx context.Context, _ []string) error {
-		ln, err := guard.Listener()
-		if err != nil {
-			return err
-		}
-		if err := guard.Ready(struct{}{}); err != nil {
-			return err
-		}
-		return guard.Serve(ctx, ln, (&Guard{}).Handle)
-	})
+// Run serves on the launcher's socket until stopped.
+func Run(ctx context.Context) error {
+	ln, err := guard.Listener()
+	if err != nil {
+		return err
+	}
+	if err := guard.Ready(struct{}{}); err != nil {
+		return err
+	}
+	return guard.Serve(ctx, ln, (&Guard{}).Handle)
 }

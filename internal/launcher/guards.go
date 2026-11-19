@@ -144,10 +144,10 @@ func (g *guards) start(ctx context.Context, name string, argv []string, listener
 	}
 }
 
-// program is the path of this binary as the program name, by the link next
-// to it.
-func (g *guards) program(name string) string {
-	return filepath.Join(filepath.Dir(g.self), name)
+// program is the argv that runs the guard name: this binary's subcommand
+// of that name.
+func (g *guards) program(name string, args ...string) []string {
+	return append([]string{g.self, name}, args...)
 }
 
 // guard starts the guard name with a listener made for it.
@@ -157,7 +157,7 @@ func (g *guards) guard(ctx context.Context, name string, ln listener, args ...st
 		return nil, err
 	}
 	defer f.Close()
-	return g.start(ctx, name, append([]string{g.program(name)}, args...), f)
+	return g.start(ctx, name, g.program(name, args...), f)
 }
 
 type listener interface {
@@ -272,7 +272,7 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, run
 	// The database holds credentials in plaintext, in the volume dir, which
 	// only the user can enter.
 	db := filepath.Join(volumeDir, "secrets.sqlite3")
-	argv := []string{g.program("secret-service-guard"), strings.TrimSpace(string(address)), db}
+	argv := g.program("secret-service-guard", strings.TrimSpace(string(address)), db)
 	if _, err := g.start(ctx, "secret-service-guard", argv, nil); err != nil {
 		return err
 	}

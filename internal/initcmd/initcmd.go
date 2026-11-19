@@ -1,7 +1,7 @@
-// Package initcmd is sandbox-init, run by the sandbox launcher inside the
-// sandbox, before the login shell:
+// Package initcmd is sandbox-bin init, run by the sandbox launcher inside
+// the sandbox, before the login shell:
 //
-//	sandbox-init NIX_PROFILE HM_GENERATION COMMAND...
+//	sandbox-bin init NIX_PROFILE HM_GENERATION COMMAND...
 //
 // It links the host's nix profile and current home-manager generation into
 // the per-project home volume (either may be empty for none), and Claude
@@ -33,7 +33,7 @@ import (
 const managedClaudeDir = "/etc/claude-code"
 
 func warn(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "sandbox-init: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, "sandbox-bin init: "+format+"\n", a...)
 }
 
 func isDir(path string) bool {
@@ -207,13 +207,9 @@ func writeGhConfig(home string) {
 	}
 }
 
-// Main runs sandbox-init with argv; it returns only on failure.
-func Main(argv []string) int {
-	if len(argv) < 4 {
-		warn("usage: sandbox-init NIX_PROFILE HM_GENERATION COMMAND...")
-		return 2
-	}
-	nixProfile, generation, command := argv[1], argv[2], argv[3:]
+// Run links what there is to link, then execs command; it returns only on
+// failure, with the exit status.
+func Run(nixProfile, generation string, command []string) int {
 	home := os.Getenv("HOME")
 	if home == "" {
 		warn("HOME is not set")

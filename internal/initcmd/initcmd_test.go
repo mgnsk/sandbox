@@ -204,7 +204,7 @@ func TestMountPointsAreUnescaped(t *testing.T) {
 
 func run(t *testing.T, home string, args ...string) (string, string, error) {
 	t.Helper()
-	cmd := exec.Command(testbin.Program(t, "sandbox-init"), args...)
+	cmd := exec.Command(testbin.Path(t), append([]string{"init"}, args...)...)
 	cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
@@ -276,7 +276,7 @@ func TestSkipsMountsOverTheVolume(t *testing.T) {
 	os.Mkdir(mounted, 0o755)
 	e.generation(t, "b", map[string]string{".bashrc": "b\n"})
 	cmd := exec.Command(bw, "--unshare-user", "--dev-bind", "/", "/", "--bind", repo, mounted, "--",
-		testbin.Program(t, "sandbox-init"), "", e.current, "true")
+		testbin.Path(t), "init", "", e.current, "true")
 	cmd.Env = []string{"HOME=" + e.home, "PATH=" + os.Getenv("PATH")}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)

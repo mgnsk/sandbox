@@ -41,7 +41,7 @@ func TestMain_(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("XDG_RUNTIME_DIR", dir)
 		urls := guard(t, dir, reply)
-		if got := Main([]string{"xdg-open", "https://example.com"}); got != want {
+		if got := Run("https://example.com"); got != want {
 			t.Errorf("reply %q: exit %d, want %d", reply, got, want)
 		}
 		if url := <-urls; url != "https://example.com\n" {
@@ -52,15 +52,7 @@ func TestMain_(t *testing.T) {
 
 func TestWithoutAGuard(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	if got := Main([]string{"xdg-open", "https://example.com"}); got != exitFailed {
+	if got := Run("https://example.com"); got != exitFailed {
 		t.Errorf("exit %d", got)
-	}
-}
-
-func TestUsage(t *testing.T) {
-	for _, argv := range [][]string{{"xdg-open"}, {"xdg-open", "a", "b"}} {
-		if got := Main(argv); got != exitSyntax {
-			t.Errorf("%q: exit %d", argv, got)
-		}
 	}
 }

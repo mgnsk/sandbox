@@ -1,7 +1,7 @@
 // Package claudeproxy is claude-api-proxy: Claude Code inside the sandbox
 // on an API key that never enters it.
 //
-//	claude-api-proxy KEY_FILE
+//	sandbox-bin claude-api-proxy KEY_FILE
 //
 // It runs outside the sandbox, on a private socket that the launcher binds
 // in. Claude Code inside has ANTHROPIC_UNIX_SOCKET pointing here and
@@ -81,16 +81,14 @@ func New(keyFile string) *apiproxy.Proxy {
 	}}
 }
 
-// Main serves on the launcher's socket until stopped.
-func Main(argv []string) int {
-	return guard.Main(argv, "claude-api-proxy KEY_FILE", 1, func(ctx context.Context, args []string) error {
-		ln, err := guard.Listener()
-		if err != nil {
-			return err
-		}
-		if err := guard.Ready(struct{}{}); err != nil {
-			return err
-		}
-		return New(args[0]).Serve(ctx, ln)
-	})
+// Run serves on the launcher's socket until stopped.
+func Run(ctx context.Context, keyFile string) error {
+	ln, err := guard.Listener()
+	if err != nil {
+		return err
+	}
+	if err := guard.Ready(struct{}{}); err != nil {
+		return err
+	}
+	return New(keyFile).Serve(ctx, ln)
 }

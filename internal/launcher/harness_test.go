@@ -289,7 +289,7 @@ func (h *harness) environ(extra map[string]string) []string {
 }
 
 func (h *harness) command(cwd string, env map[string]string, args ...string) *exec.Cmd {
-	cmd := exec.Command(testbin.Program(h.t, "sandbox"), append([]string{h.configPath()}, args...)...)
+	cmd := exec.Command(testbin.Path(h.t), append([]string{"launch", "--config", h.configPath()}, args...)...)
 	cmd.Dir = cwd
 	if cwd == "" {
 		cmd.Dir = h.project

@@ -8,9 +8,7 @@ RUN ?=
 
 NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix
 
-# The binary, with a link per program it runs as.
 BIN := .build/go/bin
-PROGRAMS = $(shell cat cmd/sandbox/programs)
 
 .PHONY: list test coverage build lint fmt demo demo-clean
 
@@ -35,9 +33,8 @@ coverage: ## Line coverage of the Go code
 	mkdir -p .build/go
 	$(DEV) sh -c 'go test -coverpkg=./... -coverprofile=.build/go/cover.txt ./... && go tool cover -func=.build/go/cover.txt'
 
-build: ## Build the binary into .build/go/bin
-	$(DEV) go build -o $(BIN)/sandbox ./cmd/sandbox
-	for p in $(filter-out sandbox,$(PROGRAMS)); do ln -sf sandbox $(BIN)/$$p; done
+build: ## Build sandbox-bin into .build/go/bin
+	$(DEV) go build -o $(BIN)/sandbox-bin ./cmd/sandbox-bin
 
 lint: ## Check formatting and go vet
 	nix fmt -- --check $(NIX_FILES)

@@ -1,6 +1,6 @@
 // Package ghproxy is gh-api-proxy, the sandbox's GitHub API guard.
 //
-//	gh-api-proxy PROJECT_TOKEN_FILE
+//	sandbox-bin gh-api-proxy PROJECT_TOKEN_FILE
 //
 // It runs outside the sandbox as an intercepting HTTPS_PROXY on the host's
 // loopback, which the launcher maps into the sandbox. The sandbox's gh
@@ -105,24 +105,22 @@ func hostToken() string {
 	return ""
 }
 
-// Main serves on the launcher's listener until stopped.
-func Main(argv []string) int {
-	return guard.Main(argv, "gh-api-proxy PROJECT_TOKEN_FILE", 1, func(ctx context.Context, args []string) error {
-		hostToken := hostToken()
-		if tokens.Read(args[0]) == "" && hostToken == "" {
-			fmt.Fprintf(os.Stderr, "sandbox: %v\n", errNoToken)
-		}
-		proxy, err := apiproxy.NewHTTPS(New(args[0], hostToken))
-		if err != nil {
-			return err
-		}
-		ln, err := guard.Listener()
-		if err != nil {
-			return err
-		}
-		if err := guard.Ready(proxy.Info()); err != nil {
-			return err
-		}
-		return proxy.Serve(ctx, ln)
-	})
+// Run serves on the launcher's listener until stopped.
+func Run(ctx context.Context, tokenFile string) error {
+	hostToken := hostToken()
+	if tokens.Read(tokenFile) == "" && hostToken == "" {
+		fmt.Fprintf(os.Stderr, "sandbox: %v\n", errNoToken)
+	}
+	proxy, err := apiproxy.NewHTTPS(New(tokenFile, hostToken))
+	if err != nil {
+		return err
+	}
+	ln, err := guard.Listener()
+	if err != nil {
+		return err
+	}
+	if err := guard.Ready(proxy.Info()); err != nil {
+		return err
+	}
+	return proxy.Serve(ctx, ln)
 }

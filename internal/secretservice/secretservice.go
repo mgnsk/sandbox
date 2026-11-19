@@ -1,7 +1,7 @@
 // Package secretservice is secret-service-guard: a fake
 // org.freedesktop.secrets D-Bus service for the sandbox.
 //
-//	secret-service-guard BUS_ADDRESS DATABASE
+//	sandbox-bin secret-service-guard BUS_ADDRESS DATABASE
 //
 // It runs outside the sandbox, connected to a private, ephemeral D-Bus bus
 // the sandbox launcher starts just for this purpose, and persists secrets in
@@ -280,30 +280,28 @@ func Export(conn *dbus.Conn, st *Store) error {
 	return nil
 }
 
-// Main serves until stopped, or until the bus - the sandbox's own, which
+// Run serves until stopped, or until the bus - the sandbox's own, which
 // the launcher stops with it - goes away.
-func Main(argv []string) int {
-	return guard.Main(argv, "secret-service-guard BUS_ADDRESS DATABASE", 2, func(ctx context.Context, args []string) error {
-		st, err := OpenStore(args[1])
-		if err != nil {
-			return err
-		}
-		defer st.Close()
-		conn, err := dbus.Connect(args[0])
-		if err != nil {
-			return err
-		}
-		defer conn.Close()
-		if err := Export(conn, st); err != nil {
-			return err
-		}
-		if err := guard.Ready(struct{}{}); err != nil {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-		case <-conn.Context().Done():
-		}
-		return nil
-	})
+func Run(ctx context.Context, busAddress, database string) error {
+	st, err := OpenStore(database)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	conn, err := dbus.Connect(busAddress)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := Export(conn, st); err != nil {
+		return err
+	}
+	if err := guard.Ready(struct{}{}); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+	case <-conn.Context().Done():
+	}
+	return nil
 }

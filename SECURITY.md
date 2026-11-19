@@ -2,8 +2,8 @@
 
 What the sandbox contains and how. Read `internal/launcher` (the launcher)
 itself for the per-flag reasoning; this file is the threat-model overview.
-The launcher, `sandbox-init` and the guards are one Go binary, run under
-each program's name (`cmd/sandbox`).
+The launcher, init and the guards are subcommands of one Go binary,
+`sandbox-bin` (`cmd/sandbox-bin`).
 
 ## Threat model
 
@@ -42,7 +42,7 @@ The only host-backed paths writable from inside are:
 
 Everything else the sandbox needs (`/nix`, configured reference binds, home-manager-generated
 config) is mounted **read-only**. Home-manager files, when enabled, reach the
-volume as symlinks `sandbox-init` creates from inside the sandbox, into the
+volume as symlinks `sandbox-bin init` creates from inside the sandbox, into the
 read-only store; the host never writes into a volume, since a symlink planted there would redirect the write onto a host
 path.
 
@@ -182,7 +182,7 @@ limit, bounds what that costs.
 
 ## Opening URLs: http(s) only, behind a popup
 
-`xdg-open` inside (also at `/usr/bin/xdg-open`) is sandbox-xdg-open
+`xdg-open` inside (also at `/usr/bin/xdg-open`) is `sandbox-bin xdg-open`
 (`internal/xdgopen`). It sends the URL to open-url-guard (`internal/openurl`)
 on the host, which is the gate: anything in
 the sandbox can talk to the socket.

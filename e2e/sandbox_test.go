@@ -664,15 +664,22 @@ func TestTheSeccompFilterIsApplied(t *testing.T) {
 
 var guardNames = []string{"ssh-agent-guard", "gh-api-proxy", "forgejo-api-proxy", "claude-api-proxy", "secret-service-guard", "open-url-guard", "dbus-daemon"}
 
-// guardPids are the running guards', by their argv[0] (comm is cut to 15
-// characters).
+// guardPids are the running guards', by their sandbox-bin subcommand or,
+// for the bus, argv[0].
 func guardPids() map[string]bool {
 	pids := map[string]bool{}
 	entries, _ := os.ReadDir("/proc")
 	for _, e := range entries {
 		cmdline, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
-		argv0, _, _ := bytes.Cut(cmdline, []byte{0})
-		if err == nil && slices.Contains(guardNames, filepath.Base(string(argv0))) {
+		if err != nil {
+			continue
+		}
+		argv := strings.Split(string(cmdline), "\x00")
+		name := filepath.Base(argv[0])
+		if name == "sandbox-bin" && len(argv) > 1 {
+			name = argv[1]
+		}
+		if slices.Contains(guardNames, name) {
 			pids[e.Name()] = true
 		}
 	}

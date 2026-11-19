@@ -690,10 +690,12 @@ make coverage          # line coverage of the Go code by the tests
 make fmt               # format Go and nix files
 ```
 
-The launcher, `sandbox-init` and the guards are one Go binary (`cmd/sandbox`,
-`internal/`), run under each program's name. Each package has its tests next
-to it; the launcher's and `sandbox-init`'s also run the binary as the
-programs it is, and `e2e/` starts real sandboxes from a fresh build.
+The launcher, init and the guards are subcommands of one Go binary,
+`sandbox-bin` (`cmd/sandbox-bin`, `internal/`); `sandbox-bin --help` lists
+them, and the `sandbox` command is a wrapper around `sandbox-bin launch`
+with its configuration. Each package has its tests next to it; the
+launcher's and init's also run the binary's subcommands, and `e2e/` starts
+real sandboxes from a fresh build.
 
 Each target enters the dev shell itself when run outside it. The real-sandbox
 tests need unprivileged user namespaces, so they skip inside a running
