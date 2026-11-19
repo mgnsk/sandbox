@@ -7,6 +7,6 @@
   guards.forgejo.enable = true;
   profiles.work = {
     paths = [ "~/work" ];
-    guards.claudeApiKey.enable = true;
+    guards.claudeApiKey.tokenCommand = "op read op://v/claude/key";
   };
 }

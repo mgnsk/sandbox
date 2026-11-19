@@ -18,10 +18,10 @@ let
 
   profileType = types.submodule {
     options = layerOptions // {
-      guards.claudeApiKey.enable = mkOption {
-        type = types.nullOr types.bool;
+      guards.claudeApiKey.tokenCommand = mkOption {
+        type = types.nullOr types.str;
         default = null;
-        description = "The top-level guards.claudeApiKey.enable for projects of this profile; null keeps it.";
+        description = "guards.claudeApiKey.tokenCommand for projects of this profile; null keeps the top level's.";
       };
       guards.github.tokenCommand = mkOption {
         type = types.nullOr types.str;
@@ -86,11 +86,17 @@ let
         "${env}/bin"
       ]
       ++ lib.optional cfg.nixProfile.enable "$HOME/.nix-profile/bin";
-      claudeApiKey =
+      claudeApiKeyCommand =
         let
-          own = l.guards.claudeApiKey.enable or null;
+          own = l.guards.claudeApiKey.tokenCommand or null;
         in
-        cfg.claude.enable && (if own == null then cfg.guards.claudeApiKey.enable else own);
+        if !cfg.claude.enable then
+          null
+        else if own != null then
+          own
+        else
+          cfg.guards.claudeApiKey.tokenCommand;
+      claudeApiKey = claudeApiKeyCommand != null;
       claudeDir = layer'.claudeDir name (layer'.claudeValues {
         lspMarketplace = "sandbox";
         claude = {
@@ -131,7 +137,7 @@ let
       // cfg.env;
       binds = cfg.binds ++ l.binds;
       claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
-      inherit claudeApiKey;
+      inherit claudeApiKeyCommand;
       githubTokenCommand =
         let
           own = l.guards.github.tokenCommand or null;
@@ -427,15 +433,18 @@ in
           host.
         '';
       };
-      claudeApiKey.enable = mkOption {
-        type = types.bool;
-        default = false;
+      claudeApiKey.tokenCommand = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "op read op://Employee/Claude/credential";
         description = ''
-          Claude Code inside on a per-project API key that stays outside, added
-          by a host proxy. The key is asked for on the terminal at a project's
-          first start (or with `sandbox --claude-api-key`). Replaces logging in
-          inside, so not for Claude subscriptions. A profile can override it
-          (`profiles.<name>.guards.claudeApiKey.enable`).
+          A shell command printing a Claude API key, run on the host at each
+          start, like github.tokenCommand. With one, Claude Code inside runs
+          on that key, which a host proxy adds and which never enters the
+          sandbox or the disk - in place of logging in inside, so not for
+          Claude subscriptions. Trusted, and wins over a project's
+          sandbox.nix, whose command runs only once approved. A profile can
+          set its own.
         '';
       };
       openUrl.enable = mkOption {

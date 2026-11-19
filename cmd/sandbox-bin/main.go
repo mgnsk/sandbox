@@ -104,9 +104,9 @@ func root() *cli.Command {
 				nil, func(ctx context.Context, _ []string) error {
 					return forgejoproxy.Run(ctx)
 				}),
-			guardCommand("claude-api-proxy", "the Claude API, with the project's key",
-				[]string{"KEY_FILE"}, func(ctx context.Context, a []string) error {
-					return claudeproxy.Run(ctx, a[0])
+			guardCommand("claude-api-proxy", "the Claude API, with the key the launcher pipes in",
+				nil, func(ctx context.Context, _ []string) error {
+					return claudeproxy.Run(ctx)
 				}),
 		},
 	}
@@ -131,8 +131,6 @@ func launch() *cli.Command {
 				Usage: "evaluate sandbox.nix again, even if unchanged"},
 			&cli.BoolFlag{Name: "no-project-config", Destination: &opts.NoProjectConfig,
 				Usage: "ignore sandbox.nix"},
-			&cli.BoolFlag{Name: "claude-api-key", Destination: &opts.ClaudeAPIKey,
-				Usage: "set this project's Claude API key and exit"},
 		},
 		OnUsageError: usageError("sandbox", " (put -- before a command starting with -)", 1),
 		Action: func(_ context.Context, cmd *cli.Command) error {

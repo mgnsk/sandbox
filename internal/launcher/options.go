@@ -6,6 +6,4 @@ type Options struct {
 	Reload bool
 	// Ignore sandbox.nix.
 	NoProjectConfig bool
-	// Set this project's Claude API key, and exit.
-	ClaudeAPIKey bool
 }

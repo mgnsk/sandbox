@@ -19,7 +19,6 @@ import (
 	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/popup"
 	"github.com/mgnsk/sandbox/internal/popuprelay"
-	"github.com/mgnsk/sandbox/internal/tokens"
 )
 
 const (
@@ -204,6 +203,12 @@ func unixListener(path string) (*net.UnixListener, error) {
 // unixGuard starts the guard name on a socket named sock in a temp dir of
 // its own; the socket's path.
 func (g *guards) unixGuard(ctx context.Context, name, sock string, args ...string) (string, error) {
+	return g.unixGuardWithSecret(ctx, name, sock, nil, args...)
+}
+
+// unixGuardWithSecret is unixGuard, with secret handed over on
+// guard.SecretFD.
+func (g *guards) unixGuardWithSecret(ctx context.Context, name, sock string, secret []byte, args ...string) (string, error) {
 	dir, err := g.tempdir()
 	if err != nil {
 		return "", err
@@ -214,7 +219,7 @@ func (g *guards) unixGuard(ctx context.Context, name, sock string, args ...strin
 		return "", err
 	}
 	defer ln.Close()
-	_, err = g.guard(ctx, name, ln, args...)
+	_, err = g.guardWithSecret(ctx, name, ln, secret, args...)
 	return path, err
 }
 
@@ -395,10 +400,10 @@ func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 }
 
 // claudeAPI: Claude Code inside sends its API requests as plain HTTP over a
-// socket to claude-api-proxy, which adds the project's API key; the managed
-// apiKeyHelper gives it a placeholder key.
-func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, volumeDir, runtimeDir string) error {
-	sock, err := g.unixGuard(ctx, "claude-api-proxy", "claude-api.sock", filepath.Join(volumeDir, tokens.ClaudeFile))
+// socket to claude-api-proxy, which adds key - from the key command, held
+// only in its memory; the managed apiKeyHelper gives it a placeholder key.
+func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, key, runtimeDir string) error {
+	sock, err := g.unixGuardWithSecret(ctx, "claude-api-proxy", "claude-api.sock", []byte(key))
 	if err != nil {
 		return err
 	}

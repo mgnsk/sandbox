@@ -53,8 +53,9 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
     .guards.forgejo == true
     and .hostPorts == ["5432"]
     and .default.env.EDITOR == "nvim"
-    and ([.profiles[] | {name, paths, claudeApiKey}]
-         == [{name: "work", paths: ["~/work"], claudeApiKey: true}])
+    and .default.claudeApiKeyCommand == null
+    and ([.profiles[] | {name, paths, claudeApiKeyCommand}]
+         == [{name: "work", paths: ["~/work"], claudeApiKeyCommand: "op read op://v/claude/key"}])
   ' ${config}
   bin=$(jq -r '.default.env.PATH | split(":")[0]' ${config})
   test -x "$bin/hello"

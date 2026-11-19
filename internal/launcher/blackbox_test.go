@@ -26,7 +26,6 @@ import (
 
 	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/testbin"
-	"github.com/mgnsk/sandbox/internal/tokens"
 )
 
 // -- helpers run inside --
@@ -385,7 +384,10 @@ func TestClaudeDirAndExchange(t *testing.T) {
 // config or GitHub token command.
 func manifestJSON(t *testing.T, m manifest) string {
 	v := map[string]any{"claudeDir": nil, "binds": []bind{}, "hostPorts": []string{}, "command": nil,
-		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}}
+		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil}
+	if m.ClaudeAPIKeyCommand != "" {
+		v["claudeApiKeyCommand"] = m.ClaudeAPIKeyCommand
+	}
 	if m.GitHubTokenCommand != "" {
 		v["githubTokenCommand"] = m.GitHubTokenCommand
 	}
@@ -566,52 +568,39 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 
 const claudeKey = "sk-ant-api03-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 
+// A Claude API key command puts Claude Code on the proxy: from the user's
+// config (here a profile's, for this project only) or, approved, from
+// sandbox.nix; without one, Claude Code logs in inside as usual.
 func TestClaudeAPIKey(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Profiles = []profile{{Name: "api", Paths: []string{h.home + "/api"}, ClaudeAPIKey: true}}
-	h.run("", nil, "--claude-api-key").refused(t, "needs guards.claudeApiKey.enable for this project's profile (default)")
+	h.cfg.Default.ClaudeDir = "/store/claude"
+	onKey := func(r *result) bool {
+		env := r.pasta(t).setenv()
+		return env["ANTHROPIC_UNIX_SOCKET"] == h.runtime+"/claude-api.sock" && env["ANTHROPIC_BASE_URL"] == "http://api.anthropic.com"
+	}
+	if r := h.run("", nil); r.code != 0 || onKey(r) {
+		t.Errorf("without a command: %d %q", r.code, r.stderr)
+	}
 
-	h.cfg.Profiles[0].Paths = []string{h.project}
-	// Without a terminal, it starts anyway.
+	h.cfg.Profiles = []profile{{Name: "api", Paths: []string{h.project}, ClaudeDir: "/store/claude",
+		ClaudeAPIKeyCommand: "echo " + claudeKey}}
 	r := h.run("", nil)
-	if r.code != 0 || !strings.Contains(r.stderr, "run `sandbox --claude-api-key` from a terminal") || lexists(filepath.Join(h.volume(), "claude-api-key")) {
-		t.Errorf("%d %q", r.code, r.stderr)
+	if r.code != 0 || !onKey(r) || !strings.HasSuffix(r.pasta(t).bind(t, h.runtime+"/claude-api.sock"), "/claude-api.sock") {
+		t.Errorf("profile: %d %q", r.code, r.stderr)
 	}
-	inv := r.pasta(t)
-	env := inv.setenv()
-	if env["ANTHROPIC_UNIX_SOCKET"] != h.runtime+"/claude-api.sock" || env["ANTHROPIC_BASE_URL"] != "http://api.anthropic.com" ||
-		!strings.HasSuffix(inv.bind(t, h.runtime+"/claude-api.sock"), "/claude-api.sock") {
-		t.Errorf("%v", env)
-	}
+	h.cfg.Profiles[0].ClaudeAPIKeyCommand = "echo 'x y'"
+	h.run("", nil).refused(t, "guards.claudeApiKey.tokenCommand (echo 'x y') didn't print a token")
 
+	// From sandbox.nix: approved first.
+	h.cfg.Profiles = nil
+	h.withProject(manifest{ClaudeAPIKeyCommand: "echo " + claudeKey}, "{ ... }: { }\n", "m.json")
 	p := h.pty(nil)
-	if shown := p.expect("API key (Enter to skip): "); !strings.Contains(shown, "https://platform.claude.com/settings/keys") {
-		t.Errorf("%q", shown)
+	if !strings.Contains(p.expect("Allow? [y/N] "), "for Claude Code's API key:") {
+		t.Error("not shown")
 	}
-	time.Sleep(300 * time.Millisecond)
-	p.send(claudeKey + "\r")
-	if r := p.wait(); r.code != 0 || strings.Contains(r.stdout, claudeKey) {
-		t.Errorf("%d, echoed: %v", r.code, strings.Contains(r.stdout, claudeKey))
-	}
-	keyFile := filepath.Join(h.volume(), "claude-api-key")
-	if tokens.Read(keyFile) != claudeKey {
-		t.Error("not saved")
-	}
-	// Kept on Enter, replaced, not replaced by a malformed one.
-	set := func(answer string) string {
-		p := h.pty(nil, "--claude-api-key")
-		p.typeSecret("API key (Enter to skip): ", answer)
-		r := p.wait()
-		if r.code != 0 || len(r.calls("pasta")) != 0 {
-			t.Errorf("%d", r.code)
-		}
-		return r.stdout
-	}
-	set("")
-	other := "sk-ant-api03-oooooooooooooooooooooooooooooooooooooooo"
-	set(other)
-	if !strings.Contains(set("x y"), "doesn't look like an API key") || tokens.Read(keyFile) != other {
-		t.Errorf("key %q", tokens.Read(keyFile))
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 || !onKey(r) {
+		t.Errorf("sandbox.nix: %d %q", r.code, r.stdout)
 	}
 }
 

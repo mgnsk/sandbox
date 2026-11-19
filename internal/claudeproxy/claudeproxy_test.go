@@ -5,7 +5,6 @@ import (
 	"encoding/json/v2"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,16 +36,19 @@ func TestAllowPath(t *testing.T) {
 type world struct {
 	upstream *apiproxytest.Upstream
 	popups   *apiproxytest.Popups
-	keyFile  string
 	client   *http.Client
 }
 
 // newWorld serves the guard on a unix socket, as Claude Code reaches it.
 func newWorld(t *testing.T) *world {
+	return newWorldWith(t, key)
+}
+
+// newWorldWith is newWorld with the guard's key.
+func newWorldWith(t *testing.T, key string) *world {
 	dir := t.TempDir()
-	w := &world{upstream: apiproxytest.NewUpstream(t), popups: &apiproxytest.Popups{}, keyFile: filepath.Join(dir, "claude-api-key")}
-	os.WriteFile(w.keyFile, []byte(key+"\n"), 0o600)
-	p := New(w.keyFile)
+	w := &world{upstream: apiproxytest.NewUpstream(t), popups: &apiproxytest.Popups{}}
+	p := New(key)
 	p.Ask = w.popups.Ask
 	w.upstream.Wire(p)
 	sock := filepath.Join(dir, "api.sock")
@@ -112,27 +114,17 @@ func TestRefusals(t *testing.T) {
 	if status, msg := w.post(t, "http://api.anthropic.com/v1/files"); status != 403 || !strings.Contains(msg, "path not allowed") {
 		t.Errorf("other path: %d %q", status, msg)
 	}
-	for _, content := range []string{"", "not a key\n"} {
-		os.WriteFile(w.keyFile, []byte(content), 0o600)
-		if status, msg := w.post(t, "http://api.anthropic.com/v1/messages"); status != 403 || !strings.Contains(msg, "sandbox --claude-api-key") {
-			t.Errorf("key %q: %d %q", content, status, msg)
-		}
-	}
-	os.Remove(w.keyFile)
-	if status, _ := w.post(t, "http://api.anthropic.com/v1/messages"); status != 403 {
-		t.Errorf("no key file: %d", status)
-	}
 	if n := len(w.upstream.Seen()); n != 0 {
 		t.Errorf("%d requests reached upstream", n)
 	}
 }
 
-func TestTheKeyIsReadPerRequest(t *testing.T) {
-	w := newWorld(t)
-	other := "sk-ant-api03-oooooooooooooooooooooooooooooooooooooooo"
-	os.WriteFile(w.keyFile, []byte(other+"\n"), 0o600)
-	w.post(t, "http://api.anthropic.com/v1/messages")
-	if s := w.upstream.Seen(); len(s) != 1 || s[0].Header.Get("X-Api-Key") != other {
-		t.Errorf("upstream got %+v", s)
+func TestWithoutAKey(t *testing.T) {
+	w := newWorldWith(t, "")
+	if status, msg := w.post(t, "http://api.anthropic.com/v1/messages"); status != 403 || !strings.Contains(msg, "no Claude API key") {
+		t.Errorf("%d %q", status, msg)
+	}
+	if n := len(w.upstream.Seen()); n != 0 {
+		t.Errorf("%d requests reached upstream", n)
 	}
 }

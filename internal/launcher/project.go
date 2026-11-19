@@ -27,6 +27,7 @@ type manifest struct {
 	// Token commands, run on the host once approved (see tokencmd.go).
 	GitHubTokenCommand   string            `json:"githubTokenCommand"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
+	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
@@ -64,6 +65,7 @@ func (m *manifest) check() error {
 	}
 	m.ForgejoTokenCommands = hosts
 	m.GitHubTokenCommand = strings.TrimSpace(m.GitHubTokenCommand)
+	m.ClaudeAPIKeyCommand = strings.TrimSpace(m.ClaudeAPIKeyCommand)
 	for _, c := range m.ForgejoTokenCommands {
 		if strings.TrimSpace(c) == "" {
 			return errors.New("empty token command")
@@ -156,6 +158,7 @@ type hostAccess struct {
 	// match.
 	GitHubTokenCommand   string            `json:"githubTokenCommand,omitempty"`
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
+	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand,omitempty"`
 }
 
 func (h hostAccess) String() string {
@@ -180,6 +183,9 @@ func (h hostAccess) String() string {
 	for _, host := range slices.Sorted(maps.Keys(h.ForgejoTokenCommands)) {
 		lines = append(lines, "  run on this host at each start, for the "+host+" token:\n    "+h.ForgejoTokenCommands[host])
 	}
+	if h.ClaudeAPIKeyCommand != "" {
+		lines = append(lines, "  run on this host at each start, for Claude Code's API key:\n    "+h.ClaudeAPIKeyCommand)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -190,9 +196,10 @@ func (h hostAccess) String() string {
 // volume dir, out of the sandbox's reach.
 func (l *launcher) approveProject(m *manifest) error {
 	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts,
-		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands}
-	if len(access.Binds) == 0 && len(access.HostPorts) == 0 &&
-		access.GitHubTokenCommand == "" && len(access.ForgejoTokenCommands) == 0 {
+		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands,
+		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand}
+	if len(access.Binds) == 0 && len(access.HostPorts) == 0 && access.GitHubTokenCommand == "" &&
+		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" {
 		return nil
 	}
 	approved := filepath.Join(l.volumeDir, "project-approved.json")

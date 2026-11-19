@@ -40,6 +40,10 @@ func projectTokenCommands(cfg *config, prof profile, m *manifest) {
 	if !cfg.Guards.GitHub || prof.GitHubTokenCommand != "" {
 		m.GitHubTokenCommand = ""
 	}
+	// Without Claude Code in the sandbox (no managed config), no key.
+	if prof.ClaudeDir == "" || prof.ClaudeAPIKeyCommand != "" {
+		m.ClaudeAPIKeyCommand = ""
+	}
 	if !cfg.Guards.Forgejo {
 		m.ForgejoTokenCommands = nil
 		return
@@ -56,6 +60,9 @@ func projectTokenCommands(cfg *config, prof profile, m *manifest) {
 func withProjectTokenCommands(prof profile, m *manifest) profile {
 	if prof.GitHubTokenCommand == "" {
 		prof.GitHubTokenCommand = m.GitHubTokenCommand
+	}
+	if prof.ClaudeAPIKeyCommand == "" {
+		prof.ClaudeAPIKeyCommand = m.ClaudeAPIKeyCommand
 	}
 	if len(m.ForgejoTokenCommands) > 0 {
 		all := maps.Clone(m.ForgejoTokenCommands)

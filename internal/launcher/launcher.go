@@ -119,18 +119,6 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 
 	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
-	switch {
-	case l.opts.ClaudeAPIKey:
-		if !prof.ClaudeAPIKey {
-			name := prof.Name
-			if name == "" {
-				name = "default"
-			}
-			return nil, nil, fmt.Errorf("--claude-api-key needs guards.claudeApiKey.enable for this project's profile (%s)", name)
-		}
-		return nil, nil, claudeAPIKey(l.volumeDir, true)
-	}
-
 	hostPorts := l.cfg.HostPorts
 	if !l.opts.NoProjectConfig && lexists(filepath.Join(l.project, projectFileName)) {
 		m, err := l.projectManifest(ctx, prof.ClaudeDir)
@@ -150,11 +138,6 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	tcp, udp, err := parseHostPorts(hostPortSpecs(hostPorts))
 	if err != nil {
 		return nil, nil, err
-	}
-	if prof.ClaudeAPIKey {
-		if err := claudeAPIKey(l.volumeDir, false); err != nil {
-			return nil, nil, err
-		}
 	}
 	if unix.Access(l.cfg.Seccomp, unix.R_OK) != nil {
 		return nil, nil, fmt.Errorf("missing seccomp filter %s", l.cfg.Seccomp)
@@ -329,8 +312,12 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 	if err := g.caBundle(a, l.runtimeDir); err != nil {
 		return err
 	}
-	if prof.ClaudeAPIKey {
-		if err := g.claudeAPI(ctx, a, l.volumeDir, l.runtimeDir); err != nil {
+	if command := prof.ClaudeAPIKeyCommand; command != "" {
+		key, err := l.runTokenCommand(ctx, "guards.claudeApiKey.tokenCommand", command)
+		if err != nil {
+			return err
+		}
+		if err := g.claudeAPI(ctx, a, key, l.runtimeDir); err != nil {
 			return err
 		}
 	}

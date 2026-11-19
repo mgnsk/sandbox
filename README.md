@@ -32,7 +32,7 @@ What you get, per project:
   - the GitHub API (the host's or the project's token), from `gh` or any
     other client: writes ask, reads don't;
   - Forgejo APIs (opt-in): the same;
-  - the Claude API on a per-project API key (opt-in): never asks;
+  - the Claude API on an API key from a key command (opt-in): never asks;
   - opening http(s) URLs in the host's browser: asks.
 - **A Secret Service** per project, so tools storing credentials via libsecret
   work without a desktop keyring.
@@ -181,35 +181,36 @@ below keeps the key outside instead.
 Every new project needs this once; the login then persists in that project's
 volume. Other projects, and Claude Code on the host, keep their own logins.
 
-**Claude Code on an API key** (`guards.claudeApiKey.enable = true`): the key
-stays on the host, and a proxy adds it to Claude Code's requests.
+**Claude Code on an API key**: with a key command, the key stays on the
+host, and a proxy adds it to Claude Code's requests. It works like the
+GitHub token command (see above): printed at each start, held in memory,
+from your config (trusted) or the project's `sandbox.nix` (approved once):
+
+```nix
+guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
+```
 
 1. Create a key for the project at
    [platform.claude.com](https://platform.claude.com/settings/keys), ideally
-   in a workspace with a spend limit.
-2. Start the sandbox in the project; at the first start it asks for the key
-   on the terminal (hidden input) and keeps it in the same project folder as
-   the gh and fj tokens, outside the sandbox.
+   in a workspace with a spend limit, and store it in your secret manager.
+2. Set the command; start the sandbox (approving it, if it's the project's).
 3. Run `claude` inside as usual - no login.
 
-`sandbox --claude-api-key` replaces the key (running sandboxes pick it up);
-deleting it in the Console cuts off just that project. A subscription login
-can't go through the proxy: Anthropic doesn't allow tools to hold claude.ai
-credentials. If the project was logged in inside before, run `/logout` there
-so that login doesn't stay in the volume.
+Deleting the key in the Console cuts off just that project. A subscription
+login can't go through the proxy: Anthropic doesn't allow tools to hold
+claude.ai credentials. If the project was logged in inside before, run
+`/logout` there so that login doesn't stay in the volume.
 
-The option is per profile, so some projects can use a key while others log in
-with a subscription:
+Without a key command Claude Code logs in inside, per project. A profile can
+set its own command, so some projects use a key while others log in with a
+subscription:
 
 ```nix
-guards.claudeApiKey.enable = true;                  # API keys by default
-profiles.personal = {
-  paths = [ "~/personal" ];
-  guards.claudeApiKey.enable = false;               # subscription login here
+profiles.work = {
+  paths = [ "~/work" ];
+  guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
 };
 ```
-
-or the other way round, `true` only in the profiles that should use a key.
 
 ### SSH agent
 
@@ -536,7 +537,7 @@ modules = [
       guards.forgejo.enable = true;
       profiles.work = {
         paths = [ "~/work" ];
-        guards.claudeApiKey.enable = true;
+        guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
       };
     };
   }
@@ -670,7 +671,7 @@ All options are in [nix/module.nix](nix/module.nix). The main ones:
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `socket` (host) and `path` (inside). See [SSH agent](#ssh-agent). |
 | `guards.github.enable` / `.tokenCommand` | on / none | A shell command printing the token, run on the host at each start (see [Authentication](#authentication)); the host's gh is never used. |
 | `guards.forgejo.enable` / `.tokenCommands.<host>` | off / `{ }` | The same per Forgejo host; the host's fj is never used. |
-| `guards.claudeApiKey.enable` | off | Claude Code on a per-project API key held outside; a profile can override it. See [Authentication](#authentication). |
+| `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key, run on the host at each start: Claude Code then runs on it, held outside; a profile can set its own. See [Authentication](#authentication). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
 | `claude.enable` / `.package` | on / `pkgs.claude-code` | `package = null` keeps the managed config but brings no `claude`: one from the dev shell, `~/.nix-profile` or home-manager runs instead. |
@@ -720,7 +721,8 @@ project whose root has one of its `projectFiles`. Only one applies: the
 matching one with the highest `priority` (the first by name on a tie), so
 profiles don't combine with each other. It adds `binds` and `claude.*`
 (language servers and marketplaces included) on top of the top level, and
-can turn `guards.claudeApiKey.enable` on or off. `packages` and `env` are
+can set its own token commands (`guards.github.tokenCommand`,
+`guards.forgejo.tokenCommands`, `guards.claudeApiKey.tokenCommand`). `packages` and `env` are
 top-level only, the same in every project.
 
 ```nix

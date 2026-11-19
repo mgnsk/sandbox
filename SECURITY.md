@@ -184,8 +184,8 @@ intercepts the rest; it tunnels none, and per request:
 
 ## Token commands
 
-The GitHub and Forgejo tokens come from shell commands the launcher runs on
-the host at each start, with bash from the store, the user's environment
+The GitHub and Forgejo tokens, and the Claude API key, come from shell
+commands the launcher runs on the host at each start, with bash from the store, the user's environment
 (their `PATH`, so a secret manager's CLI is their own) and terminal (so it
 can prompt). Each command's output must be a valid token; the launcher hands
 it to its guard over a pipe, and nothing else keeps it.
@@ -214,10 +214,9 @@ host's are out of its reach. There is no way around this for a Claude
 subscription: Anthropic doesn't allow a tool to store or intermediate
 claude.ai credentials, so the login can't be held outside.
 
-`guards.claudeApiKey.enable` (on the top level or per profile) keeps an API
-key outside instead. The launcher
-asks for the project's key on the terminal and stores it in the volume dir
-(`claude-api-key`, mode 0600), out of the sandbox's reach. Claude Code inside
+A Claude API key command (`guards.claudeApiKey.tokenCommand`, see "Token
+commands") keeps an API key outside instead: printed on the host at each
+start and held in claude-api-proxy's memory, never on disk. Claude Code inside
 gets a placeholder from the managed `apiKeyHelper`, and `ANTHROPIC_UNIX_SOCKET`
 plus an `http://` `ANTHROPIC_BASE_URL` make it send plain HTTP over a socket
 to claude-api-proxy (`internal/claudeproxy`) on the host, which per request:
@@ -225,8 +224,7 @@ to claude-api-proxy (`internal/claudeproxy`) on the host, which per request:
 - forwards only to `api.anthropic.com`, over HTTPS, and only the paths Claude
   Code uses (messages, token counting, models, its own `/api/claude_code/`
   endpoints) - not the Files or Batches APIs the key could also reach;
-- drops the client's `Authorization` and `x-api-key` and adds the real key,
-  re-read every request.
+- drops the client's `Authorization` and `x-api-key` and adds the real key.
 
 There are no popups: Claude Code makes a request per turn. Anything in the
 sandbox can therefore use the key through the socket while the sandbox runs,
