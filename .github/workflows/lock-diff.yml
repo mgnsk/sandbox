@@ -44,7 +44,7 @@ jobs:
                 name = n;
                 version = p.${n}.version;
                 changelog = p.${n}.meta.changelog or null;
-              }) [ "claude-code" "gh" "forgejo-cli" "nix" "bubblewrap" "passt" "python3" "git" "openssh" ]'
+              }) [ "claude-code" "nix" "bubblewrap" "passt" "python3" "git" "openssh" ]'
           }
           versions "$base" > "$RUNNER_TEMP/old.json"
           versions "$head" > "$RUNNER_TEMP/new.json"

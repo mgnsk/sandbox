@@ -3,7 +3,7 @@
 //
 // Each proxy makes its own at startup. The key lives only in that process's
 // memory and dies with it; only the certificate leaves it, into the bundle
-// the sandbox's gh and fj wrappers trust. Leaf certificates are minted on
+// every client inside trusts (SANDBOX_CA_FILE). Leaf certificates are minted on
 // demand, one per host the proxy is asked to CONNECT to.
 package mitmca
 

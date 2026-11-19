@@ -36,9 +36,6 @@
       # No `sandbox` package of its own: build it with mkSandbox, from
       # home-manager (homeManagerModules) or a project's flake run from its
       # remote (see the README).
-      packages = forAllSystems (pkgs: {
-        inherit (pkgs.callPackage ./nix/packages.nix { }) gh forgejo-cli;
-      });
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
@@ -48,23 +45,19 @@
       });
 
       devShells = forAllSystems (pkgs: {
-        default =
-          let
-            p = pkgs.callPackage ./nix/packages.nix { };
-          in
-          pkgs.mkShell {
-            packages = [
-              pkgs.go
-              # The sandbox's gh and fj wrappers, which the proxy tests run,
-              # and the bus the secret-service tests start.
-              p.gh
-              p.forgejo-cli
-              pkgs.dbus
-              # libseccomp for internal/seccomp, the one cgo package.
-              pkgs.pkg-config
-              pkgs.libseccomp
-            ];
-          };
+        default = pkgs.mkShell {
+          packages = [
+            pkgs.go
+            # gh and fj, which the proxy tests run, and the bus the
+            # secret-service tests start.
+            pkgs.gh
+            pkgs.forgejo-cli
+            pkgs.dbus
+            # libseccomp for internal/seccomp, the one cgo package.
+            pkgs.pkg-config
+            pkgs.libseccomp
+          ];
+        };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);

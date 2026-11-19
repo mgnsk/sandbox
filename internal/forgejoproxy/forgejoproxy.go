@@ -77,13 +77,23 @@ func hostTokens(path string) map[string]string {
 // New is the Forgejo guard: the tokens in tokensFile, else those in the
 // host fj's keysFile.
 func New(tokensFile, keysFile string) *apiproxy.Proxy {
+	lookup := func(host string) (string, bool) {
+		all := hostTokens(keysFile)
+		maps.Copy(all, tokens.ReadHosts(tokensFile))
+		token, ok := all[host]
+		return token, ok
+	}
 	return &apiproxy.Proxy{Guard: apiproxy.Guard{
 		Name:  "forgejo-api-proxy",
 		Title: "Allow sandboxed Forgejo API write?",
+		// Every proxy-aware client inside goes through the router, which
+		// asks here first: only hosts with a token are this guard's.
+		Handles: func(host string) bool {
+			_, ok := lookup(host)
+			return ok
+		},
 		Route: func(host string) (apiproxy.Route, error) {
-			all := hostTokens(keysFile)
-			maps.Copy(all, tokens.ReadHosts(tokensFile))
-			token, ok := all[host]
+			token, ok := lookup(host)
 			if !ok {
 				return apiproxy.Route{}, fmt.Errorf("no token for %[1]s - on the host, outside the sandbox, run"+
 					" `sandbox --fj-token %[1]s` in the project (a token for this project)"+

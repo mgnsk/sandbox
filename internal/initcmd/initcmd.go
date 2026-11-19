@@ -5,7 +5,9 @@
 //
 // It links the host's nix profile and current home-manager generation into
 // the per-project home volume (either may be empty for none), and Claude
-// Code's marketplace list to the managed one, then execs COMMAND.
+// Code's marketplace list to the managed one, starts the router the API
+// guards are reached through (internal/router) when a guard is on, then
+// execs COMMAND.
 //
 // Each link points at the generation's store path, so a home-manager switch
 // on the host takes effect at the next start of a sandbox of the project.
@@ -27,6 +29,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/mgnsk/sandbox/internal/router"
 )
 
 // Where the launcher mounts the profile's managed Claude Code config.
@@ -232,6 +236,11 @@ func Run(nixProfile, generation string, command []string) int {
 		return 1
 	}
 	writeGhConfig(home)
+	env, err := router.Start(os.Environ())
+	if err != nil {
+		warn("%v", err)
+		return 1
+	}
 
 	path, err := exec.LookPath(command[0])
 	if errors.Is(err, exec.ErrNotFound) {
@@ -239,7 +248,7 @@ func Run(nixProfile, generation string, command []string) int {
 		return 127
 	}
 	if err == nil {
-		err = syscall.Exec(path, command, os.Environ())
+		err = syscall.Exec(path, command, env)
 	}
 	warn("%v", err)
 	return 126

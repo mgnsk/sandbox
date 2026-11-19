@@ -258,13 +258,22 @@ func TestTheExchangeDirIsReadOnly(t *testing.T) {
 	}
 }
 
+// Any client reaches the GitHub guard through the router: curl's request to
+// the API completes TLS with the guard's certificate (whatever the guard
+// then answers, with or without a token on this host), the router takes
+// only its own secret, and the guards' own URLs aren't handed on.
 func TestGhAndXdgOpenTalkToTheirGuards(t *testing.T) {
-	r := newProject(t).run(t, `[ -n "$SANDBOX_GH_PROXY" ] && [ -r "$SANDBOX_CA_FILE" ] && echo gh-proxy
+	r := newProject(t).run(t, `[ -z "$SANDBOX_GH_PROXY" ] && [ "$SSL_CERT_FILE" = "$SANDBOX_CA_FILE" ] && echo env
+echo "api=$(curl -s -o /dev/null -w '%{http_code}' https://api.github.com/user)"
+echo "wrong=$(curl -s -o /dev/null -w '%{http_connect}' -x "http://sandbox:wrong@${HTTPS_PROXY#*@}" https://api.github.com/user)"
 [ -S "$XDG_RUNTIME_DIR/open-url.sock" ] && echo url-socket
 echo "browser=[$BROWSER]"
 xdg-open file:///etc/passwd; echo rc=$?
 `, nil).ok(t)
-	for _, want := range []string{"url-socket", "browser=[/usr/bin/xdg-open]", "rc=4"} {
+	if strings.Contains(r.stdout, "api=000") || !strings.Contains(r.stdout, "api=") {
+		t.Errorf("no answer through the router and guard: %q", r.stdout)
+	}
+	for _, want := range []string{"env", "wrong=407", "url-socket", "browser=[/usr/bin/xdg-open]", "rc=4"} {
 		if !strings.Contains(r.stdout, want) {
 			t.Errorf("%q not in %q", want, r.stdout)
 		}

@@ -1,4 +1,4 @@
-# The Go tests, as a check, with the gh and fj wrappers and dbus-daemon for
+# The Go tests, as a check, with gh, fj and dbus-daemon for
 # the tests that run them. The real-sandbox tests (e2e), and the others that
 # need unprivileged user namespaces or a nix daemon, skip themselves: the nix
 # build sandbox has neither.
@@ -6,6 +6,8 @@
   cacert,
   callPackage,
   dbus,
+  forgejo-cli,
+  gh,
   libseccomp,
   pkg-config,
 }:
@@ -21,8 +23,8 @@ p.sandbox.overrideAttrs {
   nativeCheckInputs = [
     pkg-config
     dbus
-    p.gh
-    p.forgejo-cli
+    gh
+    forgejo-cli
   ];
   checkPhase = ''
     runHook preCheck

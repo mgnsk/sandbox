@@ -107,18 +107,30 @@ func (w *world) do(t *testing.T, method, url string) (int, string) {
 	return resp.StatusCode, m.Message
 }
 
+// notHandled says whether the guard turned down the CONNECT for url's
+// host, leaving it to the router to reach directly.
+func (w *world) notHandled(t *testing.T, url string) bool {
+	t.Helper()
+	resp, err := w.client.Get(url)
+	if err == nil {
+		resp.Body.Close()
+		return false
+	}
+	return strings.Contains(err.Error(), "Not Found")
+}
+
 func (w *world) lastAuth() string {
 	seen := w.upstream.Seen()
 	return seen[len(seen)-1].Header.Get("Authorization")
 }
 
 // Both sources are read per request: a login on the host or a project
-// token applies without a restart, the project's winning.
+// token applies without a restart, the project's winning. A host without a
+// token isn't the guard's at all.
 func TestTokensPerRequest(t *testing.T) {
 	w := newWorld(t)
-	status, msg := w.do(t, "GET", "https://"+host+"/api/v1/user")
-	if status != 403 || !strings.Contains(msg, "sandbox --fj-token "+host) || !strings.Contains(msg, "fj --host "+host+" auth add-token") {
-		t.Errorf("no token: %d %q", status, msg)
+	if !w.notHandled(t, "https://"+host+"/api/v1/user") {
+		t.Error("no token: handled")
 	}
 	writeJSON(t, w.keys, keys(map[string]any{host: app("host-token")}))
 	if status, _ := w.do(t, "GET", "https://"+host+"/x"); status != 200 || w.lastAuth() != "token host-token" {
@@ -129,8 +141,8 @@ func TestTokensPerRequest(t *testing.T) {
 		t.Errorf("project token: %q", w.lastAuth())
 	}
 	// Another port is another instance.
-	if status, msg := w.do(t, "GET", "https://"+host+":3000/x"); status != 403 || !strings.Contains(msg, host+":3000") {
-		t.Errorf("other port: %d %q", status, msg)
+	if !w.notHandled(t, "https://"+host+":3000/x") {
+		t.Error("other port: handled")
 	}
 }
 
@@ -153,11 +165,11 @@ func TestWritesAsk(t *testing.T) {
 	}
 }
 
-// -- end to end, through the sandbox's fj --
+// -- end to end, with a real fj --
 
 func TestFj(t *testing.T) {
 	if _, err := exec.LookPath("fj"); err != nil {
-		t.Skip("needs fj (the sandbox's wrapper) on PATH")
+		t.Skip("needs fj on PATH")
 	}
 	run := func(t *testing.T, answer popup.Answer, args ...string) (*apiproxytest.Upstream, []popup.Request, string, error) {
 		dir := t.TempDir()
@@ -183,12 +195,9 @@ func TestFj(t *testing.T) {
 			"XDG_CONFIG_HOME=" + dir + "/config",
 			"XDG_DATA_HOME=" + dir + "/data",
 			"XDG_CACHE_HOME=" + dir + "/cache",
-			"SANDBOX_FJ_PROXY=" + u.String(),
-			"SANDBOX_CA_FILE=" + bundle,
-			// Decoys the wrapper has to override.
-			"HTTPS_PROXY=http://127.0.0.1:1",
-			"https_proxy=http://127.0.0.1:1",
-			"NO_PROXY=*",
+			// What the sandbox's router hands it on to.
+			"HTTPS_PROXY=" + u.String(),
+			"SSL_CERT_FILE=" + bundle,
 		}
 		out, err := cmd.CombinedOutput()
 		return upstream, popups.Asked(), string(out), err

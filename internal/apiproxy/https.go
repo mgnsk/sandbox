@@ -94,11 +94,15 @@ func (h *HTTPS) connect(w http.ResponseWriter, r *http.Request, tunnels *connQue
 	}
 
 	var upstream net.Conn
-	if h.Tunnel != nil && h.Tunnel(target) {
+	switch {
+	case h.Tunnel != nil && h.Tunnel(target):
 		if upstream, err = h.dial(r.Context(), target); err != nil {
 			h.refuse(w, http.StatusBadGateway, "upstream error: "+err.Error())
 			return
 		}
+	case h.Handles != nil && !h.Handles(host):
+		h.refuse(w, StatusNotHandled, "not handled: "+popup.Clean(host))
+		return
 	}
 	conn, buf, err := http.NewResponseController(w).Hijack()
 	if err != nil {
