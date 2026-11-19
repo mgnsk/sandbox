@@ -1,37 +1,34 @@
 package launcher
 
 import (
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
-	"os/exec"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
-
-var hostPortRE = regexp.MustCompile(`^([0-9]{1,5})(-([0-9]{1,5}))?(/(tcp|udp))?$`)
 
 // parseHostPorts gives the tcp and udp port lists for pasta's -T/-U from
 // entries like 5037, 8080/udp or 9000-9010.
 func parseHostPorts(specs []string) (tcp, udp []string, err error) {
 	for _, spec := range specs {
-		m := hostPortRE.FindStringSubmatch(spec)
-		if m == nil {
-			return nil, nil, errorf("bad SANDBOX_HOST_PORTS entry '%s' (want PORT[-PORT][/tcp|/udp])", spec)
+		ports, proto, _ := strings.Cut(spec, "/")
+		from, to, isRange := strings.Cut(ports, "-")
+		first, err1 := strconv.ParseUint(from, 10, 16)
+		last, err2 := first, error(nil)
+		if isRange {
+			last, err2 = strconv.ParseUint(to, 10, 16)
 		}
-		first, _ := strconv.Atoi(m[1])
-		last := first
-		if m[3] != "" {
-			last, _ = strconv.Atoi(m[3])
+		if err1 != nil || err2 != nil || first == 0 || last < first || proto != "" && proto != "tcp" && proto != "udp" {
+			return nil, nil, fmt.Errorf("bad SANDBOX_HOST_PORTS entry %q (want PORT[-PORT][/tcp|/udp], ports 1-65535)", spec)
 		}
-		if first < 1 || last > 65535 || last < first {
-			return nil, nil, errorf("bad SANDBOX_HOST_PORTS range '%s' (ports are 1-65535)", spec)
+		if first == last {
+			ports = strconv.FormatUint(first, 10)
 		}
-		ports := strconv.Itoa(first)
-		if first != last {
-			ports += "-" + strconv.Itoa(last)
-		}
-		if m[5] == "udp" {
+		if proto == "udp" {
 			udp = append(udp, ports)
 		} else {
 			tcp = append(tcp, ports)
@@ -43,16 +40,9 @@ func parseHostPorts(specs []string) (tcp, udp []string, err error) {
 // hostPortSpecs is the configured ports plus SANDBOX_HOST_PORTS from the
 // host's environment - never from inside, since --clearenv keeps it out.
 func hostPortSpecs(configured []string) []string {
-	return append(append([]string{}, configured...),
-		strings.Fields(strings.ReplaceAll(os.Getenv("SANDBOX_HOST_PORTS"), ",", " "))...)
-}
-
-func readResolvConf(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
+	return slices.Concat(configured, strings.FieldsFunc(os.Getenv("SANDBOX_HOST_PORTS"), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	}))
 }
 
 // Where the sandbox sends DNS queries when the host's resolver is on
@@ -72,7 +62,8 @@ const dnsForwardAddr = "169.254.1.53"
 func dnsForward(resolvConf string) (resolver, text string) {
 	seen := false
 	var lines []string
-	for _, line := range splitLines(resolvConf) {
+	for line := range strings.Lines(resolvConf) {
+		line = strings.TrimSuffix(line, "\n")
 		fields := strings.Fields(line)
 		if len(fields) < 2 || fields[0] != "nameserver" {
 			lines = append(lines, line)
@@ -95,33 +86,20 @@ func dnsForward(resolvConf string) (resolver, text string) {
 	return resolver, strings.Join(lines, "\n") + "\n"
 }
 
-// splitLines splits as Python's str.splitlines does, for the line endings
-// a text file has.
-func splitLines(s string) []string {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	out := strings.Split(strings.NewReplacer("\r", "\n", "\v", "\n", "\f", "\n",
-		"\x1c", "\n", "\x1d", "\n", "\x1e", "\n", "\x85", "\n", " ", "\n", " ", "\n").Replace(s), "\n")
-	if len(out) > 0 && out[len(out)-1] == "" {
-		out = out[:len(out)-1]
-	}
-	return out
-}
-
 // hostAddresses are the host's global addresses, which get prohibit routes
 // inside.
-func hostAddresses(ip string) ([]string, error) {
-	out, err := exec.Command(ip, "-o", "addr", "show", "scope", "global").Output()
+func hostAddresses() ([]string, error) {
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return nil, errorf("%s -o addr show scope global failed: %v", ip, err)
+		return nil, err
 	}
-	var addrs []string
-	for _, line := range splitLines(string(out)) {
-		if fields := strings.Fields(line); len(fields) > 3 {
-			addr, _, _ := strings.Cut(fields[3], "/")
-			addrs = append(addrs, addr)
+	var out []string
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
+			out = append(out, ipnet.IP.String())
 		}
 	}
-	return addrs, nil
+	return out, nil
 }
 
 // Run by pasta, inside its netns, before bwrap: adds the prohibit routes

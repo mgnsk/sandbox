@@ -1,7 +1,7 @@
 // Package secretservice is secret-service-guard: a fake
 // org.freedesktop.secrets D-Bus service for the sandbox.
 //
-//	secret-service-guard BUS_ADDRESS DATABASE READY_FILE
+//	secret-service-guard BUS_ADDRESS DATABASE
 //
 // It runs outside the sandbox, connected to a private, ephemeral D-Bus bus
 // the sandbox launcher starts just for this purpose, and persists secrets in
@@ -27,10 +27,9 @@
 package secretservice
 
 import (
+	"context"
 	"database/sql"
 	"errors"
-	"fmt"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -39,7 +38,7 @@ import (
 	"github.com/godbus/dbus/v5/introspect"
 	"github.com/godbus/dbus/v5/prop"
 
-	"github.com/mgnsk/sandbox/internal/cover"
+	"github.com/mgnsk/sandbox/internal/guard"
 )
 
 const (
@@ -72,8 +71,8 @@ func itemPath(id int64) dbus.ObjectPath {
 	return dbus.ObjectPath(itemPathPrefix + strconv.FormatInt(id, 10))
 }
 
-func failed(err error) *dbus.Error {
-	return dbus.MakeFailedError(err)
+func invalidArgs(message string) *dbus.Error {
+	return &dbus.Error{Name: "org.freedesktop.DBus.Error.InvalidArgs", Body: []any{message}}
 }
 
 // introspectable describes an object with one interface of methods.
@@ -100,7 +99,7 @@ func method(name string, in, out []string) introspect.Method {
 
 // item is org.freedesktop.Secret.Item, one per stored item.
 type item struct {
-	store *store
+	store *Store
 	id    int64
 }
 
@@ -111,7 +110,7 @@ func (it *item) GetSecret(session dbus.ObjectPath) (secret, *dbus.Error) {
 		return secret{}, errNoSuchObject
 	}
 	if err != nil {
-		return secret{}, failed(err)
+		return secret{}, dbus.MakeFailedError(err)
 	}
 	return secret{Session: session, Parameters: []byte{}, Value: value, ContentType: contentType}, nil
 }
@@ -119,7 +118,7 @@ func (it *item) GetSecret(session dbus.ObjectPath) (secret, *dbus.Error) {
 // Delete deletes the item, with no prompt.
 func (it *item) Delete() (dbus.ObjectPath, *dbus.Error) {
 	if err := it.store.delete(it.id); err != nil {
-		return "", failed(err)
+		return "", dbus.MakeFailedError(err)
 	}
 	return nullPath, nil
 }
@@ -128,7 +127,7 @@ func (it *item) Delete() (dbus.ObjectPath, *dbus.Error) {
 // default collection.
 type collection struct {
 	conn     *dbus.Conn
-	store    *store
+	store    *Store
 	mu       sync.Mutex
 	exported map[int64]bool
 }
@@ -160,19 +159,19 @@ func (c *collection) export(id int64) error {
 
 // SearchItems returns the items whose attributes include all of attrs.
 func (c *collection) SearchItems(attrs map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
-	rows, err := c.store.rows()
+	items, err := c.store.items()
 	if err != nil {
-		return nil, failed(err)
+		return nil, dbus.MakeFailedError(err)
 	}
 	paths := []dbus.ObjectPath{}
-	for _, r := range rows {
-		if !includes(r.attributes, attrs) {
+	for _, it := range items {
+		if !includes(it.attributes, attrs) {
 			continue
 		}
-		if err := c.export(r.id); err != nil {
-			return nil, failed(err)
+		if err := c.export(it.id); err != nil {
+			return nil, dbus.MakeFailedError(err)
 		}
-		paths = append(paths, itemPath(r.id))
+		paths = append(paths, itemPath(it.id))
 	}
 	return paths, nil
 }
@@ -191,18 +190,18 @@ func includes(have, want map[string]string) bool {
 func (c *collection) CreateItem(props map[string]dbus.Variant, s secret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	label, ok := props[itemIface+".Label"].Value().(string)
 	if !ok {
-		return "", "", &dbus.Error{Name: "org.freedesktop.DBus.Error.InvalidArgs", Body: []any{"no " + itemIface + ".Label"}}
+		return "", "", invalidArgs("no " + itemIface + ".Label")
 	}
 	attrs, ok := props[itemIface+".Attributes"].Value().(map[string]string)
 	if !ok {
-		return "", "", &dbus.Error{Name: "org.freedesktop.DBus.Error.InvalidArgs", Body: []any{"no " + itemIface + ".Attributes"}}
+		return "", "", invalidArgs("no " + itemIface + ".Attributes")
 	}
-	id, err := c.store.upsert(label, attrs, s.ContentType, s.Value, replace)
+	id, err := c.store.put(label, attrs, s.ContentType, s.Value, replace)
 	if err != nil {
-		return "", "", failed(err)
+		return "", "", dbus.MakeFailedError(err)
 	}
 	if err := c.export(id); err != nil {
-		return "", "", failed(err)
+		return "", "", dbus.MakeFailedError(err)
 	}
 	return itemPath(id), nullPath, nil
 }
@@ -226,22 +225,14 @@ func (s *service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.Obj
 	return objects, nullPath, nil
 }
 
-func serve(busAddress, dbPath, readyPath string) error {
-	st, err := openStore(dbPath)
-	if err != nil {
-		return err
-	}
-	conn, err := dbus.Connect(busAddress)
-	if err != nil {
-		return err
-	}
-
+// Export serves the Secret Service on conn, from st.
+func Export(conn *dbus.Conn, st *Store) error {
 	if err := conn.Export(&service{}, servicePath, serviceIface); err != nil {
 		return err
 	}
 	// Collections deliberately empty, so go-keyring falls back to
 	// aliases/default directly.
-	_, err = prop.Export(conn, servicePath, prop.Map{serviceIface: {
+	_, err := prop.Export(conn, servicePath, prop.Map{serviceIface: {
 		"Collections": {Value: []dbus.ObjectPath{}, Emit: prop.EmitFalse},
 	}})
 	if err != nil {
@@ -269,37 +260,50 @@ func serve(busAddress, dbPath, readyPath string) error {
 	if err != nil {
 		return err
 	}
-	rows, err := st.rows()
+	// Exported up front, so an item is there for GetSecret before any search.
+	items, err := st.items()
 	if err != nil {
 		return err
 	}
-	for _, r := range rows {
-		if err := coll.export(r.id); err != nil {
+	for _, it := range items {
+		if err := coll.export(it.id); err != nil {
 			return err
 		}
 	}
-
-	if _, err := conn.RequestName(serviceName, 0); err != nil {
+	reply, err := conn.RequestName(serviceName, dbus.NameFlagDoNotQueue)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(readyPath, nil, 0o666); err != nil {
-		return err
+	if reply != dbus.RequestNameReplyPrimaryOwner {
+		return errors.New(serviceName + " is taken on this bus")
 	}
-	<-conn.Context().Done()
-	return errors.New("the bus went away")
+	return nil
 }
 
-// Main serves on the bus at argv[1], the store at argv[2], creating argv[3]
-// once ready.
+// Main serves until stopped, or until the bus - the sandbox's own, which
+// the launcher stops with it - goes away.
 func Main(argv []string) int {
-	if len(argv) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: secret-service-guard BUS_ADDRESS DATABASE READY_FILE")
-		return 2
-	}
-	cover.DieOnSignals()
-	if err := serve(argv[1], argv[2], argv[3]); err != nil {
-		fmt.Fprintf(os.Stderr, "secret-service-guard: %v\n", err)
-		return 1
-	}
-	return 0
+	return guard.Main(argv, "secret-service-guard BUS_ADDRESS DATABASE", 2, func(ctx context.Context, args []string) error {
+		st, err := OpenStore(args[1])
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		conn, err := dbus.Connect(args[0])
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		if err := Export(conn, st); err != nil {
+			return err
+		}
+		if err := guard.Ready(struct{}{}); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+		case <-conn.Context().Done():
+		}
+		return nil
+	})
 }

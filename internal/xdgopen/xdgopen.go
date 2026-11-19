@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // xdg-open's own exit codes.
@@ -23,32 +22,20 @@ const (
 	exitFailed = 4
 )
 
-func strerror(err error) string {
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
-		s := errno.Error()
-		return strings.ToUpper(s[:1]) + s[1:]
-	}
-	return err.Error()
-}
-
 // Main runs sandbox-xdg-open with argv.
 func Main(argv []string) int {
 	if len(argv) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: xdg-open <http(s) URL>")
 		return exitSyntax
 	}
-
-	path := filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "open-url.sock")
-	answer, err := ask(path, argv[1])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "xdg-open: %s: %s\n", path, strerror(err))
+	answer, err := ask(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "open-url.sock"), argv[1])
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "xdg-open: %v\n", err)
 		return exitFailed
-	}
-	if answer == "ok" {
+	case answer == "ok":
 		return 0
-	}
-	if answer == "" {
+	case answer == "":
 		answer = "no answer from open-url-guard"
 	}
 	fmt.Fprintf(os.Stderr, "xdg-open: %s\n", answer)
@@ -63,7 +50,7 @@ func ask(path, url string) (string, error) {
 		return "", err
 	}
 	defer conn.Close()
-	if _, err := conn.Write([]byte(url + "\n")); err != nil {
+	if _, err := io.WriteString(conn, url+"\n"); err != nil {
 		return "", err
 	}
 	line, err := bufio.NewReader(conn).ReadString('\n')

@@ -2,232 +2,121 @@ package ghproxy
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
 	"fmt"
-	"io"
-	"strconv"
+	"net/http"
+	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/parser"
+
+	"github.com/mgnsk/sandbox/internal/apiproxy"
 )
 
+// GraphQL bodies are read in full to classify them; everything else
+// streams.
+const maxGraphQLBody = 10 << 20
+
+// operation is one operation of a GraphQL document, with its top-level
+// fields.
 type operation struct {
-	kind, name string
-	fields     []string
+	kind   ast.Operation
+	name   string
+	fields []string
 }
 
-// graphQLOperations lists each operation in a GraphQL request body, with
-// its top-level fields, plus the request's variables - or ok=false if it
-// isn't a single, parseable GraphQL request.
-func graphQLOperations(body []byte) (ops []operation, variables json.RawMessage, ok bool) {
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
-	if !utf8.Valid(body) {
-		return nil, nil, false
+func (op operation) String() string {
+	name := op.name
+	if name == "" {
+		name = "(anonymous)"
 	}
-	var request map[string]json.RawMessage
-	if json.Unmarshal(body, &request) != nil {
-		return nil, nil, false
+	fields := strings.Join(op.fields, ", ")
+	if fields == "" {
+		fields = "-"
 	}
-	var query string
-	if raw, found := request["query"]; !found || json.Unmarshal(raw, &query) != nil {
-		return nil, nil, false
+	return fmt.Sprintf("%s %s: %s", op.kind, name, fields)
+}
+
+// parseGraphQL reads a GraphQL request body: its operations and variables,
+// or an error if it isn't a single request this proxy understands.
+func parseGraphQL(body []byte) ([]operation, jsontext.Value, error) {
+	var req struct {
+		Query     string         `json:"query"`
+		Variables jsontext.Value `json:"variables"`
 	}
-	doc, err := parser.ParseQuery(&ast.Source{Input: query})
+	if err := json.Unmarshal(bytes.TrimPrefix(body, []byte("\uFEFF")), &req); err != nil {
+		return nil, nil, err
+	}
+	doc, err := parser.ParseQuery(&ast.Source{Input: req.Query})
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, err
 	}
+	if len(doc.Operations) == 0 {
+		return nil, nil, errors.New("no operation")
+	}
+	ops := make([]operation, 0, len(doc.Operations))
 	for _, op := range doc.Operations {
-		fields := []string{}
+		var fields []string
 		for _, sel := range op.SelectionSet {
-			if f, isField := sel.(*ast.Field); isField {
+			if f, ok := sel.(*ast.Field); ok {
 				fields = append(fields, f.Name)
 			}
 		}
-		ops = append(ops, operation{string(op.Operation), op.Name, fields})
+		ops = append(ops, operation{op.Operation, op.Name, fields})
 	}
-	if len(ops) == 0 {
-		return nil, nil, false
-	}
-	return ops, request["variables"], true
+	return ops, req.Variables, nil
 }
 
-// describeWrite describes a write for the approval popup, or says the
-// request only reads. body is the body of a request to the GraphQL
-// endpoint, nil for everything else.
-func describeWrite(method, host, path string, body []byte) (string, bool) {
-	target := method + " " + host + path
-	if body == nil {
-		if method == "GET" || method == "HEAD" {
-			return "", false
+// describe describes a write for the approval popup, or returns "" for a
+// read: REST GET/HEAD, and GraphQL documents of queries only, whichever one
+// operationName selects.
+func describe(r *http.Request, host string) (string, error) {
+	target := apiproxy.Target(r, host)
+	if host != apiHost || strings.TrimRight(r.URL.Path, "/") != "/graphql" {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			return "", nil
 		}
-		return target, true
+		return target, nil
 	}
-
-	ops, variables, ok := graphQLOperations(body)
-	if !ok {
-		return target + "\n\n(not a GraphQL request this proxy understands)", true
+	body, err := apiproxy.ReadBody(r, maxGraphQLBody)
+	if err != nil {
+		return "", err
 	}
-	// Any non-query operation counts, whichever one operationName selects.
-	if method == "POST" {
-		reads := true
-		for _, op := range ops {
-			if op.kind != "query" {
-				reads = false
-			}
-		}
-		if reads {
-			return "", false
-		}
+	ops, variables, err := parseGraphQL(body)
+	if err != nil {
+		return target + "\n\n(not a GraphQL request this proxy understands)", nil
+	}
+	writes := func(op operation) bool { return op.kind != ast.Query }
+	if r.Method == http.MethodPost && !slices.ContainsFunc(ops, writes) {
+		return "", nil
 	}
 	lines := []string{target, ""}
 	for _, op := range ops {
-		name := op.name
-		if name == "" {
-			name = "(anonymous)"
-		}
-		fields := strings.Join(op.fields, ", ")
-		if fields == "" {
-			fields = "-"
-		}
-		lines = append(lines, fmt.Sprintf("%s %s: %s", op.kind, name, fields))
+		lines = append(lines, op.String())
 	}
-	if v, err := parseJSON(variables); err == nil && v.truthy() {
-		var b strings.Builder
-		v.write(&b, "")
-		lines = append(lines, "", "variables:", b.String())
+	if shown := showVariables(variables); shown != "" {
+		lines = append(lines, "", "variables:", shown)
 	}
-	return strings.Join(lines, "\n"), true
+	return strings.Join(lines, "\n"), nil
 }
 
-// jsonValue is a JSON value with its objects' keys in order, for showing
-// variables as the client sent them.
-type jsonValue struct {
-	scalar string // A literal, for anything but an object or array.
-	object bool
-	array  bool
-	keys   []string
-	values []jsonValue
-}
-
-func parseJSON(raw json.RawMessage) (jsonValue, error) {
-	if len(raw) == 0 {
-		return jsonValue{scalar: "null"}, nil
+// showVariables is the variables as the client sent them, indented; "" for
+// none.
+func showVariables(v jsontext.Value) string {
+	compact := v.Clone()
+	if compact.Compact() != nil {
+		return ""
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	return decodeValue(dec)
-}
-
-func decodeValue(dec *json.Decoder) (jsonValue, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return jsonValue{}, err
+	switch string(compact) {
+	case "", "null", "{}", "[]", `""`, "false", "0":
+		return ""
 	}
-	switch t := tok.(type) {
-	case json.Delim:
-		v := jsonValue{object: t == '{', array: t == '['}
-		for dec.More() {
-			if v.object {
-				key, err := dec.Token()
-				if err != nil {
-					return jsonValue{}, err
-				}
-				v.keys = append(v.keys, key.(string))
-			}
-			item, err := decodeValue(dec)
-			if err != nil {
-				return jsonValue{}, err
-			}
-			v.values = append(v.values, item)
-		}
-		if _, err := dec.Token(); err != nil && err != io.EOF {
-			return jsonValue{}, err
-		}
-		return v, nil
-	case string:
-		return jsonValue{scalar: quote(t)}, nil
-	case json.Number:
-		return jsonValue{scalar: t.String()}, nil
-	case bool:
-		return jsonValue{scalar: strconv.FormatBool(t)}, nil
-	default:
-		return jsonValue{scalar: "null"}, nil
+	indented := v.Clone()
+	if indented.Indent(jsontext.WithIndent("  ")) != nil {
+		return ""
 	}
-}
-
-// truthy is Python's bool() of the value.
-func (v jsonValue) truthy() bool {
-	switch {
-	case v.object || v.array:
-		return len(v.values) > 0
-	case v.scalar == "null", v.scalar == "false", v.scalar == `""`:
-		return false
-	}
-	if f, err := strconv.ParseFloat(v.scalar, 64); err == nil {
-		return f != 0
-	}
-	return true
-}
-
-// write writes v as Python's json.dumps(v, indent=2, ensure_ascii=False).
-func (v jsonValue) write(b *strings.Builder, indent string) {
-	open, close := "[", "]"
-	if v.object {
-		open, close = "{", "}"
-	}
-	switch {
-	case !v.object && !v.array:
-		b.WriteString(v.scalar)
-		return
-	case len(v.values) == 0:
-		b.WriteString(open + close)
-		return
-	}
-	inner := indent + "  "
-	b.WriteString(open)
-	for i, item := range v.values {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		b.WriteString("\n" + inner)
-		if v.object {
-			b.WriteString(quote(v.keys[i]) + ": ")
-		}
-		item.write(b, inner)
-	}
-	b.WriteString("\n" + indent + close)
-}
-
-// quote is a JSON string as Python writes it without ensure_ascii.
-func quote(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		case '\b':
-			b.WriteString(`\b`)
-		case '\f':
-			b.WriteString(`\f`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04x`, r)
-			} else {
-				b.WriteRune(r)
-			}
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+	return string(indented)
 }

@@ -1,25 +1,25 @@
 package launcher
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
+	"os"
 )
 
 // config is the CONFIG.json nix writes for the launcher (see nix/module.nix).
 type config struct {
-	StateDir          *string        `json:"stateDir"`
-	Released          *float64       `json:"released"`
-	UpgradeNoticeDays *float64       `json:"upgradeNoticeDays"`
-	UserConfig        *userConfigRef `json:"userConfig"`
+	StateDir          string         `json:"stateDir"`
+	Released          int64          `json:"released"` // Unix time of the flake's commit; 0 for builds of your own.
+	UpgradeNoticeDays int            `json:"upgradeNoticeDays"`
+	UserConfig        *nixEvaluation `json:"userConfig"`
 	HostPorts         []string       `json:"hostPorts"`
 	PassEnv           []string       `json:"passEnv"`
 	HostEtc           []string       `json:"hostEtc"`
 	Guards            struct {
 		SSHAgent struct {
-			Enable bool    `json:"enable"`
-			Socket *string `json:"socket"`
-			Path   string  `json:"path"`
+			Enable bool   `json:"enable"`
+			Socket string `json:"socket"`
+			Path   string `json:"path"`
 		} `json:"sshAgent"`
 		SecretService bool `json:"secretService"`
 		GitHub        bool `json:"github"`
@@ -29,7 +29,7 @@ type config struct {
 	Default    profile   `json:"default"`
 	Profiles   []profile `json:"profiles"`
 	Seccomp    string    `json:"seccomp"`
-	ResolvConf *string   `json:"resolvConf"`
+	ResolvConf string    `json:"resolvConf"`
 	FHS        struct {
 		Bin    string `json:"bin"`
 		UsrBin string `json:"usrBin"`
@@ -48,89 +48,46 @@ type config struct {
 		NixProfile  bool `json:"nixProfile"`
 		HomeManager bool `json:"homeManager"`
 	} `json:"init"`
-	HostPath   string `json:"hostPath"`
-	DBusDaemon string `json:"dbusDaemon"`
-	Project    struct {
-		Eval    string `json:"eval"`
-		Nixpkgs string `json:"nixpkgs"`
-		System  string `json:"system"`
-	} `json:"project"`
+	HostPath   string        `json:"hostPath"`
+	DBusDaemon string        `json:"dbusDaemon"`
+	Project    nixEvaluation `json:"project"`
 }
 
-type userConfigRef struct {
+// nixEvaluation is a nix file to evaluate a config file with, against a
+// nixpkgs.
+type nixEvaluation struct {
 	Eval    string `json:"eval"`
 	Nixpkgs string `json:"nixpkgs"`
 	System  string `json:"system"`
 }
 
 type profile struct {
-	Name         *string    `json:"name"`
-	Env          orderedEnv `json:"env"`
-	Binds        []bind     `json:"binds"`
-	ClaudeDir    *string    `json:"claudeDir"`
-	ClaudeAPIKey bool       `json:"claudeApiKey"`
-	Paths        []string   `json:"paths"`
-	ProjectFiles []string   `json:"projectFiles"`
-	Priority     float64    `json:"priority"`
+	Name         string            `json:"name"`
+	Env          map[string]string `json:"env"`
+	Binds        []bind            `json:"binds"`
+	ClaudeDir    string            `json:"claudeDir"`
+	ClaudeAPIKey bool              `json:"claudeApiKey"`
+	Paths        []string          `json:"paths"`
+	ProjectFiles []string          `json:"projectFiles"`
+	Priority     int               `json:"priority"`
 }
 
 type bind struct {
-	Src      string  `json:"src"`
-	Dst      *string `json:"dst"`
-	Mode     string  `json:"mode"`
-	Optional bool    `json:"optional"`
-	HideGit  bool    `json:"hideGit"`
+	Src      string `json:"src"`
+	Dst      string `json:"dst"` // Src's own path when empty.
+	Mode     string `json:"mode"`
+	Optional bool   `json:"optional"`
+	HideGit  bool   `json:"hideGit"`
 }
 
-// envVar is one variable of an environment, which keeps its order.
-type envVar struct{ name, value string }
-
-type orderedEnv []envVar
-
-func (e *orderedEnv) UnmarshalJSON(data []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	tok, err := dec.Token()
+func readConfig(path string) (*config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if tok == nil {
-		*e = nil
-		return nil
+	cfg := &config{}
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return fmt.Errorf("env: not an object")
-	}
-	for dec.More() {
-		key, err := dec.Token()
-		if err != nil {
-			return err
-		}
-		var value string
-		if err := dec.Decode(&value); err != nil {
-			return err
-		}
-		*e = append(*e, envVar{key.(string), value})
-	}
-	_, err = dec.Token()
-	return err
-}
-
-// set sets name in the environment, in its place if it's there already.
-func (e *orderedEnv) set(name, value string) {
-	for i := range *e {
-		if (*e)[i].name == name {
-			(*e)[i].value = value
-			return
-		}
-	}
-	*e = append(*e, envVar{name, value})
-}
-
-func (e orderedEnv) get(name string) string {
-	for _, v := range e {
-		if v.name == name {
-			return v.value
-		}
-	}
-	return ""
+	return cfg, nil
 }

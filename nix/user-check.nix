@@ -9,7 +9,7 @@ let
   config = import ./user.nix {
     nixpkgs = pkgs.path;
     inherit (pkgs.stdenv.hostPlatform) system;
-    file = ../tests/fixtures/config.nix;
+    file = ./fixtures/config.nix;
   };
   withUser =
     (import ./eval.nix { inherit lib; } {
