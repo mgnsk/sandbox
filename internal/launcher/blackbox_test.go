@@ -25,6 +25,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/mgnsk/sandbox/internal/guard"
+	"github.com/mgnsk/sandbox/internal/secretservice/secretservicetest"
 	"github.com/mgnsk/sandbox/internal/testbin"
 )
 
@@ -877,8 +878,10 @@ func TestSecretServiceGuard(t *testing.T) {
 	if !exists(h.cfg.DBusDaemon) {
 		t.Skip("needs dbus-daemon")
 	}
+	hostBus := secretservicetest.Bus(t)
+	secretservicetest.Serve(t, hostBus, false)
 	h.cfg.Guards.SecretService = true
-	r := h.run("", nil)
+	r := h.run("", map[string]string{"DBUS_SESSION_BUS_ADDRESS": hostBus})
 	if r.code != 0 {
 		t.Fatal(r.stderr)
 	}
@@ -886,9 +889,9 @@ func TestSecretServiceGuard(t *testing.T) {
 	if inv.setenv()["DBUS_SESSION_BUS_ADDRESS"] != "unix:path="+h.runtime+"/bus" || !strings.HasSuffix(inv.bind(t, h.runtime+"/bus"), "/bus.sock") {
 		t.Errorf("%v", inv.setenv())
 	}
-	// The database is never bound in, only the socket.
-	if strings.Contains(strings.Join(inv.mountArgs, " "), "secrets.sqlite3") {
-		t.Error("database bound in")
+	// Only the private bus is bound in, never the host's.
+	if strings.Contains(strings.Join(inv.mountArgs, " "), hostBus[len("unix:path="):]) {
+		t.Error("host bus bound in")
 	}
 	// Stopped before its bus, the guard ends quietly.
 	if strings.Contains(r.stderr, "bus went away") || strings.Contains(r.stderr, "secret-service-guard") {
@@ -896,11 +899,26 @@ func TestSecretServiceGuard(t *testing.T) {
 	}
 }
 
+// With the guard on, a host without a Secret Service doesn't start.
+func TestSecretServiceGuardNeedsTheHosts(t *testing.T) {
+	h := newHarness(t)
+	if !exists(h.cfg.DBusDaemon) {
+		t.Skip("needs dbus-daemon")
+	}
+	h.cfg.Guards.SecretService = true
+	r := h.run("", map[string]string{"DBUS_SESSION_BUS_ADDRESS": secretservicetest.Bus(t)})
+	if r.code != 1 || !strings.Contains(r.stderr, "no Secret Service (org.freedesktop.secrets) on the host's session bus") ||
+		!strings.Contains(r.stderr, "guards.secretService.enable = false") || len(r.calls("pasta")) != 0 {
+		t.Errorf("exit %d, stderr %q", r.code, r.stderr)
+	}
+	h.run("", nil).refused(t, "guards.secretService: no host session bus")
+}
+
 func TestAGuardThatExitsStopsTheStart(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Guards.SecretService = true
 	h.cfg.DBusDaemon, _ = exec.LookPath("false")
-	h.run("", nil).refused(t, "dbus-daemon exited with status 1")
+	h.run("", map[string]string{"DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent"}).refused(t, "dbus-daemon exited with status 1")
 	// Its temp dir is removed all the same.
 	if entries, _ := os.ReadDir(h.tmpdir); len(entries) != 0 {
 		t.Errorf("left %v", entries)

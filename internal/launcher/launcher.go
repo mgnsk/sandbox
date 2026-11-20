@@ -338,7 +338,7 @@ func (l *launcher) makeVolume() error {
 }
 
 // homeVolume is the per-project persistent $HOME, nested at $HOME's own path
-// inside the volume dir, so secrets.sqlite3 and exchange/ next to it stay
+// inside the volume dir, so exchange/ and the rest next to it stay
 // out of reach. Only ever written from inside the sandbox (init) -
 // the sandbox can plant symlinks in it, which host-side writes would
 // follow.
@@ -357,7 +357,7 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 		a.add("--ro-bind-try", l.home+"/.ssh/known_hosts", "/etc/ssh/ssh_known_hosts")
 	}
 	if gc.SecretService {
-		if err := g.secretService(ctx, a, l.volumeDir, l.runtimeDir); err != nil {
+		if err := g.secretService(ctx, a, sessionBus(l.runtimeDir), l.project, l.runtimeDir); err != nil {
 			return err
 		}
 	}

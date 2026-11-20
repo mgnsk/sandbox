@@ -34,6 +34,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/mgnsk/sandbox/internal/secretservice/secretservicetest"
 )
 
 // sandbox is the built sandbox to run.
@@ -62,9 +64,12 @@ func usernsUsable() bool {
 	return err == nil || !errors.As(err, &exit)
 }
 
-// project is a throwaway git repo with a state dir next to it.
+// project is a throwaway git repo with a state dir next to it, and a host
+// session bus of its own with a keyring on it, for the Secret Service
+// guard: never the user's.
 type project struct {
 	bin, dir, state string
+	hostBus         string
 }
 
 func newProject(t *testing.T) project {
@@ -77,6 +82,8 @@ func newProject(t *testing.T) project {
 	p := project{bin: bin, dir: filepath.Join(tmp, "project"), state: filepath.Join(tmp, "state")}
 	os.MkdirAll(filepath.Join(p.dir, ".git"), 0o755)
 	os.Mkdir(p.state, 0o755)
+	p.hostBus = secretservicetest.Bus(t)
+	secretservicetest.Serve(t, p.hostBus, false)
 	return p
 }
 
@@ -106,7 +113,7 @@ func (p project) command(cwd string, env map[string]string, args ...string) *exe
 	if cwd == "" {
 		cmd.Dir = p.dir
 	}
-	cmd.Env = append(os.Environ(), "SANDBOX_STATE_DIR="+p.state)
+	cmd.Env = append(os.Environ(), "SANDBOX_STATE_DIR="+p.state, "DBUS_SESSION_BUS_ADDRESS="+p.hostBus)
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

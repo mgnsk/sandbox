@@ -6,7 +6,9 @@ the host. Know its limits up front instead of discovering them mid-task.
 Not reachable - don't probe, plan around it:
 
 - systemd/journalctl/loginctl, the host D-Bus (only a private bus with
-  a fake Secret Service exists), flatpak/portals
+  a Secret Service exists, which keeps this project's items in the host's
+  keyring - storing or reading one may wait on an unlock prompt on the
+  host), flatpak/portals
 - X and pipewire sockets, and the Wayland one unless `$WAYLAND_DISPLAY` is
   set: then GUI apps open windows through a filtering proxy, without the
   clipboard, screen capture or a GPU (Electron needs `--no-sandbox

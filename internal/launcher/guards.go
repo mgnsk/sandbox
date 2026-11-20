@@ -289,11 +289,15 @@ const busConf = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Confi
 </busconfig>
 `
 
-// secretService: a private, ephemeral D-Bus bus with a fake Secret Service,
-// so credentials go through libsecret instead of plaintext files. The
-// database itself is never bound in, only the socket, so it's only
-// reachable through the API.
-func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, runtimeDir string) error {
+// secretService: a private, ephemeral D-Bus bus with a Secret Service that
+// keeps the project's items in the host's, so credentials go through
+// libsecret instead of plaintext files. Only the private bus is bound in,
+// never the host's.
+func (g *guards) secretService(ctx context.Context, a *bwrapArgs, hostBus, project, runtimeDir string) error {
+	if hostBus == "" {
+		return errors.New("guards.secretService: no host session bus ($DBUS_SESSION_BUS_ADDRESS unset)" +
+			" for the host's Secret Service - set guards.secretService.enable = false to start without one")
+	}
 	dir, err := g.tempdir()
 	if err != nil {
 		return err
@@ -310,10 +314,7 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, volumeDir, run
 	if err != nil {
 		return err
 	}
-	// The database holds credentials in plaintext, in the volume dir, which
-	// only the user can enter.
-	db := filepath.Join(volumeDir, "secrets.sqlite3")
-	argv := g.program("secret-service-guard", strings.TrimSpace(string(address)), db)
+	argv := g.program("secret-service-guard", strings.TrimSpace(string(address)), hostBus, project)
 	if _, err := g.start(ctx, "secret-service-guard", argv, nil, nil); err != nil {
 		return err
 	}
