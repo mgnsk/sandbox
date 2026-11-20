@@ -38,7 +38,13 @@ func Bus(t testing.TB) string {
 	if err != nil {
 		t.Skip("needs dbus-daemon")
 	}
-	dir := t.TempDir()
+	// Not t.TempDir(): it's named after the test, and a long test name
+	// takes the socket's path past the 108 bytes a unix socket's may have.
+	dir, err := os.MkdirTemp("", "bus-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	conf := filepath.Join(dir, "bus.conf")
 	if err := os.WriteFile(conf, fmt.Appendf(nil, busConf, filepath.Join(dir, "bus.sock")), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,6 +55,7 @@ func Bus(t testing.TB) string {
 	}
 	cmd := exec.Command(daemon, "--config-file="+conf, "--nofork", "--nopidfile", "--print-address=3")
 	cmd.ExtraFiles = []*os.File{w}
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +66,7 @@ func Bus(t testing.TB) string {
 	})
 	address, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("dbus-daemon didn't start: %v", err)
 	}
 	return strings.TrimSpace(address)
 }
