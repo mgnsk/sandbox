@@ -40,9 +40,12 @@ type guards struct {
 	cfg  *config
 	env  []string
 
-	procs  []*proc
-	dirs   []string
-	popups *net.UnixListener // Where the guards ask, if anywhere.
+	procs []*proc
+	dirs  []string
+	// Where the temp dirs go: the user's runtime dir, which is theirs
+	// alone and which no project can be in (see checkSystem).
+	runtimeDir string
+	popups     *net.UnixListener // Where the guards ask, if anywhere.
 	// The sandbox has a Wayland display: programs inside may ask from a
 	// window, away from the terminal.
 	display bool
@@ -68,7 +71,12 @@ func newGuards(self string, cfg *config) *guards {
 			g.env = append(g.env, kv)
 		}
 	}
-	g.env = append(g.env, "PATH="+cfg.HostPath+":"+os.Getenv("PATH"))
+	// No empty entry, which is the working directory.
+	path := cfg.HostPath
+	if host := os.Getenv("PATH"); host != "" {
+		path += ":" + host
+	}
+	g.env = append(g.env, "PATH="+path)
 	return g
 }
 
@@ -87,12 +95,34 @@ func (g *guards) listenPopups() error {
 	return nil
 }
 
+// tempdir makes a private directory that goes with the sandbox, for the
+// guards' sockets and the files the launcher writes for inside.
 func (g *guards) tempdir() (string, error) {
-	dir, err := os.MkdirTemp("", "sandbox-")
+	dir, err := os.MkdirTemp(g.runtimeDir, "sandbox-")
+	if err != nil && g.runtimeDir != "" {
+		// A host without a runtime dir.
+		dir, err = os.MkdirTemp("", "sandbox-")
+	}
 	if err == nil {
 		g.dirs = append(g.dirs, dir)
 	}
 	return dir, err
+}
+
+// argsFile writes bwrap's arguments to a file it reads them from (--args),
+// for what they hold: the API guards' secrets, which on a command line any
+// user of the host could read.
+func (g *guards) argsFile(a bwrapArgs) (string, error) {
+	dir, err := g.tempdir()
+	if err != nil {
+		return "", err
+	}
+	var data []byte
+	for _, arg := range a {
+		data = append(append(data, arg...), 0)
+	}
+	path := filepath.Join(dir, "bwrap-args")
+	return path, os.WriteFile(path, data, 0o600)
 }
 
 // start runs argv with the guards' environment and the launcher's stdio,
@@ -112,8 +142,13 @@ func (g *guards) startEnv(ctx context.Context, name string, argv, env []string, 
 	defer r.Close()
 	cmd := &exec.Cmd{
 		Path: argv[0], Args: argv, Env: env,
+		// From /, never the project: nothing the sandbox wrote there is
+		// found by a guard or by what it runs (xdg-open, the browser).
+		Dir:   "/",
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		ExtraFiles: []*os.File{w},
+		// A launcher that's killed leaves no guard behind, holding a token.
+		SysProcAttr: &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM},
 	}
 	if listener != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, listener)

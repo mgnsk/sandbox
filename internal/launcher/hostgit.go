@@ -3,12 +3,9 @@ package launcher
 import (
 	"bytes"
 	"context"
-	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // hostGit is the git identity from the user's global git config on the
@@ -72,15 +69,7 @@ func sshSigningKey(value, home string) string {
 // readPublicKey reads a small regular file, not through a symlink at its
 // last component; "" if it isn't one.
 func readPublicKey(path string) string {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return ""
-	}
-	data, err := io.ReadAll(io.LimitReader(f, 16<<10))
+	data, err := readRegularFile(path, 16<<10)
 	if err != nil {
 		return ""
 	}

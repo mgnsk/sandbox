@@ -86,14 +86,18 @@ func dnsForward(resolvConf string) (resolver, text string) {
 	return resolver, strings.Join(lines, "\n") + "\n"
 }
 
-// hostAddresses are the host's global addresses, which get prohibit routes
-// inside.
+// Where a cloud host's metadata service answers, with the instance's
+// credentials: reached from the host, as pasta's connections are.
+const metadataAddr = "169.254.169.254"
+
+// hostAddresses are the addresses that get prohibit routes inside: the
+// host's global ones, and the metadata service's.
 func hostAddresses() ([]string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	out := []string{metadataAddr}
 	for _, a := range addrs {
 		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
 			out = append(out, ipnet.IP.String())
@@ -104,18 +108,18 @@ func hostAddresses() ([]string, error) {
 
 // Run by pasta, inside its netns, before bwrap: adds the prohibit routes
 // while it still has pasta's CAP_NET_ADMIN (bwrap drops it, so the sandbox
-// can't remove them), and opens the seccomp filter - here rather than in
-// the launcher, since pasta closes inherited fds past stdio before running
-// it.
+// can't remove them), and opens the seccomp filter and bwrap's arguments -
+// here rather than in the launcher, since pasta closes inherited fds past
+// stdio before running it.
 const pastaInner = `
 set -e
-ip=$1 seccomp=$2 n=$3
-shift 3
+ip=$1 seccomp=$2 args=$3 n=$4
+shift 4
 for addr in "${@:1:n}"; do
 	"$ip" route replace prohibit "$addr"
 done
 shift "$n"
-exec 10<"$seccomp"
+exec 10<"$seccomp" 11<"$args"
 exec "$@"
 `
 
@@ -136,7 +140,10 @@ exec "$@"
 //
 // The one exception is dnsResolver, a host resolver on loopback (see
 // dnsForward), reachable at dnsForwardAddr on ports 53 and 853.
-func pastaArgv(cfg *config, tcp, udp, addrs, bwrapArgs []string, dnsResolver string) []string {
+//
+// bwrap reads its options from argsFile (see guards.argsFile) and runs
+// command.
+func pastaArgv(cfg *config, tcp, udp, addrs []string, argsFile string, command []string, dnsResolver string) []string {
 	orNone := func(list []string) string {
 		if len(list) == 0 {
 			return "none"
@@ -155,8 +162,8 @@ func pastaArgv(cfg *config, tcp, udp, addrs, bwrapArgs []string, dnsResolver str
 		argv = append(argv, "--dns-forward", dnsForwardAddr, "--dns-host", dnsResolver)
 	}
 	argv = append(argv, "--", cfg.Tools.Bash, "-c", pastaInner, "bash",
-		cfg.Tools.IP, cfg.Seccomp, strconv.Itoa(len(addrs)))
+		cfg.Tools.IP, cfg.Seccomp, argsFile, strconv.Itoa(len(addrs)))
 	argv = append(argv, addrs...)
-	argv = append(argv, cfg.Tools.Bwrap, "--seccomp", "10")
-	return append(argv, bwrapArgs...)
+	argv = append(argv, cfg.Tools.Bwrap, "--seccomp", "10", "--args", "11")
+	return append(argv, command...)
 }

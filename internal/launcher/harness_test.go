@@ -9,9 +9,10 @@ package launcher
 // Everything the config names is a stand-in, the test binary under another
 // name (see TestMain):
 //
-//   - pasta records its argv and, instead of making a namespace, runs the
-//     command given to the sandbox (or nothing, for a login shell) with the
-//     --setenv variables and --chdir of the bwrap args. Binds whose
+//   - pasta records its argv - with bwrap's arguments, read from its
+//     --args file, in their place - and, instead of making a namespace, runs
+//     the command given to the sandbox (or nothing, for a login shell) with
+//     the --setenv variables and --chdir of the bwrap args. Binds whose
 //     destination is under the test's $XDG_RUNTIME_DIR become symlinks
 //     there, so a client inside finds a guard's socket where it would in a
 //     real sandbox.
@@ -69,8 +70,10 @@ func TestMain(m *testing.M) {
 
 // logEntry is one stand-in's run.
 type logEntry struct {
-	Tool  string            `json:"tool"`
-	Argv  []string          `json:"argv"`
+	Tool string   `json:"tool"`
+	Argv []string `json:"argv"`
+	// pasta's command line as it was, which any user of the host can read.
+	Raw   []string          `json:"raw"`
 	TTY   bool              `json:"tty"`
 	Files map[string]string `json:"files"`
 }
@@ -87,8 +90,26 @@ func writeLog(e logEntry) {
 
 const execMarker = `exec "$@"`
 
+// expandArgs is pasta's command line with bwrap's `--args FD` replaced by
+// the arguments in the file bash would open there: the fourth argument of
+// the inner script.
+func expandArgs(raw []string) []string {
+	inner := raw[slices.Index(raw, "--")+1:]
+	data, err := os.ReadFile(inner[6])
+	if err != nil {
+		panic(err)
+	}
+	at := slices.Index(raw, "--args")
+	argv := slices.Clone(raw[:at])
+	for arg := range strings.SplitSeq(strings.TrimSuffix(string(data), "\x00"), "\x00") {
+		argv = append(argv, arg)
+	}
+	return append(argv, raw[at+2:]...)
+}
+
 func fakePasta() int {
-	argv := os.Args[1:]
+	raw := os.Args[1:]
+	argv := expandArgs(raw)
 	bwrap := argv[slices.Index(argv, "--seccomp")+2:]
 	env := map[string]string{}
 	files := map[string]string{}
@@ -123,7 +144,7 @@ loop:
 			break loop
 		}
 	}
-	writeLog(logEntry{Tool: "pasta", Argv: argv, TTY: term.IsTerminal(0), Files: files})
+	writeLog(logEntry{Tool: "pasta", Argv: argv, Raw: raw, TTY: term.IsTerminal(0), Files: files})
 	at := slices.Index(bwrap, execMarker)
 	if at < 0 {
 		code, _ := strconv.Atoi(os.Getenv("FAKE_PASTA_EXIT"))
@@ -396,12 +417,12 @@ func parseInvocation(t *testing.T, argv []string) *invocation {
 	t.Helper()
 	sep := slices.Index(argv, "--")
 	inv := &invocation{pasta: argv[:sep]}
-	// bash -c SCRIPT bash IP SECCOMP N ADDR... BWRAP --seccomp 10 ARGS...
+	// bash -c SCRIPT bash IP SECCOMP ARGSFILE N ADDR... BWRAP --seccomp 10 ARGS...
 	inner := argv[sep+1:]
 	inv.bash, inv.script, inv.seccomp = inner[0], inner[2], inner[5]
-	n, _ := strconv.Atoi(inner[6])
-	inv.bwrap = inner[7+n]
-	inv.args = inner[10+n:]
+	n, _ := strconv.Atoi(inner[7])
+	inv.bwrap = inner[8+n]
+	inv.args = inner[11+n:]
 	chdir := slices.Index(inv.args, "--chdir")
 	inv.mountArgs, inv.chdir, inv.init = inv.args[:chdir], inv.args[chdir+1], inv.args[chdir+2:]
 	return inv
@@ -445,7 +466,7 @@ func (inv *invocation) mounts() []string {
 	a := inv.mountArgs
 	for i := 0; i < len(a); i++ {
 		switch a[i] {
-		case "--bind", "--ro-bind", "--bind-try", "--ro-bind-try":
+		case "--bind", "--ro-bind", "--bind-try", "--ro-bind-try", "--symlink":
 			out = append(out, strings.Join(a[i:i+3], " "))
 			i += 2
 		case "--tmpfs", "--dev", "--proc":

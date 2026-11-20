@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // tty is the controlling terminal, also when stdin and stdout are
@@ -28,8 +30,10 @@ func (t *tty) readLine() string {
 	return strings.TrimSpace(line)
 }
 
-// confirm asks a yes/no question, no being the default.
+// confirm asks a yes/no question, no being the default. What was typed
+// before it's asked is dropped: it wasn't an answer to it.
 func (t *tty) confirm(question string) bool {
+	_ = unix.IoctlSetInt(int(t.Fd()), unix.TCFLSH, unix.TCIFLUSH)
 	_, _ = io.WriteString(t, question)
 	switch strings.ToLower(t.readLine()) {
 	case "y", "yes":

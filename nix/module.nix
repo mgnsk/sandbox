@@ -73,7 +73,11 @@ let
       projectFiles = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "The profile applies when the project root has one of these, e.g. flake.nix.";
+        description = ''
+          The profile applies when the project root has one of these, e.g.
+          flake.nix. Such a profile can only set claude.*: sandboxed code can
+          create the file, so binds and token commands need paths alone.
+        '';
       };
       priority = mkOption {
         type = types.int;
@@ -334,11 +338,26 @@ let
     };
     profiles = lib.mapAttrsToList (
       name: p:
-      resolve name p
-      // {
-        inherit name;
-        inherit (p) paths projectFiles priority;
-      }
+      # The sandbox writes the project: a file there can't be what gives a
+      # project more of the host.
+      lib.throwIf
+        (
+          p.projectFiles != [ ]
+          && (
+            p.binds != [ ]
+            || p.guards.github.tokenCommand != null
+            || p.guards.forgejo.tokenCommands != { }
+            || p.guards.claudeApiKey.tokenCommand != null
+          )
+        )
+        "profiles.${name}: a profile picked by projectFiles can only set claude.*, as sandboxed code can create the file: binds and token commands go in a profile picked by paths alone"
+        (
+          resolve name p
+          // {
+            inherit name;
+            inherit (p) paths projectFiles priority;
+          }
+        )
     ) cfg.profiles;
   };
 

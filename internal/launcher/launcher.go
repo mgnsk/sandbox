@@ -26,13 +26,16 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/mgnsk/sandbox/internal/notify"
+	"github.com/mgnsk/sandbox/internal/popup"
 	"github.com/mgnsk/sandbox/internal/popuprelay"
 	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
@@ -48,7 +51,7 @@ type launcher struct {
 	home, user, runtimeDir string
 	vars                   map[string]string // What config values may name: $HOME, $USER, $XDG_RUNTIME_DIR.
 	cwd, project           string
-	volumeDir              string
+	stateDir, volumeDir    string
 	// The Wayland guard's allowlist of globals; nil without the guard.
 	wayland []string
 }
@@ -60,6 +63,9 @@ func (e signalError) Error() string { return "interrupted" }
 
 // Main runs command in the sandbox configured at configPath; the exit status.
 func Main(configPath string, opts Options, command []string) int {
+	// The guards and pasta are signaled when the thread that started them
+	// ends (Pdeathsig): this one, which lasts as long as the launcher.
+	runtime.LockOSThread()
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -67,7 +73,8 @@ func Main(configPath string, opts Options, command []string) int {
 
 	code, err := run(ctx, cancel, configPath, opts, command, signals)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sandbox: %v\n", err)
+		// An error may quote what the project's files say.
+		fmt.Fprintf(os.Stderr, "sandbox: %s\n", popup.CleanText(strings.ReplaceAll(err.Error(), "\t", "    ")))
 		code = 1
 	}
 	// Stopped by a signal before the sandbox ran: end as the signal would,
@@ -155,6 +162,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	if err := l.makeVolume(); err != nil {
 		return nil, nil, err
 	}
+	g.runtimeDir = l.runtimeDir
 
 	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
 	hostPorts := l.cfg.HostPorts
@@ -162,16 +170,16 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	// (each user's), the latter's token commands over the former's.
 	var m *manifest
 	var env *localConfig
-	if !l.opts.NoProjectConfig {
-		if lexists(filepath.Join(l.project, projectFileName)) {
-			var err error
-			if m, err = l.projectManifest(ctx, prof.ClaudeDir); err != nil {
-				return nil, nil, err
-			}
-		}
+	if !l.opts.NoProjectConfig && !l.opts.Eval {
 		var err error
 		if env, err = readLocalConfig(l.project); err != nil {
 			return nil, nil, err
+		}
+		if lexists(filepath.Join(l.project, projectFileName)) {
+			claudeKey := env != nil && env.ClaudeAPIKeyCommand != "" && prof.ClaudeAPIKeyCommand == ""
+			if m, err = l.projectManifest(ctx, prof.ClaudeDir, claudeKey); err != nil {
+				return nil, nil, err
+			}
 		}
 		if env != nil {
 			if m == nil {
@@ -191,10 +199,16 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 			l.command = m.Command
 		}
 	}
-	if err := l.resolveWayland(m); err != nil {
-		return nil, nil, err
+	if !l.opts.Eval {
+		if err := l.resolveWayland(m); err != nil {
+			return nil, nil, err
+		}
 	}
-	tcp, udp, err := parseHostPorts(hostPortSpecs(hostPorts))
+	// Also $SANDBOX_HOST_PORTS; none where sandbox.nix is evaluated.
+	if hostPorts = hostPortSpecs(hostPorts); l.opts.Eval {
+		hostPorts = nil
+	}
+	tcp, udp, err := parseHostPorts(hostPorts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -223,20 +237,30 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	// round.
 	a.bind(l.homeVolume(), l.home)
 
-	// Before the guards start, so they get its path.
-	if popuprelay.Usable() {
-		if err := g.listenPopups(); err != nil {
+	if !l.opts.Eval {
+		// Before the guards start, so they get its path.
+		if popuprelay.Usable() {
+			if err := g.listenPopups(); err != nil {
+				return nil, nil, err
+			}
+		}
+		if err := l.startGuards(ctx, g, &a, prof); err != nil {
 			return nil, nil, err
 		}
-	}
-	if err := l.startGuards(ctx, g, &a, prof); err != nil {
-		return nil, nil, err
 	}
 
 	// Claude Code's managed settings, memory and MCP servers: managed
 	// settings outrank user/project/local ones, so ~/.claude in the volume
 	// can't override them.
-	if prof.ClaudeDir != "" {
+	switch {
+	case prof.ClaudeDir == "":
+	case prof.claudeFromProject:
+		// A link, which is resolved inside: on the host, where bwrap
+		// resolves what it binds, a store path the sandbox made could
+		// lead to any host directory. Its settings already say whether
+		// Claude Code is on an API key (see projectManifest).
+		a.add("--symlink", prof.ClaudeDir, "/etc/claude-code")
+	default:
 		a.roBind(prof.ClaudeDir, "/etc/claude-code")
 		if prof.ClaudeAPIKeyCommand != "" {
 			if err := claudeKeySettings(g, &a, prof.ClaudeDir); err != nil {
@@ -254,13 +278,17 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 	a.add(exchange...)
 	a.add(bindArgs(prof.Binds, l.vars, l.project)...)
-	l.initArgs(&a)
+	a.add("--chdir", l.cwd)
+	args, err := g.argsFile(a)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	addrs, err := hostAddresses()
 	if err != nil {
 		return nil, nil, err
 	}
-	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, a, resolver), g.popups, nil
+	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, args, l.initCommand(), resolver), g.popups, nil
 }
 
 // locate finds the user, home and project, and checks the launcher may run
@@ -290,13 +318,13 @@ func (l *launcher) locate() error {
 		l.runtimeDir = fmt.Sprintf("/run/user/%d", os.Getuid())
 	}
 	l.vars = map[string]string{"HOME": l.home, "USER": l.user, "XDG_RUNTIME_DIR": l.runtimeDir}
-	if err := checkCwd(cwd, l.home); err != nil {
+	if err := errors.Join(checkCwd(cwd, l.home), checkSystem(cwd, realpath(l.runtimeDir))); err != nil {
 		return err
 	}
 	l.project = projectRoot(cwd)
 	// The work tree is bound read-write whole, so it gets the same checks
 	// (a git repo in ~ would otherwise bind all of the host home).
-	if err := checkCwd(l.project, l.home); err != nil {
+	if err := errors.Join(checkCwd(l.project, l.home), checkSystem(l.project, realpath(l.runtimeDir))); err != nil {
 		return fmt.Errorf("%s is in the git work tree %s: %w", cwd, l.project, err)
 	}
 	return nil
@@ -326,8 +354,10 @@ func (l *launcher) makeVolume() error {
 	if err := checkOutside(l.project, stateDir); err != nil {
 		return fmt.Errorf("%s is in the git work tree %s: %w", l.cwd, l.project, err)
 	}
+	l.stateDir = stateDir
 	l.volumeDir = filepath.Join(stateDir, volumeName(l.project))
-	// Private: it holds the project's tokens and secrets.
+	// Private: what the host keeps for the project (its approvals, the
+	// exchange dir) and its home, with whatever logins that holds.
 	if err := os.MkdirAll(l.volumeDir, 0o700); err != nil {
 		return err
 	}
@@ -369,7 +399,7 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 			return err
 		}
 		if err := g.github(ctx, a, token); err != nil {
-			fmt.Fprintf(os.Stderr, "sandbox: %v - gh inside has no API access\n", err)
+			return err
 		}
 	}
 	if len(prof.ForgejoTokenCommands) > 0 {
@@ -467,13 +497,13 @@ func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (string, error) {
 	return resolver, nil
 }
 
-// initArgs runs sandbox-bin init, which links the nix profile and home-manager
-// generation into the volume - or, for one that is off or not there, removes
-// the links of an earlier start - then execs the login shell; --login reads
-// .bash_profile/.profile, and the exec trick runs a given command after
-// that same chain.
-func (l *launcher) initArgs(a *bwrapArgs) {
-	a.add("--chdir", l.cwd, l.self, "init")
+// initCommand is what bwrap runs: sandbox-bin init, which links the nix
+// profile and home-manager generation into the volume - or, for one that
+// is off or not there, removes the links of an earlier start - then execs
+// the login shell; --login reads .bash_profile/.profile, and the exec trick
+// runs a given command after that same chain.
+func (l *launcher) initCommand() []string {
+	a := []string{l.self, "init"}
 	for _, p := range []struct {
 		on   bool
 		path string
@@ -482,17 +512,15 @@ func (l *launcher) initArgs(a *bwrapArgs) {
 		{l.cfg.Init.HomeManager, l.home + "/.local/state/nix/profiles/home-manager"},
 	} {
 		if p.on && lexists(p.path) {
-			a.add(realpath(p.path))
+			a = append(a, realpath(p.path))
 		} else {
-			a.add("")
+			a = append(a, "")
 		}
 	}
-	if len(l.command) > 0 {
-		a.add(l.cfg.Tools.Shell, "--login", "-c", `exec "$@"`, "bash")
-		a.add(l.command...)
-	} else {
-		a.add(l.cfg.Tools.Shell, "--login")
+	if len(l.command) == 0 {
+		return append(a, l.cfg.Tools.Shell, "--login")
 	}
+	return append(append(a, l.cfg.Tools.Shell, "--login", "-c", `exec "$@"`, "bash"), l.command...)
 }
 
 // selectProfile is the highest-priority profile matching cwd (by path
@@ -534,6 +562,8 @@ func runSandbox(argv []string, popups *net.UnixListener, signals <-chan os.Signa
 		err = popuprelay.RunNotifying(cmd, popups, signals, notifier)
 	} else {
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		// A launcher that's killed takes the sandbox with it.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
 		if err = cmd.Start(); err != nil {
 			return 0, err
 		}

@@ -217,6 +217,35 @@ func TestProjectSandboxNixIsApplied(t *testing.T) {
 	}
 }
 
+// What sandbox.nix evaluates to is the sandbox's to choose - here by a
+// ~/.bash_profile in the volume that answers for nix - and a store path can
+// be a link to anywhere: as the managed Claude config, it must not bring a
+// host directory in.
+func TestAManifestCannotBringAHostDirectoryIn(t *testing.T) {
+	p := newProject(t)
+	secret := filepath.Join(filepath.Dir(p.dir), "secret")
+	os.Mkdir(secret, 0o755)
+	os.WriteFile(filepath.Join(secret, "managed-settings.json"), []byte(`{"host": "TOPSECRET"}`), 0o644)
+	// Planted from inside, before the project has a sandbox.nix.
+	// (The environment doesn't reach the inside: the path is in the script.)
+	planted := strings.TrimSpace(p.run(t, `ln -s '`+secret+`' "$HOME/dir"
+dir=$(nix-store --add "$HOME/dir")
+printf '{"claudeDir": "%s", "binds": [], "hostPorts": [], "command": null}' "$dir" > "$HOME/manifest.json"
+manifest=$(nix-store --add "$HOME/manifest.json")
+echo "if grep -qzx build /proc/\$\$/cmdline; then echo $manifest; exit 0; fi" > "$HOME/.bash_profile"
+echo "$dir"
+`, nil).ok(t).stdout)
+	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte("{ ... }: { }\n"), 0o644)
+	r := p.run(t, "readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; ls /etc/claude-code/\n", nil)
+	// The planted path was taken - and leads nowhere inside.
+	if lines := strings.Split(r.stdout, "\n"); !strings.HasPrefix(planted, "/nix/store/") || lines[0] != planted {
+		t.Fatalf("/etc/claude-code is %q, planted %q: %q", lines[0], planted, r.stderr)
+	}
+	if strings.Contains(r.stdout+r.stderr, "TOPSECRET") || strings.Contains(r.stdout, "managed-settings.json") {
+		t.Errorf("a host directory came in as /etc/claude-code: %q %q", r.stdout, r.stderr)
+	}
+}
+
 func TestTheEnvironmentIsClearedAndAllowListed(t *testing.T) {
 	r := newProject(t).run(t, `echo "GH_TOKEN=[$GH_TOKEN]"; echo "SOME_HOST_VAR=[$SOME_HOST_VAR]"
 echo "HOME=[$HOME]"; echo "TERM=[$TERM]"
@@ -560,6 +589,15 @@ func TestHostAddressesAreNotReachable(t *testing.T) {
 		if reply == hostReply {
 			t.Errorf("host service reachable via host address %s: %v", addr, got)
 		}
+	}
+}
+
+// A cloud host's metadata service hands out the instance's credentials to
+// whatever asks from the host, which pasta's connections do.
+func TestTheMetadataServiceIsNotReachable(t *testing.T) {
+	r := newProject(t).run(t, "ip route get 169.254.169.254 2>&1\n", nil)
+	if !strings.Contains(r.stdout, "prohibit") && !strings.Contains(r.stdout, "Permission denied") {
+		t.Errorf("%q", r.stdout)
 	}
 }
 

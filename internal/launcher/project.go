@@ -6,19 +6,25 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
+	"unicode"
 
+	"github.com/mgnsk/sandbox/internal/popup"
 	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
 
 const projectFileName = "sandbox.nix"
+
+// The largest sandbox.nix, .sandbox.yml and manifest read.
+const (
+	maxProjectFile = 16 << 20
+	maxManifest    = 1 << 20
+)
 
 // manifest is what project.nix makes of sandbox.nix.
 type manifest struct {
@@ -55,7 +61,7 @@ func (w waylandAccess) widens() bool {
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
 // strictly and every field is checked before the launcher uses it.
 func readManifest(path string) (*manifest, error) {
-	data, err := os.ReadFile(path)
+	data, err := readRegularFile(path, maxManifest)
 	if err != nil {
 		return nil, fmt.Errorf("can't read the %s result: %w", projectFileName, err)
 	}
@@ -70,13 +76,16 @@ func readManifest(path string) (*manifest, error) {
 }
 
 func (m *manifest) check() error {
-	if m.ClaudeDir != "" && !isStorePath(m.ClaudeDir) {
+	if m.ClaudeDir != "" && !isStoreObject(m.ClaudeDir) {
 		return errors.New("claudeDir is not a store path")
 	}
 	for _, b := range m.Binds {
-		if b.Src == "" || b.Mode != "ro" && b.Mode != "rw" {
-			return fmt.Errorf("bad bind %+v", b)
+		if b.Src == "" || b.Mode != "ro" && b.Mode != "rw" || !plainLine(b.Src) || !plainLine(b.Dst) {
+			return fmt.Errorf("bad bind %q", fmt.Sprintf("%+v", b))
 		}
+	}
+	if _, _, err := parseHostPorts(m.HostPorts); err != nil {
+		return err
 	}
 	if m.Command != nil && len(m.Command) == 0 {
 		return errors.New("empty command")
@@ -100,22 +109,35 @@ func (m *manifest) check() error {
 			return errors.New("empty token command")
 		}
 	}
+	commands := slices.Collect(maps.Values(m.ForgejoTokenCommands))
+	for _, c := range append(commands, m.GitHubTokenCommand, m.ClaudeAPIKeyCommand, m.GitSigningKeyCommand) {
+		if !plainText(c) {
+			return fmt.Errorf("a command with control characters: %q", c)
+		}
+	}
 	return waylandguard.CheckGlobals(m.Wayland.Globals)
+}
+
+// plainText says whether s is printable but for line breaks and tabs.
+// What a project has run on the host, or bound in, is shown on the terminal
+// for approval first: an escape sequence or a carriage return in it could
+// show something else than what's then run.
+func plainText(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool {
+		return r != '\n' && r != '\t' && !unicode.IsPrint(r)
+	})
+}
+
+// plainLine is plainText on one line.
+func plainLine(s string) bool {
+	return plainText(s) && !strings.ContainsAny(s, "\n\t")
 }
 
 // readProjectFile reads sandbox.nix's bytes, for the cache key. Not through
 // a symlink, which would have the launcher read a host file of the
 // sandbox's choosing.
 func readProjectFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, fmt.Errorf("can't read %s (it must be a regular file): %w", path, err)
-	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s must be a regular file", path)
-	}
-	return io.ReadAll(f)
+	return readRegularFile(path, maxProjectFile)
 }
 
 // cached is a cache file's content: the key of what a result was made from.
@@ -128,7 +150,7 @@ type cached struct {
 func readCache(path, key string) string {
 	data, err := os.ReadFile(path)
 	var c cached
-	if err != nil || json.Unmarshal(data, &c) != nil || c.Key != key || !isStorePath(c.Result) || !isFile(c.Result) {
+	if err != nil || json.Unmarshal(data, &c) != nil || c.Key != key || !isStoreObject(c.Result) || !lexists(c.Result) {
 		return ""
 	}
 	return c.Result
@@ -138,37 +160,51 @@ func readCache(path, key string) string {
 // sandbox.nix, the sandbox's own config and the profile's Claude config are
 // unchanged. Files sandbox.nix imports aren't tracked; --reload picks them
 // up.
-func (l *launcher) projectManifest(ctx context.Context, base string) (*manifest, error) {
+//
+// claudeKey says Claude Code inside runs on an API key from .sandbox.yml,
+// which the managed settings sandbox.nix's evaluation builds must know: the
+// launcher never edits what comes out of it.
+func (l *launcher) projectManifest(ctx context.Context, base string, claudeKey bool) (*manifest, error) {
 	projectFile := filepath.Join(l.project, projectFileName)
 	content, err := readProjectFile(projectFile)
 	if err != nil {
 		return nil, err
 	}
-	key := cacheKey(realpath(l.configPath), base, content)
+	key := cacheKey(realpath(l.configPath), base, content, claudeKey)
 	cache := filepath.Join(l.volumeDir, "project.json")
 	if !l.opts.Reload {
 		if out := readCache(cache, key); out != "" {
-			return readManifest(out)
+			// Evaluated again when its Claude config is gone from the
+			// store: linked in, a missing one would go unnoticed.
+			if m, err := readManifest(out); err != nil || m.ClaudeDir == "" || lexists(m.ClaudeDir) {
+				return m, err
+			}
 		}
 	}
 	// Evaluated with nix inside a sandbox of the project, without its
-	// sandbox.nix.
+	// sandbox.nix - and without guards, tokens or host ports: what
+	// evaluates there is the project's code, and needs none.
 	fmt.Fprintf(os.Stderr, "sandbox: evaluating %s\n", projectFile)
-	out, err := l.runCapturing(ctx,
-		l.self, "launch", "--config", l.configPath, "--no-project-config", "--",
+	argv := []string{
+		l.self, "launch", "--config", l.configPath, "--eval", "--",
 		"nix", "build", "--no-link", "--print-out-paths", "--file", l.cfg.Project.Eval,
 		"--argstr", "nixpkgs", l.cfg.Project.Nixpkgs,
 		"--argstr", "system", l.cfg.Project.System,
 		"--argstr", "file", projectFile,
 		"--argstr", "base", base,
-	)
+	}
+	if claudeKey {
+		argv = append(argv, "--argstr", "claudeApiKey", "1")
+	}
+	out, err := l.runCapturing(ctx, argv...)
 	if err != nil {
 		return nil, fmt.Errorf("evaluating %s: %w", projectFile, err)
 	}
 	// The login shell's startup files may print too; the build's output is
-	// the last line.
+	// the last line. Whatever ran in there chose it: only a store object
+	// itself is read, never a path under one, which may lead anywhere.
 	result := lastStorePath(out)
-	if result == "" {
+	if !isStoreObject(result) {
 		return nil, fmt.Errorf("evaluating %s gave no result", projectFile)
 	}
 	m, err := readManifest(result)
@@ -181,8 +217,8 @@ func (l *launcher) projectManifest(ctx context.Context, base string) (*manifest,
 // hostAccess is what sandbox.nix asks for beyond the inside of the sandbox,
 // as approved and stored.
 type hostAccess struct {
-	Binds     []bind   `json:"binds"`
-	HostPorts []string `json:"hostPorts"`
+	Binds     []approvedBind `json:"binds"`
+	HostPorts []string       `json:"hostPorts"`
 	// Left out when empty, so approvals from before these existed still
 	// match.
 	GitHubTokenCommand   string            `json:"githubTokenCommand,omitempty"`
@@ -192,9 +228,28 @@ type hostAccess struct {
 	Wayland              *waylandAccess    `json:"wayland,omitempty"`
 }
 
+// approvedBind is a bind as approved: with what its source resolved to
+// when that's another path, so that a link aimed elsewhere since is asked
+// about again.
+type approvedBind struct {
+	bind
+	Resolved string `json:"resolved,omitempty"`
+}
+
+// String is what the user reads before saying yes. A command's further
+// lines stay indented under it, so none of them reads as a line of the
+// launcher's own.
 func (h hostAccess) String() string {
 	var lines []string
+	command := func(what, c string) {
+		lines = append(lines, "  run on this host at each start, for "+what+":\n    "+
+			strings.ReplaceAll(c, "\n", "\n    "))
+	}
 	for _, b := range h.Binds {
+		src := b.Src
+		if b.Resolved != "" {
+			src += " -> " + b.Resolved
+		}
 		dst := ""
 		if b.Dst != "" {
 			dst = " at " + b.Dst
@@ -203,22 +258,22 @@ func (h hostAccess) String() string {
 		if b.Optional {
 			mode += ", optional"
 		}
-		lines = append(lines, fmt.Sprintf("  bind %s%s (%s)", b.Src, dst, mode))
+		lines = append(lines, fmt.Sprintf("  bind %s%s (%s)", src, dst, mode))
 	}
 	for _, p := range h.HostPorts {
 		lines = append(lines, "  host port "+p)
 	}
 	if h.GitHubTokenCommand != "" {
-		lines = append(lines, "  run on this host at each start, for the GitHub token:\n    "+h.GitHubTokenCommand)
+		command("the GitHub token", h.GitHubTokenCommand)
 	}
 	for _, host := range slices.Sorted(maps.Keys(h.ForgejoTokenCommands)) {
-		lines = append(lines, "  run on this host at each start, for the "+host+" token:\n    "+h.ForgejoTokenCommands[host])
+		command("the "+host+" token", h.ForgejoTokenCommands[host])
 	}
 	if h.ClaudeAPIKeyCommand != "" {
-		lines = append(lines, "  run on this host at each start, for Claude Code's API key:\n    "+h.ClaudeAPIKeyCommand)
+		command("Claude Code's API key", h.ClaudeAPIKeyCommand)
 	}
 	if h.GitSigningKeyCommand != "" {
-		lines = append(lines, "  run on this host at each start, for git's signing key:\n    "+h.GitSigningKeyCommand)
+		command("git's signing key", h.GitSigningKeyCommand)
 	}
 	if w := h.Wayland; w != nil {
 		if w.Enable {
@@ -241,7 +296,11 @@ func (h hostAccess) String() string {
 // sandbox, nor run anything on the host. The approval is stored in the
 // volume dir, out of the sandbox's reach.
 func (l *launcher) approveProject(m *manifest) error {
-	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts,
+	binds, err := l.approvedBinds(m.Binds)
+	if err != nil {
+		return err
+	}
+	access := hostAccess{Binds: binds, HostPorts: m.HostPorts,
 		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands,
 		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand, GitSigningKeyCommand: m.GitSigningKeyCommand}
 	// Not when the user's own config turns the guard off, nor for a
@@ -272,12 +331,40 @@ func (l *launcher) approveProject(m *manifest) error {
 		return fmt.Errorf("%s asks for host access that isn't approved yet; start the sandbox from a terminal to approve it", from)
 	}
 	defer t.Close()
-	if !t.confirm(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
+	// Checked when read, and cleaned here all the same: this prompt is
+	// all that stands between the project and the host.
+	if !t.confirm(popup.CleanText(strings.ReplaceAll(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
 		"Read it before allowing: the commands run on this host as you, outside the sandbox.\n"+
-		"This is asked once, and again only if it changes. Allow? [y/N] ", from, access)) {
+		"This is asked once, and again only if it changes. Allow? [y/N] ", from, access), "\t", "    "))) {
 		return errors.New("host access not approved, not starting")
 	}
 	return writeJSON(approved, access)
+}
+
+// approvedBinds are a project's binds as approved. A source the sandbox
+// can write - in the project or the state dir - or reach through one of
+// those is refused: approved once, it could be a link to anywhere at the
+// next start.
+func (l *launcher) approvedBinds(binds []bind) ([]approvedBind, error) {
+	var out []approvedBind
+	for _, b := range binds {
+		src := expand(b.Src, l.vars)
+		if !filepath.IsAbs(src) || b.Dst != "" && !filepath.IsAbs(expand(b.Dst, l.vars)) {
+			return nil, fmt.Errorf("%s: bind %q: not an absolute path", projectFileName, b.Src)
+		}
+		a := approvedBind{bind: b}
+		resolved := realpath(src)
+		for _, dir := range []string{l.project, l.stateDir} {
+			if within(resolved, dir) || within(filepath.Clean(src), dir) {
+				return nil, fmt.Errorf("%s: bind %q is in %s, which the sandbox can write", projectFileName, b.Src, dir)
+			}
+		}
+		if resolved != filepath.Clean(src) {
+			a.Resolved = resolved
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }
 
 // applyProject is the profile with sandbox.nix's additions: its binds on
@@ -286,7 +373,7 @@ func (l *launcher) approveProject(m *manifest) error {
 func applyProject(p profile, m *manifest) profile {
 	p.Binds = slices.Concat(p.Binds, m.Binds)
 	if p.ClaudeDir != "" && m.ClaudeDir != "" {
-		p.ClaudeDir = m.ClaudeDir
+		p.ClaudeDir, p.claudeFromProject = m.ClaudeDir, true
 	}
 	return p
 }

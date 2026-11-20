@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -104,7 +105,15 @@ func parseLocalConfig(data []byte) (*localConfig, error) {
 	}
 	for host, command := range f.Guards.Forgejo.TokenCommands {
 		if strings.TrimSpace(command) == "" {
-			return nil, fmt.Errorf("guards.forgejo.tokenCommands.%s is empty", host)
+			return nil, fmt.Errorf("guards.forgejo.tokenCommands.%q is empty", host)
+		}
+	}
+	// Shown on the terminal for approval, like sandbox.nix's (see
+	// plainText).
+	commands := slices.Collect(maps.Values(f.Guards.Forgejo.TokenCommands))
+	for _, command := range append(commands, c.GitHubTokenCommand, c.ClaudeAPIKeyCommand, c.GitSigningKeyCommand) {
+		if !plainText(command) {
+			return nil, fmt.Errorf("a command with control characters: %q", command)
 		}
 	}
 	hosts, err := forgejoHosts("guards.forgejo.tokenCommands", f.Guards.Forgejo.TokenCommands)

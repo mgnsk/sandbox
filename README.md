@@ -588,7 +588,7 @@ The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
 | Option | Default | |
 | --- | --- | --- |
 | `passEnv` | `[ ]` | Host variables passed in, besides TERM/COLORTERM/LANG/LC_ALL; everything else is cleared. |
-| `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; `~`, `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` expanded in `src`. One whose src is the project is left to the project bind. |
+| `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; `~`, `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` expanded in `src`. One whose src is the project is left to the project bind. A `sandbox.nix`'s must be absolute paths outside the project. |
 | `hostPorts` | `[ ]` | Like `SANDBOX_HOST_PORTS`, always. |
 | `stateDir` | `$XDG_DATA_HOME/sandbox` | One folder per project: its `$HOME`, exchange dir, `sandbox.nix` approvals and cache. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl, libgcc | For prebuilt binaries. |
@@ -654,6 +654,10 @@ combine with each other. It adds `binds` and `claude.*` (language servers
 and marketplaces included) on top of the top level, and can set its own
 token commands (`guards.github.tokenCommand`, `guards.forgejo.tokenCommands`,
 `guards.claudeApiKey.tokenCommand`). Everything else is top-level only.
+
+A profile with `projectFiles` can only set `claude.*`: sandboxed code can
+create the file, so binds and token commands go in a profile picked by
+`paths` alone.
 
 ```nix
 programs.sandbox.settings = { lib, pkgs, ... }: {
