@@ -227,14 +227,19 @@ func TestAManifestCannotBringAHostDirectoryIn(t *testing.T) {
 	os.Mkdir(secret, 0o755)
 	os.WriteFile(filepath.Join(secret, "managed-settings.json"), []byte(`{"host": "TOPSECRET"}`), 0o644)
 	// Planted from inside, before the project has a sandbox.nix.
-	p.run(t, `ln -s "$SECRET" "$HOME/dir"
+	planted := strings.TrimSpace(p.run(t, `ln -s "$SECRET" "$HOME/dir"
 dir=$(nix-store --add "$HOME/dir")
 printf '{"claudeDir": "%s", "binds": [], "hostPorts": [], "command": null}' "$dir" > "$HOME/manifest.json"
 manifest=$(nix-store --add "$HOME/manifest.json")
-echo "if [ \"\$1 \$2\" = 'nix build' ]; then echo $manifest; exit 0; fi" > "$HOME/.bash_profile"
-`, map[string]string{"SECRET": secret}).ok(t)
+echo "if grep -qzx build /proc/\$\$/cmdline; then echo $manifest; exit 0; fi" > "$HOME/.bash_profile"
+echo "$dir"
+`, map[string]string{"SECRET": secret}).ok(t).stdout)
 	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte("{ ... }: { }\n"), 0o644)
-	r := p.run(t, "cat /etc/claude-code/managed-settings.json; ls /etc/claude-code/\n", nil)
+	r := p.run(t, "readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; ls /etc/claude-code/\n", nil)
+	// The planted path was taken - and leads nowhere inside.
+	if lines := strings.Split(r.stdout, "\n"); !strings.HasPrefix(planted, "/nix/store/") || lines[0] != planted {
+		t.Fatalf("/etc/claude-code is %q, planted %q: %q", lines[0], planted, r.stderr)
+	}
 	if strings.Contains(r.stdout+r.stderr, "TOPSECRET") || strings.Contains(r.stdout, "managed-settings.json") {
 		t.Errorf("a host directory came in as /etc/claude-code: %q %q", r.stdout, r.stderr)
 	}
