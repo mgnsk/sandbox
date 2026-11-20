@@ -71,6 +71,7 @@ runCommand "sandbox-project-check" { nativeBuildInputs = [ jq ]; } ''
     and .gitFromHost == true
     and .gitSigningKey == null
     and .gitSigningKeyCommand == "op read op://v/ssh/public-key"
+    and .wayland == {enable: true, globals: {wl_data_device_manager: true, wl_drm: false}}
   ' ${manifest}
   touch $out
 ''

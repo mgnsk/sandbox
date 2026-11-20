@@ -17,6 +17,9 @@
   guards.claudeApiKey.tokenCommand = "op read op://v/claude/key";
   git.signingKeyCommand = "op read op://v/ssh/public-key";
   git.fromHost = true;
+  guards.wayland.enable = true;
+  guards.wayland.globals.wl_data_device_manager = true;
+  guards.wayland.globals.wl_drm = false;
   claude.lspServers.gopls = {
     package = pkgs.gopls;
     extensionToLanguage.".go" = "go";

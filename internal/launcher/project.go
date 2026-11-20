@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
 
 const projectFileName = "sandbox.nix"
@@ -33,6 +35,21 @@ type manifest struct {
 	GitSigningKey        string `json:"gitSigningKey"`
 	GitSigningKeyCommand string `json:"gitSigningKeyCommand"`
 	GitFromHost          bool   `json:"gitFromHost"`
+	// Windows on the host's Wayland display, and the project's changes to
+	// the allowlist of globals (see guards.wayland).
+	Wayland waylandAccess `json:"wayland"`
+}
+
+// waylandAccess is what a project asks of the Wayland guard.
+type waylandAccess struct {
+	Enable  bool            `json:"enable"`
+	Globals map[string]bool `json:"globals,omitempty"`
+}
+
+// widens says whether w asks for more than the user's own config gives:
+// the display itself, or a global on top of the allowlist.
+func (w waylandAccess) widens() bool {
+	return w.Enable || slices.Contains(slices.Collect(maps.Values(w.Globals)), true)
 }
 
 // readManifest reads a manifest. It comes out of a sandbox, so it's read
@@ -83,7 +100,7 @@ func (m *manifest) check() error {
 			return errors.New("empty token command")
 		}
 	}
-	return nil
+	return waylandguard.CheckGlobals(m.Wayland.Globals)
 }
 
 // readProjectFile reads sandbox.nix's bytes, for the cache key. Not through
@@ -172,6 +189,7 @@ type hostAccess struct {
 	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
 	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand,omitempty"`
 	GitSigningKeyCommand string            `json:"gitSigningKeyCommand,omitempty"`
+	Wayland              *waylandAccess    `json:"wayland,omitempty"`
 }
 
 func (h hostAccess) String() string {
@@ -202,6 +220,18 @@ func (h hostAccess) String() string {
 	if h.GitSigningKeyCommand != "" {
 		lines = append(lines, "  run on this host at each start, for git's signing key:\n    "+h.GitSigningKeyCommand)
 	}
+	if w := h.Wayland; w != nil {
+		if w.Enable {
+			lines = append(lines, "  windows on this host's Wayland display")
+		}
+		for _, name := range slices.Sorted(maps.Keys(w.Globals)) {
+			change := "without"
+			if w.Globals[name] {
+				change = "with"
+			}
+			lines = append(lines, fmt.Sprintf("  Wayland clients inside %s the global %s", change, name))
+		}
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -214,8 +244,14 @@ func (l *launcher) approveProject(m *manifest) error {
 	access := hostAccess{Binds: m.Binds, HostPorts: m.HostPorts,
 		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands,
 		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand, GitSigningKeyCommand: m.GitSigningKeyCommand}
+	// Not when the user's own config turns the guard off, nor for a
+	// project that only takes globals away.
+	if enable := l.cfg.Guards.Wayland.Enable; m.Wayland.widens() && (enable == nil || *enable) {
+		access.Wayland = &m.Wayland
+	}
 	if len(access.Binds) == 0 && len(access.HostPorts) == 0 && access.GitHubTokenCommand == "" &&
-		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" && access.GitSigningKeyCommand == "" {
+		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" && access.GitSigningKeyCommand == "" &&
+		access.Wayland == nil {
 		return nil
 	}
 	approved := filepath.Join(l.volumeDir, "project-approved.json")

@@ -219,6 +219,7 @@ let
       ip = lib.getExe' pkgs.iproute2 "ip";
       bash = lib.getExe pkgs.bash;
       shell = lib.getExe pkgs.bashInteractive;
+      wlVeil = lib.getExe sandboxPkgs.wl-veil;
     };
     # Host-side tools the guards run: xdg-open to hand URLs to the browser.
     # No gh or fj: the guards only use the projects' own tokens.
@@ -269,6 +270,10 @@ let
       };
       secretService = cfg.guards.secretService.enable;
       openUrl = cfg.guards.openUrl.enable;
+      wayland = {
+        inherit (cfg.guards.wayland) enable globals;
+        defaultGlobals = import ./wayland.nix;
+      };
     };
     # A project's sandbox.nix, evaluated inside a sandbox by project.nix
     # against this nixpkgs.
@@ -467,6 +472,35 @@ in
         type = types.bool;
         default = true;
         description = "xdg-open inside opens http(s) URLs in the host's browser, after a popup.";
+      };
+      wayland = {
+        enable = mkOption {
+          type = types.nullOr types.bool;
+          default = null;
+          description = ''
+            Windows on the host's Wayland display, for GUI programs inside:
+            through a proxy (wl-veil) that passes on only an allowlist of
+            the compositor's globals, as $XDG_RUNTIME_DIR/wayland-0 inside.
+            The real socket is never bound in. null leaves it to each
+            project's sandbox.nix, whose guards.wayland.enable takes your
+            yes on the terminal; true or false decides it for every
+            project.
+          '';
+        };
+        globals = mkOption {
+          type = types.attrsOf types.bool;
+          default = { };
+          example = {
+            wl_data_device_manager = true;
+            zwp_pointer_constraints_v1 = false;
+          };
+          description = ''
+            Changes to the allowlist of Wayland globals, by interface name:
+            true adds one to the default list (nix/wayland.nix), false
+            removes one. Applied after a project's sandbox.nix's changes,
+            so yours win.
+          '';
+        };
       };
     };
 

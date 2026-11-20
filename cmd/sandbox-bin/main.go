@@ -23,6 +23,7 @@ import (
 	"github.com/mgnsk/sandbox/internal/router"
 	"github.com/mgnsk/sandbox/internal/secretservice"
 	"github.com/mgnsk/sandbox/internal/sshagent"
+	"github.com/mgnsk/sandbox/internal/waylandguard"
 	"github.com/mgnsk/sandbox/internal/xdgopen"
 )
 
@@ -107,6 +108,10 @@ func root() *cli.Command {
 			guardCommand("claude-api-proxy", "the Claude API, with the key the launcher pipes in",
 				nil, func(ctx context.Context, _ []string) error {
 					return claudeproxy.Run(ctx)
+				}),
+			guardCommand("wayland-guard", "report wl-veil's socket to the launcher (started by wl-veil)",
+				nil, func(ctx context.Context, _ []string) error {
+					return waylandguard.Run(ctx)
 				}),
 		},
 	}

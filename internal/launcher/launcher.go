@@ -33,6 +33,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/mgnsk/sandbox/internal/popuprelay"
+	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
 
 // launcher is one start of a sandbox.
@@ -47,6 +48,8 @@ type launcher struct {
 	vars                   map[string]string // What config values may name: $HOME, $USER, $XDG_RUNTIME_DIR.
 	cwd, project           string
 	volumeDir              string
+	// The Wayland guard's allowlist of globals; nil without the guard.
+	wayland []string
 }
 
 // signalError is a signal that stopped the start.
@@ -152,6 +155,9 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		if len(l.command) == 0 {
 			l.command = m.Command
 		}
+	}
+	if err := l.resolveWayland(m); err != nil {
+		return nil, nil, err
 	}
 	tcp, udp, err := parseHostPorts(hostPortSpecs(hostPorts))
 	if err != nil {
@@ -362,6 +368,40 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 			return err
 		}
 	}
+	if l.wayland != nil {
+		if err := g.wayland(ctx, a, l.runtimeDir, l.wayland); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveWayland decides whether the Wayland guard runs, and with which
+// globals. The user's own config says whether it does; when it doesn't
+// say, the project's sandbox.nix (m, approved already) does. The
+// allowlist is the defaults, then the project's changes, then the user's:
+// theirs win.
+func (l *launcher) resolveWayland(m *manifest) error {
+	wc := l.cfg.Guards.Wayland
+	if err := waylandguard.CheckGlobals(wc.Globals); err != nil {
+		return err
+	}
+	var project waylandAccess
+	if m != nil {
+		project = m.Wayland
+	}
+	enable := project.Enable
+	if wc.Enable != nil {
+		enable = *wc.Enable
+	}
+	if !enable {
+		return nil
+	}
+	if l.cfg.Tools.WlVeil == "" {
+		return errors.New("guards.wayland: this sandbox has no wl-veil")
+	}
+	// Not nil even when empty: that's a config error the guard reports.
+	l.wayland = append([]string{}, waylandguard.Globals(wc.DefaultGlobals, project.Globals, wc.Globals)...)
 	return nil
 }
 

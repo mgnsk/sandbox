@@ -256,6 +256,51 @@ can send a GET to a site they're signed in to or reach a browser exploit, and
 the sandbox has no need of the browser to fetch ordinary pages. The popup is
 what stands between sandboxed code and that session, so read the host.
 
+## Wayland: a proxy with an allowlist, never the socket
+
+Off unless `guards.wayland.enable` is set: by the user's own config, or by a
+project's sandbox.nix once approved (see "Project config").
+
+A Wayland compositor gives a client whatever it offers any client. On
+wlroots compositors that includes the screen's contents
+(`zwlr_screencopy_manager_v1`, `ext_image_copy_capture_manager_v1`), the
+clipboard at any time (`zwlr_data_control_manager_v1`,
+`ext_data_control_manager_v1`), synthetic input
+(`zwp_virtual_keyboard_manager_v1`, `zwlr_virtual_pointer_manager_v1`),
+surfaces over everything (`zwlr_layer_shell_v1`) and other clients' windows.
+So the compositor's socket is never bound in. Clients inside get the socket
+of a proxy on the host, wl-veil, started with an allowlist of globals
+(interface names): what isn't on it is neither announced to a client nor
+bound for it.
+
+- wl-veil as released only leaves the other globals out of the registry's
+  listing, and forwards a `wl_registry.bind` of any name a client sends: a
+  client that guesses a hidden global's numeric name (they're small
+  integers) binds it all the same. The sandbox builds wl-veil with a patch
+  (`nix/patches/wl-veil-bind.patch`) that has it renumber the globals it
+  announces and forward binds of those only. The allowlist rests on that
+  patch.
+- The default allowlist (`nix/wayland.nix`) has what a program needs for
+  its own windows. It leaves out the clipboard and drag-and-drop
+  (`wl_data_device_manager`, `zwp_primary_selection_device_manager_v1`):
+  with them, a window inside reads the host's selection whenever it has the
+  keyboard focus, and sets it. Asking for the focus (`xdg_activation_v1`),
+  keeping the screen from locking and reading the outputs' layout or the
+  user's idle time are left out too.
+- What stays: a client inside draws what it likes in its own windows,
+  titled as it likes - a convincing prompt included - and gets the keyboard
+  and pointer input its windows are given. Nothing marks its windows as the
+  sandbox's.
+- The proxy runs on the host and parses every message the sandbox sends: a
+  bug in it is a way out. It's a young program in Rust, with one maintainer.
+  It gets no popup socket, no token and nothing but the compositor's socket.
+- It listens in a temp dir of its own, which only the launcher knows, and
+  goes with the sandbox.
+- A project's sandbox.nix may add to the allowlist and remove from it; the
+  user's own changes are applied last. Turning the guard on and adding a
+  global need the user's yes; names are checked (`[a-z][a-z0-9_]*`) before
+  they reach wl-veil's command line.
+
 ## Popup answers
 
 Every popup takes `y` (this request), `A` (always in this sandbox) or `N`, the
@@ -332,8 +377,9 @@ treated as untrusted input:
   seccomp, the guards and their settings come from the configuration
   the sandbox was started with. What it sets otherwise (command, Claude config) runs
   inside.
-- What reaches beyond the inside - `binds`, `hostPorts` and token commands,
-  which run on the host - needs a yes on the controlling terminal, again
+- What reaches beyond the inside - `binds`, `hostPorts`, token commands,
+  which run on the host, and the Wayland guard (turning it on, or adding a
+  global to its allowlist) - needs a yes on the controlling terminal, again
   whenever it changes. The approval and the
   evaluation cache live in the project's volume dir, outside the home volume,
   where the sandbox can't write; without a terminal the sandbox doesn't
