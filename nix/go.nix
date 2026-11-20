@@ -14,7 +14,6 @@ buildGoModule {
       ../go.sum
       ../cmd
       ../internal
-      ../e2e
     ];
   };
   # Update with lib.fakeHash and the hash nix reports after a go.mod change.

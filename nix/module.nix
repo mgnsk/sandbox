@@ -2,7 +2,6 @@
 # config.package is the result.
 {
   config,
-  options,
   lib,
   pkgs,
   ...
@@ -14,57 +13,12 @@ let
 
   sandboxPkgs = pkgs.callPackage ./packages.nix { };
 
-  # An option that's gone, as an error naming what to do instead.
-  removed = path: {
-    options = lib.setAttrByPath path (mkOption {
-      type = types.unspecified;
-      visible = false;
-      apply =
-        _:
-        throw "${lib.concatStringsSep "." path} is gone: the sandbox adds no tools or variables - they come from the project's dev shell (or your ~/.nix-profile, home-manager)";
-    });
-  };
-
-  # The API guards' switches are gone too: a guard runs once it has a token
-  # command.
-  goneSwitch = mkOption {
-    type = types.unspecified;
-    visible = false;
-  };
-  withoutGuardSwitches =
-    lib.throwIf (options.guards.github.enable.isDefined || options.guards.forgejo.enable.isDefined)
-      "guards.github.enable and guards.forgejo.enable are gone: each guard runs once a token command is set for it";
-
   layer' = import ./layer.nix { inherit lib pkgs; };
   layerOptions = layer'.options;
 
   profileType = types.submodule {
-    imports = map (path: removed path) [
-      [ "packages" ]
-      [ "basePackages" ]
-      [ "env" ]
-      [
-        "claude"
-        "package"
-      ]
-    ];
-
     options = layerOptions // {
-      guards.claudeApiKey.tokenCommand = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "guards.claudeApiKey.tokenCommand for projects of this profile; null keeps the top level's.";
-      };
-      guards.github.tokenCommand = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "guards.github.tokenCommand for projects of this profile; null keeps the top level's.";
-      };
-      guards.forgejo.tokenCommands = mkOption {
-        type = types.attrsOf types.str;
-        default = { };
-        description = "guards.forgejo.tokenCommands for projects of this profile, over the top level's.";
-      };
+      guards = layer'.tokenCommandOptions "For projects of this profile, over the top level's.";
       paths = mkOption {
         type = types.listOf types.str;
         default = [ ];
@@ -145,30 +99,8 @@ let
   # bash-completion, which finds the completions of the dev shell's packages
   # through the XDG_DATA_DIRS nix develop sets, and those of the base set
   # through PATH. The user's own files run after these.
-  bashrc = pkgs.writeText "sandbox-bashrc" ''
-    # Managed by the sandbox, read-only; your ~/.bashrc runs after this.
-    # A prompt that says who and where: the sandbox's host name is the
-    # project's directory name. Only over bash's own default, which shows
-    # neither.
-    if [[ $- == *i* ]] && [ "''${PS1-}" = '\s-\v\$ ' ]; then
-      PS1='\u@\h:\w\$ '
-    fi
-    if [[ $- == *i* ]] && [ -z "''${BASH_COMPLETION_VERSINFO-}" ]; then
-      . ${pkgs.bash-completion}/share/bash-completion/bash_completion
-    fi
-  '';
-  profile = pkgs.writeText "sandbox-profile" ''
-    # Managed by the sandbox, read-only; your ~/.bash_profile (or
-    # ~/.bash_login, ~/.profile) runs after this.
-    # The editor git and others run, unless passEnv or your own files name
-    # one.
-    export EDITOR="''${EDITOR:-nano}"
-    # Interactive login shells get /etc/bashrc too, as bash itself reads it
-    # only for non-login ones.
-    if [ -n "''${BASH_VERSION-}" ] && [[ $- == *i* ]]; then
-      . /etc/bashrc
-    fi
-  '';
+  bashrc = pkgs.replaceVars ./etc/bashrc { bashCompletion = "${pkgs.bash-completion}"; };
+  profile = ./etc/profile;
 
   # The same for every profile.
   env = pkgs.buildEnv {
@@ -303,7 +235,7 @@ let
       "LC_ALL"
     ]
     ++ cfg.passEnv;
-    guards = withoutGuardSwitches {
+    guards = {
       sshAgent = {
         inherit (cfg.guards.sshAgent) enable socket path;
       };
@@ -375,23 +307,15 @@ in
       type = types.nullOr types.str;
       default = null;
       description = ''
-        Host directory with every project's volume, secrets and exchange dir;
+        Host directory with a folder per project: its home volume, its
+        exchange dir and what the host keeps for it (sandbox.nix approvals);
         $XDG_DATA_HOME/sandbox (~/.local/share/sandbox) when null. `~` and
         environment variables are expanded at start; $SANDBOX_STATE_DIR
         overrides it.
       '';
     };
 
-    hostPorts = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      example = [
-        "5037"
-        "8080/udp"
-        "9000-9010"
-      ];
-      description = "Host loopback ports reachable inside at 127.0.0.1, in addition to $SANDBOX_HOST_PORTS at start.";
-    };
+    hostPorts = layer'.hostPortsOption "For every project.";
 
     passEnv = mkOption {
       type = types.listOf types.str;
@@ -434,7 +358,7 @@ in
         curl
         libgcc
       ];
-      description = "Libraries prebuilt (non-nix) binaries find through nix-ld at /lib64/ld-linux-x86-64.so.2.";
+      description = "Libraries prebuilt (non-nix) binaries find through nix-ld, which is at the dynamic loader's path (/lib64/ld-linux-x86-64.so.2 on x86_64).";
     };
 
     nixProfile.enable = mkOption {
@@ -458,128 +382,83 @@ in
       '';
     };
 
-    guards = {
-      sshAgent = {
-        enable = mkOption {
+    guards =
+      layer'.tokenCommandOptions "Trusted, as your config: run without asking, and it wins over a project's, which runs only once you approve it. A profile can set its own."
+      // {
+        sshAgent = {
+          enable = mkOption {
+            type = types.bool;
+            default = true;
+            description = "Proxy the host's ssh agent, with non-commit-signing requests behind a popup.";
+          };
+          socket = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = "Host agent socket; $SSH_AUTH_SOCK at start when null.";
+          };
+          path = mkOption {
+            type = types.str;
+            default = "$XDG_RUNTIME_DIR/ssh-agent.sock";
+            description = "Where the proxied socket appears inside; SSH_AUTH_SOCK points there.";
+          };
+        };
+        secretService.enable = mkOption {
           type = types.bool;
           default = true;
-          description = "Proxy the host's ssh agent, with non-commit-signing requests behind a popup.";
-        };
-        socket = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = "Host agent socket; $SSH_AUTH_SOCK at start when null.";
-        };
-        path = mkOption {
-          type = types.str;
-          default = "$XDG_RUNTIME_DIR/ssh-agent.sock";
-          description = "Where the proxied socket appears inside; SSH_AUTH_SOCK points there.";
-        };
-      };
-      secretService.enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = ''
-          A private D-Bus bus with a Secret Service for libsecret users (gh, ...),
-          keeping each project's items apart in the host's own Secret Service
-          (gnome-keyring, KeePassXC, ...). With it on, a sandbox doesn't start
-          without one on the host's session bus.
-        '';
-      };
-      github.enable = goneSwitch;
-      forgejo.enable = goneSwitch;
-      github.tokenCommand = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        example = "op read op://Employee/GitHub/token";
-        description = ''
-          A shell command, run on the host at each start, that prints the
-          GitHub token, e.g. from a secret manager. GitHub API requests
-          from inside - any gh's, or any other client's - are routed (by the
-          router, the HTTPS_PROXY inside) to a host proxy that holds it and
-          gates writes. gh itself isn't provided: bring it in the project's
-          dev shell, ~/.nix-profile or home-manager. The token is handed to
-          the guard in memory: never written to disk, never inside the
-          sandbox. Trusted, as your config: run without asking. It wins over
-          a project's sandbox.nix, whose command is run only once you
-          approve it. Without either the guard doesn't run, and GitHub API
-          requests from inside go out without a token.
-        '';
-      };
-      forgejo.tokenCommands = mkOption {
-        type = types.attrsOf types.str;
-        default = { };
-        example = {
-          "codeberg.org" = "op read op://Employee/Codeberg/token";
-        };
-        description = ''
-          Shell commands, by Forgejo host (host[:port]), run on the host at
-          each start, each printing that instance's token; as for
-          github.tokenCommand, they win over sandbox.nix's for the same
-          host.
-        '';
-      };
-      claudeApiKey.tokenCommand = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        example = "op read op://Employee/Claude/credential";
-        description = ''
-          A shell command printing a Claude API key, run on the host at each
-          start, like github.tokenCommand. With one, Claude Code inside runs
-          on that key, which a host proxy adds and which never enters the
-          sandbox or the disk - in place of logging in inside, so not for
-          Claude subscriptions. Trusted, and wins over a project's
-          sandbox.nix, whose command runs only once approved. A profile can
-          set its own.
-        '';
-      };
-      openUrl.enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "xdg-open inside opens http(s) URLs in the host's browser, after a popup.";
-      };
-      notifications.enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = ''
-          In a sandbox with a Wayland display (guards.wayland), show a
-          guard's popup as a desktop notification as well, with the same
-          answers, when the request doesn't come from the terminal the
-          sandbox runs on - from a window inside, say. The popup on the
-          terminal stays, and the first answer counts. Needs a notification
-          daemon that shows actions on your session bus.
-        '';
-      };
-      wayland = {
-        enable = mkOption {
-          type = types.nullOr types.bool;
-          default = null;
           description = ''
-            Windows on the host's Wayland display, for GUI programs inside:
-            through a proxy (wl-veil) that passes on only an allowlist of
-            the compositor's globals, as $XDG_RUNTIME_DIR/wayland-0 inside.
-            The real socket is never bound in. null leaves it to each
-            project's sandbox.nix, whose guards.wayland.enable takes your
-            yes on the terminal; true or false decides it for every
-            project.
+            A private D-Bus bus with a Secret Service for libsecret users (gh, ...),
+            keeping each project's items apart in the host's own Secret Service
+            (gnome-keyring, KeePassXC, ...). With it on, a sandbox doesn't start
+            without one on the host's session bus.
           '';
         };
-        globals = mkOption {
-          type = types.attrsOf types.bool;
-          default = { };
-          example = {
-            wl_data_device_manager = true;
-            zwp_pointer_constraints_v1 = false;
+        openUrl.enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = "xdg-open inside opens http(s) URLs in the host's browser, after a popup.";
+        };
+        notifications.enable = mkOption {
+          type = types.bool;
+          default = true;
+          description = ''
+            In a sandbox with a Wayland display (guards.wayland), show a
+            guard's popup as a desktop notification as well, with the same
+            answers, when the request doesn't come from the terminal the
+            sandbox runs on - from a window inside, say. The popup on the
+            terminal stays, and the first answer counts. Needs a notification
+            daemon that shows actions on your session bus.
+          '';
+        };
+        wayland = {
+          enable = mkOption {
+            type = types.nullOr types.bool;
+            default = null;
+            description = ''
+              Windows on the host's Wayland display, for GUI programs inside:
+              through a proxy (wl-veil) that passes on only an allowlist of
+              the compositor's globals, as $XDG_RUNTIME_DIR/wayland-0 inside.
+              The real socket is never bound in. null leaves it to each
+              project's sandbox.nix, whose guards.wayland.enable takes your
+              yes on the terminal; true or false decides it for every
+              project.
+            '';
           };
-          description = ''
-            Changes to the allowlist of Wayland globals, by interface name:
-            true adds one to the default list (nix/wayland.nix), false
-            removes one. Applied after a project's sandbox.nix's changes,
-            so yours win.
-          '';
+          globals = mkOption {
+            type = types.attrsOf types.bool;
+            default = { };
+            example = {
+              wl_data_device_manager = true;
+              zwp_pointer_constraints_v1 = false;
+            };
+            description = ''
+              Changes to the allowlist of Wayland globals, by interface name:
+              true adds one to the default list (nix/wayland.nix), false
+              removes one. Applied after a project's sandbox.nix's changes,
+              so yours win.
+            '';
+          };
         };
       };
-    };
 
     claude = layerOptions.claude // {
       enable = mkOption {

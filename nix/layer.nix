@@ -27,6 +27,7 @@ let
           "rw"
         ];
         default = "ro";
+        description = "Read-only, or read-write.";
       };
       optional = mkOption {
         type = types.bool;
@@ -62,21 +63,11 @@ let
             `package`: never a command looked up on PATH.
           '';
         };
-        # Replaced by executable; kept only to say so.
-        command = mkOption {
-          type = types.nullOr types.anything;
-          default = null;
-          visible = false;
-          apply =
-            command:
-            if command == null then
-              null
-            else
-              throw "claude.lspServers.${name}.command is gone: the server is always a file in package, so set executable (its name in bin/) if it isn't the package's main program";
-        };
         args = mkOption {
           type = types.listOf types.str;
           default = [ ];
+          example = [ "--stdio" ];
+          description = "Arguments the server is started with.";
         };
         extensionToLanguage = mkOption {
           type = types.attrsOf types.str;
@@ -104,9 +95,8 @@ let
     }:
     let
       lsp = claude.lspServers;
-      # Each server's executable: always a file in its package. Forcing
-      # `command` reports a config that still sets it.
-      lspExe = lib.mapAttrs (_: s: builtins.seq s.command "${s.package}/bin/${s.executable}") lsp;
+      # Each server's executable: always a file in its package.
+      lspExe = lib.mapAttrs (_: s: "${s.package}/bin/${s.executable}") lsp;
       lspPlugins = lib.mapAttrsToList (n: s: {
         name = n;
         inherit (s.package) version;
@@ -173,6 +163,61 @@ let
 in
 {
   inherit json;
+
+  # guards.*.tokenCommand(s): the same options at the top level, in a
+  # profile and in a project's sandbox.nix. Only whose word it is differs,
+  # which note says.
+  tokenCommandOptions = note: {
+    github.tokenCommand = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "op read op://Employee/GitHub/token";
+      description = ''
+        A shell command that prints the GitHub token, e.g. from a secret
+        manager, run on the host at each start. With one, GitHub API
+        requests from inside - any gh's, or any other client's - go through
+        a host proxy that adds the token and holds writes for a popup. The
+        token is handed to the proxy in memory: never on disk, never inside
+        the sandbox. Without one that proxy doesn't run, and requests go
+        out without a token. ${note}
+      '';
+    };
+    forgejo.tokenCommands = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      example = {
+        "codeberg.org" = "op read op://Employee/Codeberg/token";
+      };
+      description = ''
+        The same per Forgejo instance, by host[:port]: each command prints
+        that instance's token. ${note}
+      '';
+    };
+    claudeApiKey.tokenCommand = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "op read op://Employee/Claude/credential";
+      description = ''
+        A shell command that prints a Claude API key, run like
+        guards.github.tokenCommand. With one, Claude Code inside runs on
+        that key, which a host proxy adds - in place of logging in inside,
+        so not for Claude subscriptions. ${note}
+      '';
+    };
+  };
+
+  hostPortsOption =
+    note:
+    mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [
+        "5037"
+        "8080/udp"
+        "9000-9010"
+      ];
+      description = "Host loopback ports reachable inside at 127.0.0.1, in addition to $SANDBOX_HOST_PORTS at start. ${note}";
+    };
 
   options = {
     binds = mkOption {
