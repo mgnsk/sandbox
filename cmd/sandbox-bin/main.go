@@ -89,9 +89,9 @@ func root() *cli.Command {
 				[]string{"UPSTREAM_SOCKET"}, func(ctx context.Context, a []string) error {
 					return sshagent.Run(ctx, a[0])
 				}),
-			guardCommand("secret-service-guard", "serve a Secret Service on the sandbox's bus",
-				[]string{"BUS_ADDRESS", "DATABASE"}, func(ctx context.Context, a []string) error {
-					return secretservice.Run(ctx, a[0], a[1])
+			guardCommand("secret-service-guard", "serve the host's Secret Service on the sandbox's bus, one project's items",
+				[]string{"BUS_ADDRESS", "HOST_BUS_ADDRESS", "PROJECT"}, func(ctx context.Context, a []string) error {
+					return secretservice.Run(ctx, a[0], a[1], a[2])
 				}),
 			guardCommand("open-url-guard", "open URLs in the host's browser after a popup",
 				nil, func(ctx context.Context, _ []string) error {

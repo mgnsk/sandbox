@@ -460,7 +460,12 @@ in
       secretService.enable = mkOption {
         type = types.bool;
         default = true;
-        description = "A private D-Bus bus with a per-project Secret Service, for libsecret users (gh, ...).";
+        description = ''
+          A private D-Bus bus with a Secret Service for libsecret users (gh, ...),
+          keeping each project's items apart in the host's own Secret Service
+          (gnome-keyring, KeePassXC, ...). With it on, a sandbox doesn't start
+          without one on the host's session bus.
+        '';
       };
       github.enable = goneSwitch;
       forgejo.enable = goneSwitch;

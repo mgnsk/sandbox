@@ -1,12 +1,19 @@
-// Package secretservice is secret-service-guard: a fake
-// org.freedesktop.secrets D-Bus service for the sandbox.
+// Package secretservice is secret-service-guard: an
+// org.freedesktop.secrets D-Bus service for the sandbox, backed by the
+// host's own Secret Service.
 //
-//	sandbox-bin secret-service-guard BUS_ADDRESS DATABASE
+//	sandbox-bin secret-service-guard BUS_ADDRESS HOST_BUS_ADDRESS PROJECT
 //
-// It runs outside the sandbox, connected to a private, ephemeral D-Bus bus
-// the sandbox launcher starts just for this purpose, and persists secrets in
-// a sqlite database on the host; the sandboxed process only ever sees the
-// bus socket, never the database file.
+// It runs outside the sandbox, connected both to a private, ephemeral D-Bus
+// bus the sandbox launcher starts just for this purpose and to the host's
+// session bus, and keeps the sandbox's items in the host's default
+// collection (gnome-keyring, KeePassXC, ...). The sandboxed process only
+// ever sees the private bus, never the host's.
+//
+// Each project's items are its own: the guard marks every item with the
+// project (ProjectAttribute) and adds that to every search, and prefixes the
+// sandbox's attribute names (AttributePrefix), so a host program looking up
+// its own credentials never finds one a sandbox stored.
 //
 // Any sandboxed process that stores credentials via libsecret/Secret Service
 // gets real persistence instead of falling back to plaintext files - gh's
@@ -15,10 +22,12 @@
 // else that speaks the protocol.
 //
 // It implements just enough of the Secret Service spec for those clients:
-// OpenSession("plain"), Unlock (always succeeds, no master password),
+// OpenSession("plain"), Unlock (always succeeds),
 // Collection.SearchItems/CreateItem on a single fixed collection,
-// Item.GetSecret/Delete. The Prompt object/signal dance is never triggered,
-// because Unlock/CreateItem/Delete always return the null prompt path "/".
+// Item.GetSecret/Delete. The Prompt object/signal dance is never triggered
+// inside, because Unlock/CreateItem/Delete always return the null prompt
+// path "/": when the host's keyring is locked, the guard has the host show
+// its own unlock prompt, and the call waits for it.
 //
 // TODO: support libsecret clients (secret-tool, GNOME apps), then drop this
 // note. libsecret opens only a dh-ietf1024-sha256-aes128-cbc-pkcs7 session
@@ -28,7 +37,6 @@ package secretservice
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -100,96 +108,99 @@ func method(name string, in, out []string) introspect.Method {
 	return introspect.Method{Name: name, Args: args}
 }
 
-// item is org.freedesktop.Secret.Item, one per stored item.
+// item is org.freedesktop.Secret.Item, one per host item the sandbox has
+// been shown.
 type item struct {
-	store *Store
-	id    int64
+	host *Host
+	path dbus.ObjectPath // On the host.
 }
 
 // GetSecret returns the item's secret, unencrypted.
 func (it *item) GetSecret(session dbus.ObjectPath) (secret, *dbus.Error) {
-	contentType, value, err := it.store.get(it.id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return secret{}, errNoSuchObject
-	}
+	s, err := it.host.get(it.path)
 	if err != nil {
-		return secret{}, dbus.MakeFailedError(err)
+		return secret{}, hostError(err)
 	}
-	return secret{Session: session, Parameters: []byte{}, Value: value, ContentType: contentType}, nil
+	return secret{Session: session, Parameters: []byte{}, Value: s.Value, ContentType: s.ContentType}, nil
 }
 
-// Delete deletes the item, with no prompt.
+// Delete deletes the item, with no prompt inside (the host may show one).
 func (it *item) Delete() (dbus.ObjectPath, *dbus.Error) {
-	if err := it.store.delete(it.id); err != nil {
-		return "", dbus.MakeFailedError(err)
+	if err := it.host.delete(it.path); err != nil {
+		return "", hostError(err)
 	}
 	return nullPath, nil
 }
 
-// collection is org.freedesktop.Secret.Collection: the single fixed
-// default collection.
-type collection struct {
-	conn     *dbus.Conn
-	store    *Store
-	mu       sync.Mutex
-	exported map[int64]bool
+// hostError is err from the host as an error for the sandbox: an item gone
+// on the host is gone here too.
+func hostError(err error) *dbus.Error {
+	var e dbus.Error
+	if errors.As(err, &e) {
+		switch e.Name {
+		case errNoSuchObject.Name, "org.freedesktop.DBus.Error.UnknownObject", "org.freedesktop.DBus.Error.UnknownMethod":
+			return errNoSuchObject
+		}
+	}
+	return dbus.MakeFailedError(err)
 }
 
-// export exports a stored item's object, once per process.
-func (c *collection) export(id int64) error {
+// collection is org.freedesktop.Secret.Collection: the single fixed
+// default collection, the project's items on the host.
+type collection struct {
+	conn *dbus.Conn
+	host *Host
+
+	mu  sync.Mutex
+	ids map[dbus.ObjectPath]int64 // Host item paths, by their number here.
+}
+
+// export exports a host item's object, once per process; its path here.
+// Only paths the host returned for the project's own items get here.
+func (c *collection) export(hostPath dbus.ObjectPath) (dbus.ObjectPath, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.exported[id] {
-		return nil
+	if id, ok := c.ids[hostPath]; ok {
+		return itemPath(id), nil
 	}
+	id := int64(len(c.ids) + 1)
 	path := itemPath(id)
-	if err := c.conn.Export(&item{store: c.store, id: id}, path, itemIface); err != nil {
-		return err
+	if err := c.conn.Export(&item{host: c.host, path: hostPath}, path, itemIface); err != nil {
+		return "", err
 	}
 	if _, err := prop.Export(c.conn, path, prop.Map{itemIface: {}}); err != nil {
-		return err
+		return "", err
 	}
 	err := c.conn.Export(introspectable(itemIface,
 		method("GetSecret", []string{"o"}, []string{"(oayays)"}),
 		method("Delete", nil, []string{"o"}),
 	), path, "org.freedesktop.DBus.Introspectable")
 	if err != nil {
-		return err
+		return "", err
 	}
-	c.exported[id] = true
-	return nil
+	c.ids[hostPath] = id
+	return path, nil
 }
 
 // SearchItems returns the items whose attributes include all of attrs.
 func (c *collection) SearchItems(attrs map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
-	items, err := c.store.items()
+	found, err := c.host.search(attrs)
 	if err != nil {
-		return nil, dbus.MakeFailedError(err)
+		return nil, hostError(err)
 	}
 	paths := []dbus.ObjectPath{}
-	for _, it := range items {
-		if !includes(it.attributes, attrs) {
-			continue
-		}
-		if err := c.export(it.id); err != nil {
+	for _, hostPath := range found {
+		path, err := c.export(hostPath)
+		if err != nil {
 			return nil, dbus.MakeFailedError(err)
 		}
-		paths = append(paths, itemPath(it.id))
+		paths = append(paths, path)
 	}
 	return paths, nil
 }
 
-func includes(have, want map[string]string) bool {
-	for k, v := range want {
-		if got, ok := have[k]; !ok || got != v {
-			return false
-		}
-	}
-	return true
-}
-
 // CreateItem stores an item - with replace, in place of the one with exactly
-// the same attributes - with no prompt.
+// the same attributes - with no prompt inside (the host may show one).
 func (c *collection) CreateItem(props map[string]dbus.Variant, s secret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	label, ok := props[itemIface+".Label"].Value().(string)
 	if !ok {
@@ -199,14 +210,15 @@ func (c *collection) CreateItem(props map[string]dbus.Variant, s secret, replace
 	if !ok {
 		return "", "", invalidArgs("no " + itemIface + ".Attributes")
 	}
-	id, err := c.store.put(label, attrs, s.ContentType, s.Value, replace)
+	hostPath, err := c.host.create(label, attrs, s.ContentType, s.Value, replace)
+	if err != nil {
+		return "", "", hostError(err)
+	}
+	path, err := c.export(hostPath)
 	if err != nil {
 		return "", "", dbus.MakeFailedError(err)
 	}
-	if err := c.export(id); err != nil {
-		return "", "", dbus.MakeFailedError(err)
-	}
-	return itemPath(id), nullPath, nil
+	return path, nullPath, nil
 }
 
 // service is org.freedesktop.Secret.Service: always unlocked, no password.
@@ -228,8 +240,8 @@ func (s *service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.Obj
 	return objects, nullPath, nil
 }
 
-// Export serves the Secret Service on conn, from st.
-func Export(conn *dbus.Conn, st *Store) error {
+// Export serves the Secret Service on conn, from host.
+func Export(conn *dbus.Conn, host *Host) error {
 	if err := conn.Export(&service{}, servicePath, serviceIface); err != nil {
 		return err
 	}
@@ -249,7 +261,7 @@ func Export(conn *dbus.Conn, st *Store) error {
 		return err
 	}
 
-	coll := &collection{conn: conn, store: st, exported: map[int64]bool{}}
+	coll := &collection{conn: conn, host: host, ids: map[dbus.ObjectPath]int64{}}
 	if err := conn.Export(coll, collectionPath, collectionIface); err != nil {
 		return err
 	}
@@ -263,16 +275,6 @@ func Export(conn *dbus.Conn, st *Store) error {
 	if err != nil {
 		return err
 	}
-	// Exported up front, so an item is there for GetSecret before any search.
-	items, err := st.items()
-	if err != nil {
-		return err
-	}
-	for _, it := range items {
-		if err := coll.export(it.id); err != nil {
-			return err
-		}
-	}
 	reply, err := conn.RequestName(serviceName, dbus.NameFlagDoNotQueue)
 	if err != nil {
 		return err
@@ -285,14 +287,17 @@ func Export(conn *dbus.Conn, st *Store) error {
 
 // Run serves until stopped, or until the bus - the sandbox's own, which
 // the launcher stops with it - goes away.
-func Run(ctx context.Context, busAddress, database string) error {
-	st, err := OpenStore(database)
+func Run(ctx context.Context, busAddress, hostBusAddress, project string) error {
+	host, err := ConnectHost(ctx, hostBusAddress, project)
+	if errors.Is(err, ErrNoHostService) {
+		return fmt.Errorf("%w: start one (gnome-keyring, KeePassXC, ...), or set guards.secretService.enable = false", err)
+	}
 	if err != nil {
 		return err
 	}
-	defer st.Close()
-	if hosts, err := st.ghLogins(); err == nil && len(hosts) > 0 {
-		fmt.Fprintf(os.Stderr, "sandbox: WARNING: the sandbox's keyring holds gh tokens for %s, from a gh auth login inside -"+
+	defer host.Close()
+	if hosts, err := host.ghLogins(); err == nil && len(hosts) > 0 {
+		fmt.Fprintf(os.Stderr, "sandbox: WARNING: the host's keyring holds the project's gh tokens for %s, from a gh auth login inside -"+
 			" readable by everything in the sandbox, and used around the GitHub guard's popups.\n"+
 			"  Run `gh auth logout --hostname HOST` inside, revoke those tokens, and use guards.github.tokenCommand instead.\n",
 			strings.Join(hosts, ", "))
@@ -302,7 +307,7 @@ func Run(ctx context.Context, busAddress, database string) error {
 		return err
 	}
 	defer conn.Close()
-	if err := Export(conn, st); err != nil {
+	if err := Export(conn, host); err != nil {
 		return err
 	}
 	if err := guard.Ready(struct{}{}); err != nil {

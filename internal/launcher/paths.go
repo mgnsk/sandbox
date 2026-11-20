@@ -72,7 +72,7 @@ func checkCwd(cwd, home string) error {
 		return fmt.Errorf("refusing to run in %s, it contains $HOME", cwd)
 	}
 	// The dot directories directly under ~ hold host state no sandbox
-	// should write: ssh keys and config, every sandbox's volume, secrets and
+	// should write: ssh keys and config, every sandbox's volume and
 	// exchange dir, the gh token, an ssh agent socket, ...
 	if strings.HasPrefix(cwd+"/", home+"/.") {
 		return fmt.Errorf("refusing to run in %s, it is host state under $HOME", cwd)
@@ -81,7 +81,7 @@ func checkCwd(cwd, home string) error {
 }
 
 // checkOutside refuses a cwd overlapping the state dir, which holds every
-// sandbox's volume and secrets.
+// sandbox's volume.
 func checkOutside(cwd, stateDir string) error {
 	if within(cwd, stateDir) || within(stateDir, cwd) {
 		return fmt.Errorf("refusing to run in %s, it overlaps the sandbox state dir %s", cwd, stateDir)

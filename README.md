@@ -48,7 +48,7 @@ What you get, per project:
   - the Claude API on an API key from a key command (opt-in): never asks;
   - opening http(s) URLs in the host's browser: asks.
 - **A Secret Service** per project, so tools storing credentials via libsecret
-  work without a desktop keyring.
+  work: their items go to your host keyring, each project's kept apart.
 - **An exchange dir** (`$SANDBOX_EXCHANGE`), read-only inside, for output of
   commands you run on the host.
 - **Claude Code** with managed settings and a `CLAUDE.md` that tells it about
@@ -590,7 +590,7 @@ The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
 | `passEnv` | `[ ]` | Host variables passed in, besides TERM/COLORTERM/LANG/LC_ALL; everything else is cleared. |
 | `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; `~`, `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` expanded in `src`. One whose src is the project is left to the project bind. |
 | `hostPorts` | `[ ]` | Like `SANDBOX_HOST_PORTS`, always. |
-| `stateDir` | `$XDG_DATA_HOME/sandbox` | One folder per project: its `$HOME`, Secret Service data, exchange dir, `sandbox.nix` approvals and cache. `$SANDBOX_STATE_DIR` overrides. |
+| `stateDir` | `$XDG_DATA_HOME/sandbox` | One folder per project: its `$HOME`, exchange dir, `sandbox.nix` approvals and cache. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl, libgcc | For prebuilt binaries. |
 | `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
 | `nixProfile.enable` | off (on with the home-manager module) | Link the host's `~/.nix-profile` in and put its `bin/` on `PATH`, after the sandbox's own. Off, a link from an earlier start is removed. |
@@ -601,7 +601,7 @@ The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
 | `guards.forgejo.tokenCommands.<host>` | `{ }` | The same per Forgejo host; the host's fj is never used. |
 | `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key, run on the host at each start: Claude Code then runs on it, held outside. See [Claude Code](#claude-code). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
-| `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
+| `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret, storing in the host's Secret Service (gnome-keyring, KeePassXC, ...). Needs one running, or D-Bus-activatable, on the host's session bus: without it the sandbox doesn't start - turn this off then. |
 | `guards.notifications.enable` | on | With a Wayland display inside, show a popup as a desktop notification too when the request doesn't come from the sandbox's terminal. See [Popups from a window](#popups-from-a-window). |
 | `guards.wayland.enable` | `null` | Windows on your Wayland display, through a filtering proxy: `true` or `false` for every project, `null` to leave it to each project's `sandbox.nix`. See [Wayland](#wayland). |
 | `guards.wayland.globals.<name>` | `{ }` | Changes to the allowlist of Wayland globals: `true` adds one, `false` removes one. Yours go over a project's. |

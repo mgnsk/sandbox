@@ -36,7 +36,7 @@ The only host-backed paths writable from inside are:
   `~/.local/share/sandbox`) and `<volume>` is the project path made flat plus
   a hash. It looks like the host home but is never the real one — a file the
   sandbox writes there never reaches the host path it shadows, and a file the
-  host has there is not visible inside. The project's Secret Service data,
+  host has there is not visible inside. The project's
   `sandbox.nix` approvals and evaluation cache sit next to it in
   `<state dir>/<volume>/`, outside the mount, out of the sandbox's reach.
   Tokens and keys are never written there, or anywhere.
@@ -203,7 +203,8 @@ it, so the sandbox makes the usual ways fail and reports the rest:
   login|refresh|token` and `fj auth login|add-token|add-key`, guard or not;
 - at each start, init warns of a login stored in the volume - hosts in gh's
   `hosts.yml` or fj's `keys.json` - and secret-service-guard of gh tokens
-  in its database, with the commands to remove them.
+  among the project's items in the host keyring (when it's unlocked), with
+  the commands to remove them.
 
 The GitHub and Forgejo tokens, and the Claude API key, come from shell
 commands the launcher runs on the host at each start, with bash from the store, the user's environment
@@ -269,6 +270,33 @@ An approved URL still loads in the real browser with the user's logins, so it
 can send a GET to a site they're signed in to or reach a browser exploit, and
 the sandbox has no need of the browser to fetch ordinary pages. The popup is
 what stands between sandboxed code and that session, so read the host.
+
+## Secret Service: the host's keyring, one project's items
+
+Inside there is only a private D-Bus bus, with secret-service-guard's
+Secret Service on it; the host's session bus is never bound in. The guard,
+outside, keeps the items in the host's own Secret Service (its default
+collection), so they are as safe at rest as the host's other credentials.
+`guards.secretService.enable` requires one: without one running or
+activatable on the host's session bus, the sandbox doesn't start, rather
+than keep credentials anywhere else.
+
+- **Each project sees only its own items.** The guard marks every item it
+  creates with `sandbox-project` = the project's path, and adds that to
+  every search; inside there is no other way to name a host item. Item
+  objects inside are the guard's own numbers, for host items it found that
+  way.
+- **The host's programs never find a sandbox's item.** The sandbox's
+  attribute names are stored prefixed (`service` as `sandbox:service`), so
+  a planted item can't answer a host program's lookup - gh's own token
+  item, say - and hand it a credential of the sandbox's choosing. Labels
+  read `sandbox <project>: <label>`.
+- **Unlocking is the host's.** A locked keyring is unlocked when the
+  sandbox first needs it, through the host's own prompt; the guard has no
+  password, and a dismissed prompt fails the request. Inside, `Unlock`
+  always "succeeds" and nothing ever sees a prompt object.
+- **The secrets cross the host's bus unencrypted** (a "plain" session, one
+  per transfer): it is the user's own bus, which the sandbox can't reach.
 
 ## Wayland: a proxy with an allowlist, never the socket
 
