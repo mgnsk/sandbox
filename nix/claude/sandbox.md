@@ -15,7 +15,7 @@ Not reachable - don't probe, plan around it:
 - sudo/setuid (no_new_privs, all caps dropped), files owned by other
   users
 - the host's /usr, /bin and /lib: every program comes from the nix store.
-  The sandbox itself has only bash, nix, git, ssh and the basic
+  The sandbox itself has only bash, nix, git, less, ssh and the basic
   coreutils/grep/sed/tar/make set; every other tool comes from the project's dev shell
   (`nix develop`), plus `~/.nix-profile` when linked (only by a sandbox
   installed through home-manager). A missing command is
