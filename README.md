@@ -210,8 +210,9 @@ that isn't bound in, a credential helper that isn't on the sandbox's `PATH`,
 devenv on `PATH`. Its shell, scripts, tasks, processes and services all run
 sandboxed.
 
-devenv itself comes from your side: installed in `~/.nix-profile` or
-through home-manager.
+devenv itself comes from your side, installed in `~/.nix-profile` or
+through home-manager, or from the project (see
+[devenv from the project's flake](#devenv-from-the-projects-flake) below).
 
 ```nix
 # sandbox.nix, next to devenv.nix
@@ -282,6 +283,43 @@ What to know:
   direnv's `use devenv` on the host for a sandboxed project: both evaluate
   and run devenv.nix outside the sandbox, and the sandbox can edit it. Inside
   is fine, if you want activation on `cd` there.
+
+#### devenv from the project's flake
+
+A project can also bring its own devenv, pinned in its `flake.lock`, so it
+works without devenv in your profile and everyone gets the same version.
+It's built through the host's daemon and runs inside like the rest:
+
+```nix
+# flake.nix, next to devenv.nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.devenv.url = "github:cachix/devenv";
+
+  outputs = { nixpkgs, devenv, ... }: {
+    packages = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ]
+      (system: { devenv = devenv.packages.${system}.devenv; });
+  };
+}
+```
+
+```nix
+# sandbox.nix
+{
+  command = [ "nix" "run" ".#devenv" "--" "shell" ];
+}
+```
+
+```sh
+sandbox                                      # devenv shell
+sandbox nix run .#devenv -- up               # processes and services
+sandbox nix run .#devenv -- shell -- claude  # Claude Code with devenv's tools on PATH
+```
+
+`sandbox nix run nixpkgs#devenv -- shell` works too, unpinned. devenv's
+flake integration (`devenv.lib.mkShell` in `devShells`, entered with
+`nix develop --no-pure-eval`) needs no devenv CLI at all, but lacks some of
+its commands; see devenv's docs on flakes.
 
 ## Configuring the sandbox
 
