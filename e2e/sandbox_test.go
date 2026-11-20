@@ -314,6 +314,26 @@ func TestStoreAndClaudeConfigAreReadOnly(t *testing.T) {
 	}
 }
 
+// With a sandbox.nix the managed Claude config is a link into the store,
+// followed inside (see TestAManifestCannotBringAHostDirectoryIn): to the
+// project's settings over the profile's, read-only like the rest.
+func TestClaudeConfigOfAProjectIsReadThroughItsLink(t *testing.T) {
+	p := newProject(t)
+	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte(`{ ... }: { claude.settings.env.FROM_PROJECT = "yes"; }`+"\n"), 0o644)
+	r := p.run(t, "readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n", nil)
+	link, rest, _ := strings.Cut(r.stdout, "\n")
+	var settings struct {
+		Env map[string]any `json:"env"`
+	}
+	if err := json.Unmarshal([]byte(rest), &settings); err != nil || !strings.HasPrefix(link, "/nix/store/") ||
+		settings.Env["FROM_PROJECT"] != "yes" || fmt.Sprint(settings.Env["DISABLE_AUTOUPDATER"]) != "1" {
+		t.Errorf("%v %q", err, r.stdout)
+	}
+	if !strings.Contains(r.stderr, "Read-only file system") {
+		t.Errorf("%q", r.stderr)
+	}
+}
+
 func TestTheVolumeIsPerProject(t *testing.T) {
 	p := newProject(t)
 	p.run(t, `echo kept > "$HOME/kept"`+"\n", nil).ok(t)
@@ -791,4 +811,53 @@ func TestGuardsDoNotSurviveTheSandbox(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Errorf("guards survived the sandbox: %v", leaked)
+}
+
+// processes are the pids of the processes running exactly argv.
+func processes(argv ...string) []string {
+	var pids []string
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		cmdline, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err == nil && string(cmdline) == strings.Join(argv, "\x00")+"\x00" {
+			pids = append(pids, e.Name())
+		}
+	}
+	return pids
+}
+
+// Killed, the launcher stops nothing itself: the sandbox and the guards,
+// which hold the tokens, go on their own.
+func TestAKilledLauncherTakesTheSandboxAndItsGuardsWithIt(t *testing.T) {
+	p := newProject(t)
+	before := guardPids()
+	started := func() []string {
+		return slices.Collect(func(yield func(string) bool) {
+			for pid := range maps.Keys(guardPids()) {
+				if !before[pid] && !yield(pid) {
+					return
+				}
+			}
+		})
+	}
+	// The sandbox command is a script that execs the launcher: its pid.
+	command := []string{"sleep", "31415"}
+	cmd := p.command("", nil, command...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	for deadline := time.Now().Add(time.Minute); len(processes(command...)) == 0 || len(started()) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("not started: command %v, guards %v", processes(command...), started())
+		}
+	}
+	cmd.Process.Kill()
+	cmd.Wait()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if len(processes(command...)) == 0 && len(started()) == 0 {
+			return
+		}
+	}
+	t.Errorf("outlived the killed launcher: command %v, guards %v", processes(command...), started())
 }
