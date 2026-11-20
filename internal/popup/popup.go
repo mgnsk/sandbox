@@ -30,6 +30,11 @@ const Env = "SANDBOX_POPUP_SOCKET"
 type Request struct {
 	Name string `json:"name"`
 	Text string `json:"text"`
+	// The session of the process the request is for, when the guard knows
+	// it and it has a controlling terminal: the launcher shows a request
+	// from the sandbox's own terminal there alone, and any other as a
+	// desktop notification too (see package notify). 0 when unknown.
+	Session int `json:"session,omitempty"`
 }
 
 // Answer is the user's answer to a popup.
@@ -62,6 +67,16 @@ func Ask(name, text string) Answer {
 		return No
 	}
 	return AskAt(path, Request{Name: name, Text: text})
+}
+
+// AskFrom is Ask for a request from a process of the session session (see
+// Request).
+func AskFrom(name, text string, session int) Answer {
+	path := os.Getenv(Env)
+	if path == "" {
+		return No
+	}
+	return AskAt(path, Request{Name: name, Text: text, Session: session})
 }
 
 // AskAt asks at the popup socket at path.

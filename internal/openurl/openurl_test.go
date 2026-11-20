@@ -147,7 +147,7 @@ func TestRefusedWithoutAsking(t *testing.T) {
 		}
 	}
 	if len(w.popups.Asked()) != 0 || len(w.Opened()) != 0 {
-		t.Errorf("asked %q, opened %q", w.popups.Asked(), w.Opened())
+		t.Errorf("asked %+v, opened %q", w.popups.Asked(), w.Opened())
 	}
 }
 
@@ -170,7 +170,7 @@ func TestPopupShowsHostURLAndRequester(t *testing.T) {
 	ask(t, w.guard(t), url+"\n")
 	asked := w.popups.Asked()
 	if len(asked) != 1 || asked[0].Name != "open-url-guard" {
-		t.Fatalf("asked %q", asked)
+		t.Fatalf("asked %+v", asked)
 	}
 	wd, _ := os.Getwd()
 	text := asked[0].Text

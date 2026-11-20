@@ -16,6 +16,9 @@ import (
 // "unknown" when it can't be read.
 type Peer struct {
 	Cwd, Cmdline string
+	// Its session, when it has a controlling terminal; 0 without one, or
+	// when it can't be read. See popup.Request.
+	Session int
 }
 
 // Describe gives the process on the other end of conn.
@@ -39,7 +42,31 @@ func Describe(conn net.Conn) Peer {
 	if data, err := os.ReadFile(proc + "/cmdline"); err == nil && len(data) > 0 {
 		p.Cmdline = Cmdline(bytes.Split(bytes.TrimSuffix(data, []byte{0}), []byte{0}))
 	}
+	if data, err := os.ReadFile(proc + "/stat"); err == nil {
+		p.Session = session(string(data))
+	}
 	return p
+}
+
+// session is the session of the process whose /proc/PID/stat is stat, if it
+// has a controlling terminal; else 0.
+func session(stat string) int {
+	// After the command's name, which may itself hold spaces and brackets:
+	// state, ppid, pgrp, session, tty_nr.
+	at := strings.LastIndexByte(stat, ')')
+	if at < 0 {
+		return 0
+	}
+	fields := strings.Fields(stat[at+1:])
+	if len(fields) < 5 {
+		return 0
+	}
+	sid, err1 := strconv.Atoi(fields[3])
+	tty, err2 := strconv.Atoi(fields[4])
+	if err1 != nil || err2 != nil || tty == 0 || sid <= 0 {
+		return 0
+	}
+	return sid
 }
 
 func pid(conn net.Conn) (int, error) {

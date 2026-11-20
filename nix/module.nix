@@ -270,6 +270,7 @@ let
       };
       secretService = cfg.guards.secretService.enable;
       openUrl = cfg.guards.openUrl.enable;
+      notifications = cfg.guards.notifications.enable;
       wayland = {
         inherit (cfg.guards.wayland) enable globals;
         defaultGlobals = import ./wayland.nix;
@@ -472,6 +473,18 @@ in
         type = types.bool;
         default = true;
         description = "xdg-open inside opens http(s) URLs in the host's browser, after a popup.";
+      };
+      notifications.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          In a sandbox with a Wayland display (guards.wayland), show a
+          guard's popup as a desktop notification as well, with the same
+          answers, when the request doesn't come from the terminal the
+          sandbox runs on - from a window inside, say. The popup on the
+          terminal stays, and the first answer counts. Needs a notification
+          daemon that shows actions on your session bus.
+        '';
       };
       wayland = {
         enable = mkOption {

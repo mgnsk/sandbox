@@ -18,6 +18,10 @@
 // Guards ask over a unix socket in a private temp dir (see package popup).
 // Requests are shown one at a time, in order. Without a usable terminal
 // there is no socket, and popup.Ask answers no.
+//
+// With a Notifier, a request that doesn't come from a process on this
+// terminal - a GUI program inside, or one the guard can't tell - is shown as
+// a desktop notification as well, and the first answer of the two counts.
 package popuprelay
 
 import (
@@ -34,8 +38,16 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
+	"github.com/mgnsk/sandbox/internal/notify"
 	"github.com/mgnsk/sandbox/internal/popup"
 )
+
+// Notifier shows a request as a desktop notification: *notify.Notifier.
+type Notifier interface {
+	Show(req popup.Request) (uint32, error)
+	Close(id uint32)
+	Events() <-chan notify.Event
+}
 
 const (
 	// Keys typed in this long after a popup appears are dropped: they were
@@ -52,6 +64,10 @@ const (
 	// How long output the sandbox left behind is waited for after it exits.
 	drainQuiet = 50 * time.Millisecond
 )
+
+// A notification the daemon takes away sooner than this after it was shown
+// isn't shown again: that daemon isn't keeping them.
+var minShown = 2 * time.Second
 
 // Usable says whether there's a terminal to relay and show popups on.
 func Usable() bool {
@@ -90,13 +106,14 @@ func readRequest(conn net.Conn) (popup.Request, bool) {
 		return popup.Request{}, false
 	}
 	var req struct {
-		Name *string `json:"name"`
-		Text *string `json:"text"`
+		Name    *string `json:"name"`
+		Text    *string `json:"text"`
+		Session int     `json:"session"`
 	}
 	if json.Unmarshal(data, &req) != nil || req.Name == nil || req.Text == nil {
 		return popup.Request{}, false
 	}
-	return popup.Request{Name: *req.Name, Text: *req.Text}, true
+	return popup.Request{Name: *req.Name, Text: *req.Text, Session: req.Session}, true
 }
 
 // Run runs cmd on a pty of its own, relaying the terminal on stdin and
@@ -104,11 +121,17 @@ func readRequest(conn net.Conn) (popup.Request, bool) {
 // passed on to cmd, but SIGINT: in raw mode a Ctrl-C reaches the sandbox as
 // a key. It returns cmd.Wait's error.
 func Run(cmd *exec.Cmd, ln net.Listener, signals <-chan os.Signal) error {
-	return run(os.Stdin, os.Stdout, cmd, ln, signals, grace)
+	return run(os.Stdin, os.Stdout, cmd, ln, signals, grace, nil)
 }
 
-// run is Run on the terminal in and out.
-func run(in, out *os.File, cmd *exec.Cmd, ln net.Listener, signals <-chan os.Signal, grace time.Duration) error {
+// RunNotifying is Run, with requests that don't come from this terminal
+// shown as notifications by notifier too.
+func RunNotifying(cmd *exec.Cmd, ln net.Listener, signals <-chan os.Signal, notifier Notifier) error {
+	return run(os.Stdin, os.Stdout, cmd, ln, signals, grace, notifier)
+}
+
+// run is Run on the terminal in and out; notifier may be nil.
+func run(in, out *os.File, cmd *exec.Cmd, ln net.Listener, signals <-chan os.Signal, grace time.Duration, notifier Notifier) error {
 	attrs, err := unix.IoctlGetTermios(int(in.Fd()), unix.TCGETS)
 	if err != nil {
 		return err
@@ -138,7 +161,8 @@ func run(in, out *os.File, cmd *exec.Cmd, ln net.Listener, signals <-chan os.Sig
 	}
 	defer term.Restore(int(in.Fd()), saved) //nolint:errcheck // Nothing left to do about it.
 
-	r := &relay{in: in, out: out, master: master, cmd: cmd, grace: grace, ttyOK: true, modes: modes{cursor: true}}
+	r := &relay{in: in, out: out, master: master, cmd: cmd, grace: grace, ttyOK: true, modes: modes{cursor: true},
+		notifier: notifier}
 	return r.loop(ln, signals, done)
 }
 
@@ -161,6 +185,10 @@ type relay struct {
 	resized   bool
 	ready     <-chan time.Time // The current popup takes keys.
 	unnudge   <-chan time.Time // Size the pty back after a nudge.
+
+	notifier  Notifier  // nil without notifications.
+	note      uint32    // The current popup's notification, or 0.
+	noteShown time.Time // When it was shown.
 }
 
 // reader sends what's read from f, in chunks, until it fails.
@@ -199,6 +227,10 @@ func (r *relay) loop(ln net.Listener, signals <-chan os.Signal, done <-chan erro
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
+	var notes <-chan notify.Event
+	if r.notifier != nil {
+		notes = r.notifier.Events()
+	}
 
 	for {
 		// Not read while the held output is full: the sandbox blocks.
@@ -234,6 +266,8 @@ func (r *relay) loop(ln net.Listener, signals <-chan os.Signal, done <-chan erro
 			}
 		case <-winch:
 			r.onResize()
+		case event := <-notes:
+			r.onNote(event)
 		case <-r.ready:
 			r.ready = nil
 			r.draw()
@@ -294,6 +328,7 @@ func (r *relay) finish(output <-chan []byte) {
 	if r.popup != nil {
 		r.current.reply(popup.No)
 		r.popup = nil
+		r.closeNote()
 	}
 	for _, req := range r.queue {
 		req.reply(popup.No)
@@ -388,6 +423,9 @@ func (r *relay) nextPopup() {
 		r.current = req
 		r.ready = time.After(r.grace)
 		r.draw()
+		if !r.fromHere(req.Request) {
+			r.showNote()
+		}
 		return
 	}
 	if r.screen {
@@ -395,7 +433,70 @@ func (r *relay) nextPopup() {
 	}
 }
 
+// fromHere says whether req is for a process on this terminal, whose user
+// is looking at it: one of the session the sandbox's pty is the controlling
+// terminal of. Anything else - a GUI program inside, a terminal inside one,
+// a requester the guard can't tell - isn't.
+func (r *relay) fromHere(req popup.Request) bool {
+	if req.Session <= 0 {
+		return false
+	}
+	sid, err := unix.IoctlGetInt(int(r.master.Fd()), unix.TIOCGSID)
+	return err == nil && sid == req.Session
+}
+
+// showNote shows the current popup as a notification too.
+func (r *relay) showNote() {
+	if r.notifier == nil {
+		return
+	}
+	if id, err := r.notifier.Show(r.current.Request); err == nil {
+		r.note, r.noteShown = id, time.Now()
+	}
+}
+
+func (r *relay) closeNote() {
+	if r.note != 0 {
+		r.notifier.Close(r.note)
+		r.note = 0
+	}
+}
+
+// onNote handles what happened to a notification: only the current
+// popup's counts.
+func (r *relay) onNote(event notify.Event) {
+	if r.popup == nil || r.note == 0 || event.ID != r.note {
+		return
+	}
+	// The daemon has closed it by now, or will.
+	r.note = 0
+	early := time.Since(r.noteShown)
+	switch event.Kind {
+	case notify.Answered:
+		// As for keys: a click that was on its way before the notification
+		// could be seen doesn't count. Shown again, to be answered.
+		if early < r.grace {
+			r.showNote()
+			return
+		}
+		r.answer(event.Answer)
+	case notify.Dismissed:
+		if early < r.grace {
+			r.showNote()
+			return
+		}
+		r.answer(popup.No)
+	case notify.Gone:
+		// Unanswered: still asked on the terminal, and shown again unless
+		// the daemon doesn't keep them at all.
+		if early >= minShown {
+			r.showNote()
+		}
+	}
+}
+
 func (r *relay) answer(answer popup.Answer) {
+	r.closeNote()
 	r.current.reply(answer)
 	r.popup, r.ready = nil, nil
 	r.nextPopup()

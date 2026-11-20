@@ -58,6 +58,7 @@ assert fails [ { guards.forgejo.enable = true; } ];
 runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .hostPorts == ["5432"]
+    and .guards.notifications == true
     and .guards.wayland.enable == null
     and .guards.wayland.globals == {zwp_tablet_manager_v2: false}
     and (.guards.wayland.defaultGlobals | index("xdg_wm_base") != null)

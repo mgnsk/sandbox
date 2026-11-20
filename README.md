@@ -574,6 +574,7 @@ The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
 | `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key, run on the host at each start: Claude Code then runs on it, held outside. See [Claude Code](#claude-code). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
+| `guards.notifications.enable` | on | With a Wayland display inside, show a popup as a desktop notification too when the request doesn't come from the sandbox's terminal. See [Popups from a window](#popups-from-a-window). |
 | `guards.wayland.enable` | `null` | Windows on your Wayland display, through a filtering proxy: `true` or `false` for every project, `null` to leave it to each project's `sandbox.nix`. See [Wayland](#wayland). |
 | `guards.wayland.globals.<name>` | `{ }` | Changes to the allowlist of Wayland globals: `true` adds one, `false` removes one. Yours go over a project's. |
 | `claude.enable` | on | Claude Code's managed config (settings, memory, MCP and language servers) at `/etc/claude-code`, for the `claude` your dev shell or profile brings: the sandbox ships none. |
@@ -811,6 +812,36 @@ The allowlist is the defaults, then the project's `sandbox.nix`'s changes,
 then your own config's: yours win. A global a project adds needs your yes
 like turning the guard on does; one it removes doesn't. A name wl-veil
 doesn't know is reported at start and ignored.
+
+#### Popups from a window
+
+The guards' popups are drawn on the terminal the sandbox runs on, which you
+aren't looking at while you work in a window: a push from an editor inside
+would just seem to hang. So in a sandbox with a Wayland display, a request
+is shown as a desktop notification as well, with the same three answers -
+Allow once, Always in this sandbox, Deny - unless it comes from a program on
+the sandbox's own terminal (a `git push` typed there asks there alone, as
+ever).
+
+- The popup on the terminal stays: whichever is answered first counts, and
+  the other goes away. Closing the notification without picking an answer is
+  a no.
+- It's sent on your session bus, by the launcher. Nothing inside reaches that
+  bus, so a notification can't be answered or forged from the sandbox.
+- A long request (a long URL, say) is cut in the notification, which says
+  so: it shows the start - the host of a URL, the command, the method and
+  path of an API request come first - and the whole of it is on the
+  terminal. Answering from the notification approves the request as it is,
+  not only what the notification shows.
+- It needs a notification daemon that advertises actions (tried with
+  swaync); without one the launcher says so at start and asks on the
+  terminal only. It's sent as critical and never expiring, which
+  keeps it on screen in the common daemons; one that takes it away anyway
+  gets it again, and the terminal still asks.
+- Requests through the GitHub and Forgejo API guards can't be traced to the
+  program that made them, so they're always shown both ways.
+
+`guards.notifications.enable = false;` in your sandbox config turns it off.
 
 What the sandbox doesn't have, with or without the guard: a GPU (`/dev/dri`
 isn't there, so programs render in software), X11, and fonts or a fontconfig

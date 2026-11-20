@@ -32,6 +32,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/mgnsk/sandbox/internal/notify"
 	"github.com/mgnsk/sandbox/internal/popuprelay"
 	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
@@ -108,7 +109,41 @@ func run(ctx context.Context, cancel context.CancelCauseFunc, configPath string,
 	if err != nil || argv == nil {
 		return 0, err
 	}
-	return runSandbox(argv, popups, signals)
+	// A nil interface without one, not a nil *notify.Notifier.
+	var notifier popuprelay.Notifier
+	if n := l.notifier(g, popups); n != nil {
+		defer n.Shutdown()
+		notifier = n
+	}
+	return runSandbox(argv, popups, signals, notifier)
+}
+
+// notifier is where the guards' popups are shown as desktop notifications
+// too, or nil: only next to the terminal popup, and only in a sandbox with a
+// Wayland display, where a request may come from a window and its user be
+// looking away from the terminal.
+func (l *launcher) notifier(g *guards, popups *net.UnixListener) *notify.Notifier {
+	if popups == nil || !g.display || !l.cfg.Guards.Notifications {
+		return nil
+	}
+	n, err := notify.Connect(sessionBus(l.runtimeDir), "sandbox "+filepath.Base(l.project))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sandbox: no desktop notifications (%v): popups show on this terminal only\n", err)
+		return nil
+	}
+	return n
+}
+
+// sessionBus is the address of the host's session bus, or "". Never
+// autolaunched: without one there are no notifications to send.
+func sessionBus(runtimeDir string) string {
+	if address := os.Getenv("DBUS_SESSION_BUS_ADDRESS"); address != "" {
+		return address
+	}
+	if path := filepath.Join(runtimeDir, "bus"); exists(path) {
+		return "unix:path=" + path
+	}
+	return ""
 }
 
 // prepare checks where the launcher runs, starts the guards and builds the
@@ -482,17 +517,19 @@ func selectProfile(cfg *config, cwd, project string, vars map[string]string) pro
 // runSandbox runs argv in the foreground; its exit status.
 //
 // With popups (the guards' socket, see popuprelay), argv runs on a pty of
-// the launcher's, which shows the guards' popups. Without, it runs on the
-// launcher's own terminal (or none), and the guards ask no one.
+// the launcher's, which shows the guards' popups - with notifier, as
+// desktop notifications too when they don't come from that terminal.
+// Without, it runs on the launcher's own terminal (or none), and the
+// guards ask no one.
 //
 // A SIGINT reaches the whole foreground process group anyway, so it's only
 // kept from killing the launcher before cleanup; SIGTERM and SIGHUP are
 // passed on.
-func runSandbox(argv []string, popups *net.UnixListener, signals <-chan os.Signal) (int, error) {
+func runSandbox(argv []string, popups *net.UnixListener, signals <-chan os.Signal, notifier popuprelay.Notifier) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	var err error
 	if popups != nil {
-		err = popuprelay.Run(cmd, popups, signals)
+		err = popuprelay.RunNotifying(cmd, popups, signals, notifier)
 	} else {
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		if err = cmd.Start(); err != nil {

@@ -57,6 +57,7 @@ var helpers = map[string]func() int{
 	// On the host, for the Wayland guard, and inside.
 	"wl-veil":       fakeWlVeil,
 	"wayland-check": waylandCheck,
+	"detached":      detached,
 }
 
 func TestMain(m *testing.M) {

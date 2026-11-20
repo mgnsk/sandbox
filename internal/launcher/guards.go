@@ -43,6 +43,9 @@ type guards struct {
 	procs  []*proc
 	dirs   []string
 	popups *net.UnixListener // Where the guards ask, if anywhere.
+	// The sandbox has a Wayland display: programs inside may ask from a
+	// window, away from the terminal.
+	display bool
 
 	// Host loopback ports pasta maps in (-T), and CA certificates clients
 	// inside trust, from the HTTPS-intercepting guards.
@@ -496,5 +499,6 @@ func (g *guards) wayland(ctx context.Context, a *bwrapArgs, runtimeDir string, g
 	}
 	a.bind(sock, runtimeDir+"/wayland-0")
 	a.setenv("WAYLAND_DISPLAY", "wayland-0")
+	g.display = true
 	return nil
 }

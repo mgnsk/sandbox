@@ -118,7 +118,7 @@ func TestWritesAsk(t *testing.T) {
 		Name: "forgejo-api-proxy",
 		Text: "Allow sandboxed Forgejo API write?\n\nPOST " + host + "/api/v1/repos/o/r/issues\n",
 	}) {
-		t.Errorf("asked %q", asked)
+		t.Errorf("asked %+v", asked)
 	}
 }
 
@@ -161,7 +161,7 @@ func TestFj(t *testing.T) {
 	t.Run("read gets the real token", func(t *testing.T) {
 		upstream, asked, out, err := run(t, popup.No, "whoami")
 		if err != nil || !strings.Contains(out, "someone") || len(asked) != 0 {
-			t.Fatalf("%v %q %q", err, out, asked)
+			t.Fatalf("%v %q %+v", err, out, asked)
 		}
 		for _, s := range upstream.Seen() {
 			if s.Header.Get("Authorization") != "token real-token" {
@@ -180,7 +180,7 @@ func TestFj(t *testing.T) {
 			}
 		}
 		if len(asked) != 1 || !strings.Contains(asked[0].Text, "POST "+host+"/api/v1/repos/o/r/issues/1/comments") {
-			t.Errorf("asked %q", asked)
+			t.Errorf("asked %+v", asked)
 		}
 	})
 	t.Run("approved write goes through", func(t *testing.T) {
