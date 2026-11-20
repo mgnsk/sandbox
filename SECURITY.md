@@ -122,7 +122,8 @@ For the two API hosts (`TOKEN_HOSTS`), it answers the TLS handshake itself,
 with a certificate from a CA it generated at startup. The CA's key exists only
 in the proxy's memory and dies with it. Its certificate is trusted
 sandbox-wide (`SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
-`REQUESTS_CA_BUNDLE` all name `SANDBOX_CA_FILE`, the system bundle plus the guards' CAs), so any
+`REQUESTS_CA_BUNDLE` all name `SANDBOX_CA_FILE`, the system bundle plus the guards' CAs, which is
+also bound over the system bundle at `/etc/ssl/certs/ca-bundle.crt`), so any
 client completes TLS with the guard. That trust can't be used to read other
 traffic: nothing inside can mint a certificate, and only connections the
 router sends to a guard ever meet one. Inside the tunnel, per request, it:

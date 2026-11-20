@@ -950,11 +950,19 @@ func TestHTTPSProxyGuards(t *testing.T) {
 			if env["SANDBOX_CA_FILE"] != h.runtime+"/sandbox-ca.pem" || name == "github" && env["GH_TOKEN"] != "sandbox-placeholder" {
 				t.Errorf("%v", env)
 			}
+			// The system bundle's path too, for nix.sh's NIX_SSL_CERT_FILE.
+			if got, want := inv.bind(t, "/etc/ssl/certs/ca-bundle.crt"), inv.bind(t, h.runtime+"/sandbox-ca.pem"); got != want {
+				t.Errorf("system bundle %q, want %q", got, want)
+			}
 		})
 	}
 	h := newHarness(t)
-	if _, ok := h.run("", nil).pasta(t).setenv()["SANDBOX_CA_FILE"]; ok {
+	inv := h.run("", nil).pasta(t)
+	if _, ok := inv.setenv()["SANDBOX_CA_FILE"]; ok {
 		t.Error("a CA bundle without intercepting guards")
+	}
+	if got := inv.bind(t, "/etc/ssl"); got != filepath.Join(h.tmp, "ssl") || slices.ContainsFunc(inv.mounts(), func(m string) bool { return strings.HasSuffix(m, " /etc/ssl/certs/ca-bundle.crt") }) {
+		t.Errorf("system bundle replaced without intercepting guards: %q", inv.mounts())
 	}
 }
 
