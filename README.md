@@ -12,8 +12,8 @@ sandbox nix develop -c claude   # Claude Code, from the project's dev shell
 sandbox nix develop -c make     # or any command
 ```
 
-The sandbox brings no tools of its own beyond a shell, nix and git: Claude
-Code and everything else come from the project's dev shell.
+The sandbox brings only a shell, nix, git and a few basic tools of its own:
+Claude Code and everything else come from the project's dev shell.
 
 What you get, per project:
 
@@ -22,9 +22,11 @@ What you get, per project:
 - **Your project, read-write**: the git work tree you start in (or just the
   current directory outside a repo). Nothing else of your home is visible
   unless you bind it in.
-- **No host userland, and no tools of its own.** `PATH` has a fixed
-  minimum - bash, nix, git and ssh, and the coreutils/grep/sed/tar/make set
-  that `nix develop` adds anyway. Everything
+- **No host userland, and few tools of its own.** `PATH` has a fixed
+  minimum - bash, nix, git (with `less` and `nano`, its pager and editor)
+  and ssh, the coreutils/grep/sed/tar/make set that `nix develop` adds
+  anyway, and `jq`, `curl`, `rg`, `which`, `ps`/`pgrep`/`pkill`, `zip` and
+  `unzip`. Everything
   else, Claude Code included, comes from the project's dev shell (or, with
   the sandbox installed through home-manager,
   your `~/.nix-profile` and home-manager); no configuration adds tools.
@@ -152,8 +154,9 @@ Say a project has just a `flake.nix` with a dev shell:
 }
 ```
 
-The sandbox brings no tools beyond a shell, nix, git (with `less`, its
-pager) and ssh, and the basics
+The sandbox brings no tools beyond a shell, nix, git (with `less` and `nano`,
+its pager and editor) and ssh, a few basics (`jq`, `curl`, `rg`, `which`,
+`ps`, `zip`, `unzip`), and the ones
 `nix develop` adds anyway; the dev shell brings the rest, Claude Code and gh
 included, and the project's environment variables (`mkShell` attributes,
 `shellHook`). Tools you want in every project instead come from your

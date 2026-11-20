@@ -96,11 +96,11 @@ let
   # The userland inside, fixed: what the sandbox itself needs (a shell, nix
   # to enter the project's dev shell, terminfo; git and ssh, which its
   # ssh-agent guard and commit signing are for - pushes run ssh, ssh signing
-  # runs ssh-keygen; less, the pager git runs) plus the tools `nix develop`
-  # puts on PATH anyway
-  # (stdenv's initialPath). Every other tool - Claude Code, ... - comes from
-  # the project's dev shell, or the user's ~/.nix-profile or home-manager;
-  # no configuration adds any.
+  # runs ssh-keygen; less and nano, the pager and editor git runs), the tools
+  # `nix develop` puts on PATH anyway (stdenv's initialPath), and the few
+  # every session reaches for whatever the project is. Every other tool -
+  # Claude Code, ... - comes from the project's dev shell, or the user's
+  # ~/.nix-profile or home-manager; no configuration adds any.
   basePackages = [
     pkgs.bashInteractive
     pkgs.bash-completion
@@ -110,6 +110,18 @@ let
     # The pager git runs for log, diff, ...: without it they fail.
     pkgs.less
     pkgs.openssh
+    # git's editor for a commit message or a rebase, through EDITOR in
+    # /etc/profile: git itself would run vi, which is not here.
+    pkgs.nano
+    # What Claude Code and shell scripts reach for in any project: JSON,
+    # HTTP, code search, processes and zip archives (tar is in stdenv's set).
+    pkgs.jq
+    pkgs.curl
+    pkgs.ripgrep
+    pkgs.which
+    pkgs.procps
+    pkgs.unzip
+    pkgs.zip
   ]
   ++ pkgs.stdenv.initialPath
   ++ lib.optional cfg.guards.openUrl.enable sandboxPkgs.xdg-open;
@@ -127,8 +139,12 @@ let
   '';
   profile = pkgs.writeText "sandbox-profile" ''
     # Managed by the sandbox, read-only; your ~/.bash_profile (or
-    # ~/.bash_login, ~/.profile) runs after this. Interactive login shells
-    # get /etc/bashrc too, as bash itself reads it only for non-login ones.
+    # ~/.bash_login, ~/.profile) runs after this.
+    # The editor git and others run, unless passEnv or your own files name
+    # one.
+    export EDITOR="''${EDITOR:-nano}"
+    # Interactive login shells get /etc/bashrc too, as bash itself reads it
+    # only for non-login ones.
     if [ -n "''${BASH_VERSION-}" ] && [[ $- == *i* ]]; then
       . /etc/bashrc
     fi
