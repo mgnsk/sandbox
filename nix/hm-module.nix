@@ -13,7 +13,12 @@ let
     inherit pkgs;
     modules = [
       cfg.settings
-      { homeManager.enable = lib.mkDefault true; }
+      # Your own tools and dotfiles, which only this sandbox brings in: the
+      # flake's default package, which projects start, links neither.
+      {
+        nixProfile.enable = lib.mkDefault true;
+        homeManager.enable = lib.mkDefault true;
+      }
     ];
   };
 in

@@ -385,8 +385,12 @@ in
 
     nixProfile.enable = mkOption {
       type = types.bool;
-      default = true;
-      description = "Link the host's ~/.nix-profile into the volume and put its bin/ on PATH (after the sandbox's own).";
+      default = false;
+      description = ''
+        Link the host's ~/.nix-profile into the volume and put its bin/ on
+        PATH (after the sandbox's own). Off, a link from an earlier start is
+        removed. The home-manager module turns this on.
+      '';
     };
 
     homeManager.enable = mkOption {
@@ -394,7 +398,8 @@ in
       default = false;
       description = ''
         Link the host's current home-manager generation into the volume at
-        each start, removing links into older ones. The home-manager module
+        each start, removing links into older ones. Off, the links of an
+        earlier start are removed. The home-manager module
         turns this on.
       '';
     };

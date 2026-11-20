@@ -152,7 +152,8 @@ func initCommand() *cli.Command {
 		Name:      "init",
 		Usage:     "link the profiles into the home volume, then exec COMMAND (inside the sandbox)",
 		ArgsUsage: "NIX_PROFILE HM_GENERATION COMMAND...",
-		// Only positional arguments: the profiles may be empty, and the
+		// Only positional arguments: the profiles may be empty (their
+		// links are then removed), and the
 		// command has options of its own.
 		SkipFlagParsing: true,
 		Action: func(_ context.Context, cmd *cli.Command) error {

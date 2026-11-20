@@ -4,8 +4,8 @@
 //	sandbox-bin init NIX_PROFILE HM_GENERATION COMMAND...
 //
 // It links the host's nix profile and current home-manager generation into
-// the per-project home volume (either may be empty for none), and Claude
-// Code's marketplace list to the managed one, starts the router the API
+// the per-project home volume, and Claude Code's marketplace list to the
+// managed one, starts the router the API
 // guards are reached through (internal/router) when a guard is on, then
 // execs COMMAND.
 //
@@ -13,6 +13,11 @@
 // on the host takes effect at the next start of a sandbox of the project.
 // Files added since the last start get linked here, and links into any other
 // generation get removed - nothing to list by hand.
+//
+// An empty NIX_PROFILE or HM_GENERATION removes the links an earlier start
+// made for it: a volume is shared by every sandbox command the project is
+// started with, and one configured without the profiles - the flake's
+// default package - must not show what a home-manager one linked.
 //
 // Run in here rather than on the host, since the volume is the sandbox's to
 // rearrange: a symlink planted in it would point host-side writes at real
@@ -83,12 +88,12 @@ func mountPoints(home string) map[string]bool {
 	return mounts
 }
 
-// staleLinks lists the links under home into another generation's files
-// than homeFiles, not descending into skip. Only a link this program made;
+// staleLinks lists the links under home into the files of a generation in
+// storeDir other than keep (empty: of any generation), not descending into
+// skip. Only a link this program made;
 // anything else is the volume's own. Matched by name, since an old
 // generation may be garbage-collected.
-func staleLinks(home, homeFiles string, skip map[string]bool) []string {
-	storeDir := filepath.Dir(homeFiles)
+func staleLinks(home, storeDir, keep string, skip map[string]bool) []string {
 	var stale []string
 	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
 		switch {
@@ -105,7 +110,7 @@ func staleLinks(home, homeFiles string, skip map[string]bool) []string {
 		}
 		rest, ok := strings.CutPrefix(target, storeDir+"/")
 		name, _, _ := strings.Cut(rest, "/")
-		if ok && strings.HasSuffix(name, "-home-manager-files") && !strings.HasPrefix(target, homeFiles+"/") {
+		if ok && strings.HasSuffix(name, "-home-manager-files") && (keep == "" || !strings.HasPrefix(target, keep+"/")) {
 			stale = append(stale, path)
 		}
 		return nil
@@ -141,7 +146,7 @@ func linkGeneration(home, generation string) error {
 	if err != nil {
 		return err
 	}
-	for _, link := range staleLinks(home, homeFiles, mountPoints(home)) {
+	for _, link := range staleLinks(home, filepath.Dir(homeFiles), homeFiles, mountPoints(home)) {
 		if err := os.Remove(link); err != nil {
 			return err
 		}
@@ -167,6 +172,34 @@ func linkGeneration(home, generation string) error {
 		}
 	}
 	return nil
+}
+
+// unlinkGeneration removes what linkGeneration made for any generation.
+func unlinkGeneration(home string) error {
+	// Made first by linkGeneration, so without it there is nothing linked;
+	// it also tells where the store is.
+	profile := filepath.Join(home, ".local/state/nix/profiles/home-manager")
+	generation, err := os.Readlink(profile)
+	if err != nil {
+		return nil
+	}
+	for _, link := range staleLinks(home, filepath.Dir(generation), "", mountPoints(home)) {
+		if err := os.Remove(link); err != nil {
+			return err
+		}
+	}
+	return os.Remove(profile)
+}
+
+// unlinkNixProfile removes a ~/.nix-profile link to the host's profile. One
+// into the volume is a profile made inside, and stays.
+func unlinkNixProfile(home string) error {
+	link := filepath.Join(home, ".nix-profile")
+	target, err := os.Readlink(link)
+	if err != nil || !filepath.IsAbs(target) || strings.HasPrefix(target, home+"/") {
+		return nil
+	}
+	return os.Remove(link)
 }
 
 // linkKnownMarketplaces points Claude Code's marketplace list at the managed
@@ -219,17 +252,27 @@ func Run(nixProfile, generation string, command []string) int {
 		warn("HOME is not set")
 		return 1
 	}
-	if nixProfile != "" {
-		if err := relink(filepath.Join(home, ".nix-profile"), nixProfile); err != nil {
-			warn("%v", err)
-			return 1
-		}
+	var err error
+	switch {
+	case nixProfile == "":
+		err = unlinkNixProfile(home)
+	default:
+		err = relink(filepath.Join(home, ".nix-profile"), nixProfile)
 	}
-	if generation != "" && isDir(generation) {
-		if err := linkGeneration(home, generation); err != nil {
-			warn("%v", err)
-			return 1
-		}
+	if err != nil {
+		warn("%v", err)
+		return 1
+	}
+	switch {
+	case generation == "":
+		err = unlinkGeneration(home)
+	// One that is gone is skipped.
+	case isDir(generation):
+		err = linkGeneration(home, generation)
+	}
+	if err != nil {
+		warn("%v", err)
+		return 1
 	}
 	if err := linkKnownMarketplaces(home, managedClaudeDir); err != nil {
 		warn("%v", err)
