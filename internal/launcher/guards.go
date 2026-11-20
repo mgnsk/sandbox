@@ -386,7 +386,10 @@ func (g *guards) forgejo(ctx context.Context, a *bwrapArgs, hostTokens map[strin
 // caBundle: the system CA bundle plus the HTTPS-intercepting guards' CAs,
 // as SANDBOX_CA_FILE, which init makes every client's SSL_CERT_FILE (and
 // NIX_SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE). Only connections the router
-// sends to a guard meet these CAs' certificates.
+// sends to a guard meet these CAs' certificates. It is also the system
+// bundle's path inside, for what goes by that instead: nix's own nix.sh,
+// sourced from a user's shell files, sets NIX_SSL_CERT_FILE to it whatever
+// it was, and some programs read it by path.
 func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 	if len(g.caCerts) == 0 {
 		return nil
@@ -406,6 +409,7 @@ func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 	}
 	inside := runtimeDir + "/sandbox-ca.pem"
 	a.roBind(path, inside)
+	a.roBind(path, "/etc/ssl/certs/ca-bundle.crt")
 	a.setenv("SANDBOX_CA_FILE", inside)
 	return nil
 }
