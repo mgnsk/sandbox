@@ -97,6 +97,30 @@ func TestASwitchRelinks(t *testing.T) {
 	}
 }
 
+// Links of another generation are looked for all over the volume, which is
+// slow in a large one: only after a switch, not at every start.
+func TestTheVolumeIsSearchedOnlyAfterASwitch(t *testing.T) {
+	e := newEnv(t)
+	old := e.generation(t, "a", map[string]string{".bashrc": "a\n"})
+	e.link(t)
+	if linked, _ := os.ReadFile(filepath.Join(e.home, generationMarker)); string(linked) != e.current {
+		t.Fatalf("marker %q, generation %q", linked, e.current)
+	}
+	// Not init's doing, so only a search would find it.
+	stray := filepath.Join(e.home, "deep/in/a/cache/link")
+	os.MkdirAll(filepath.Dir(stray), 0o755)
+	os.Symlink(filepath.Join(old, ".bashrc"), stray)
+	e.link(t)
+	if !isLink(stray) {
+		t.Error("the volume was searched without a switch")
+	}
+	e.generation(t, "b", map[string]string{".bashrc": "b\n"})
+	e.link(t)
+	if isLink(stray) {
+		t.Error("a link into the old generation outlived the switch")
+	}
+}
+
 func TestLeavesTheVolumesOwnFilesAlone(t *testing.T) {
 	e := newEnv(t)
 	e.generation(t, "a", map[string]string{".config/managed": "a\n"})

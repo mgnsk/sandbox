@@ -27,7 +27,6 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"net"
-	"net/http"
 	"path"
 	"strings"
 
@@ -57,7 +56,7 @@ func New(hostTokens map[string]string) *apiproxy.Proxy {
 				return apiproxy.Route{}, fmt.Errorf("no token for %s - add a command printing one to"+
 					" guards.forgejo.tokenCommands, in sandbox.nix or your sandbox config", host)
 			}
-			return apiproxy.Route{Host: host, Header: http.Header{"Authorization": {"token " + token}}}, nil
+			return apiproxy.TokenRoute(host, token), nil
 		},
 		AllowPath: allowPath,
 	}}
@@ -96,16 +95,5 @@ func Run(ctx context.Context) error {
 		}
 		hosts = append(hosts, host)
 	}
-	proxy, err := apiproxy.NewHTTPS(New(hostTokens), hosts...)
-	if err != nil {
-		return err
-	}
-	ln, err := guard.Listener()
-	if err != nil {
-		return err
-	}
-	if err := guard.Ready(proxy.Info()); err != nil {
-		return err
-	}
-	return proxy.Serve(ctx, ln)
+	return apiproxy.RunHTTPS(ctx, New(hostTokens), hosts...)
 }

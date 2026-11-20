@@ -75,6 +75,7 @@ type nixEvaluation struct {
 }
 
 type profile struct {
+	// For a reader of the config; nothing goes by it.
 	Name      string            `json:"name"`
 	Env       map[string]string `json:"env"`
 	Binds     []bind            `json:"binds"`
@@ -82,14 +83,10 @@ type profile struct {
 	// ClaudeDir is sandbox.nix's (see applyProject): a path the sandbox
 	// chose, which nothing on the host may resolve.
 	claudeFromProject bool
-	// Shell commands run on the host at start, printing the guards' tokens;
-	// a Claude API key command puts Claude Code on that key.
-	GitHubTokenCommand   string            `json:"githubTokenCommand"`
-	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
-	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
-	Paths                []string          `json:"paths"`
-	ProjectFiles         []string          `json:"projectFiles"`
-	Priority             int               `json:"priority"`
+	tokenCommands
+	Paths        []string `json:"paths"`
+	ProjectFiles []string `json:"projectFiles"`
+	Priority     int      `json:"priority"`
 }
 
 type bind struct {

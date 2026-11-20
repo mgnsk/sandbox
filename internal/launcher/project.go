@@ -32,10 +32,8 @@ type manifest struct {
 	Binds     []bind   `json:"binds"`
 	HostPorts []string `json:"hostPorts"`
 	Command   []string `json:"command"`
-	// Token commands, run on the host once approved (see tokencmd.go).
-	GitHubTokenCommand   string            `json:"githubTokenCommand"`
-	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands"`
-	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand"`
+	// Run on the host once approved.
+	tokenCommands
 	// Git's signing key, or a command printing it (approved like the
 	// token commands); a user's .sandbox.yml wins.
 	GitSigningKey        string `json:"gitSigningKey"`
@@ -90,32 +88,16 @@ func (m *manifest) check() error {
 	if m.Command != nil && len(m.Command) == 0 {
 		return errors.New("empty command")
 	}
-	hosts, err := forgejoHosts("guards.forgejo.tokenCommands", m.ForgejoTokenCommands)
-	if err != nil {
+	m.GitSigningKeyCommand = strings.TrimSpace(m.GitSigningKeyCommand)
+	if err := errors.Join(m.tokenCommands.check(), m.git().check()); err != nil {
 		return err
 	}
-	m.ForgejoTokenCommands = hosts
-	m.GitHubTokenCommand = strings.TrimSpace(m.GitHubTokenCommand)
-	m.ClaudeAPIKeyCommand = strings.TrimSpace(m.ClaudeAPIKeyCommand)
-	m.GitSigningKeyCommand = strings.TrimSpace(m.GitSigningKeyCommand)
-	if m.GitSigningKey != "" && !isSSHPublicKey(m.GitSigningKey) {
-		return errors.New("git.signingKey must be an ssh public key")
-	}
-	if m.GitSigningKey != "" && m.GitSigningKeyCommand != "" {
-		return errors.New("git.signingKey and git.signingKeyCommand: set one")
-	}
-	for _, c := range m.ForgejoTokenCommands {
-		if strings.TrimSpace(c) == "" {
-			return errors.New("empty token command")
-		}
-	}
-	commands := slices.Collect(maps.Values(m.ForgejoTokenCommands))
-	for _, c := range append(commands, m.GitHubTokenCommand, m.ClaudeAPIKeyCommand, m.GitSigningKeyCommand) {
-		if !plainText(c) {
-			return fmt.Errorf("a command with control characters: %q", c)
-		}
-	}
 	return waylandguard.CheckGlobals(m.Wayland.Globals)
+}
+
+// git is what m says of git inside.
+func (m *manifest) git() gitSettings {
+	return gitSettings{SigningKey: m.GitSigningKey, SigningKeyCommand: m.GitSigningKeyCommand, FromHost: &m.GitFromHost}
 }
 
 // plainText says whether s is printable but for line breaks and tabs.
@@ -221,11 +203,18 @@ type hostAccess struct {
 	HostPorts []string       `json:"hostPorts"`
 	// Left out when empty, so approvals from before these existed still
 	// match.
-	GitHubTokenCommand   string            `json:"githubTokenCommand,omitempty"`
-	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
-	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand,omitempty"`
-	GitSigningKeyCommand string            `json:"gitSigningKeyCommand,omitempty"`
-	Wayland              *waylandAccess    `json:"wayland,omitempty"`
+	tokenCommands
+	GitSigningKeyCommand string         `json:"gitSigningKeyCommand,omitempty"`
+	Wayland              *waylandAccess `json:"wayland,omitempty"`
+}
+
+func (h hostAccess) empty() bool {
+	return len(h.Binds) == 0 && len(h.HostPorts) == 0 && !h.commands() && h.Wayland == nil
+}
+
+// commands says whether h has anything run on the host.
+func (h hostAccess) commands() bool {
+	return !h.tokenCommands.empty() || h.GitSigningKeyCommand != ""
 }
 
 // approvedBind is a bind as approved: with what its source resolved to
@@ -290,27 +279,70 @@ func (h hostAccess) String() string {
 	return strings.Join(lines, "\n")
 }
 
-// approveProject asks for a yes on the terminal to binds, host ports and
-// token commands from sandbox.nix, again whenever they change: the sandbox
-// can edit sandbox.nix, so its say-so alone must never widen the next
-// sandbox, nor run anything on the host. The approval is stored in the
-// volume dir, out of the sandbox's reach.
-func (l *launcher) approveProject(m *manifest) error {
+// projectSettings is what a project's own files ask for beyond the profile
+// they're applied to.
+type projectSettings struct {
+	hostPorts []string
+	git       gitSettings
+	wayland   waylandAccess
+}
+
+// applyProject reads the project's settings - sandbox.nix (committed) and
+// .sandbox.yml (each user's, over it) - has the user approve what of them
+// reaches the host, and returns the profile with them applied.
+//
+// For a token command, the user's own config's word counts first, then
+// .sandbox.yml's, then sandbox.nix's; one that wouldn't run is not asked
+// about.
+func (l *launcher) applyProject(ctx context.Context, prof profile) (profile, projectSettings, error) {
+	if l.opts.NoProjectConfig || l.opts.Eval {
+		return prof, projectSettings{}, nil
+	}
+	local, err := readLocalConfig(l.project)
+	if err != nil {
+		return prof, projectSettings{}, err
+	}
+	m := &manifest{}
+	if lexists(filepath.Join(l.project, projectFileName)) {
+		claudeKey := local.ClaudeAPIKeyCommand != "" && prof.ClaudeAPIKeyCommand == ""
+		if m, err = l.projectManifest(ctx, prof.ClaudeDir, claudeKey); err != nil {
+			return prof, projectSettings{}, err
+		}
+	}
+	git := local.Git.over(m.git())
+	commands := local.tokenCommands.over(m.tokenCommands).without(prof.tokenCommands)
+	// Without Claude Code in the sandbox (no managed config), no key.
+	if prof.ClaudeDir == "" {
+		commands.ClaudeAPIKeyCommand = ""
+	}
 	binds, err := l.approvedBinds(m.Binds)
 	if err != nil {
-		return err
+		return prof, projectSettings{}, err
 	}
-	access := hostAccess{Binds: binds, HostPorts: m.HostPorts,
-		GitHubTokenCommand: m.GitHubTokenCommand, ForgejoTokenCommands: m.ForgejoTokenCommands,
-		ClaudeAPIKeyCommand: m.ClaudeAPIKeyCommand, GitSigningKeyCommand: m.GitSigningKeyCommand}
+	access := hostAccess{Binds: binds, HostPorts: m.HostPorts, tokenCommands: commands, GitSigningKeyCommand: git.SigningKeyCommand}
 	// Not when the user's own config turns the guard off, nor for a
 	// project that only takes globals away.
 	if enable := l.cfg.Guards.Wayland.Enable; m.Wayland.widens() && (enable == nil || *enable) {
 		access.Wayland = &m.Wayland
 	}
-	if len(access.Binds) == 0 && len(access.HostPorts) == 0 && access.GitHubTokenCommand == "" &&
-		len(access.ForgejoTokenCommands) == 0 && access.ClaudeAPIKeyCommand == "" && access.GitSigningKeyCommand == "" &&
-		access.Wayland == nil {
+	if err := l.approve(access); err != nil {
+		return prof, projectSettings{}, err
+	}
+	prof = withManifest(prof, m)
+	prof.tokenCommands = prof.tokenCommands.over(commands)
+	if len(l.command) == 0 {
+		l.command = m.Command
+	}
+	return prof, projectSettings{hostPorts: m.HostPorts, git: git, wayland: m.Wayland}, nil
+}
+
+// approve asks for a yes on the terminal to what a project's files ask of
+// the host - binds, host ports, commands run there - again whenever it
+// changes: the sandbox can edit those files, so their say-so alone must
+// never widen the next sandbox, nor run anything on the host. The approval
+// is stored in the volume dir, out of the sandbox's reach.
+func (l *launcher) approve(access hostAccess) error {
+	if access.empty() {
 		return nil
 	}
 	approved := filepath.Join(l.volumeDir, "project-approved.json")
@@ -322,8 +354,7 @@ func (l *launcher) approveProject(m *manifest) error {
 		return nil
 	}
 	from := filepath.Join(l.project, projectFileName)
-	if access.GitHubTokenCommand != "" || len(access.ForgejoTokenCommands) > 0 || access.ClaudeAPIKeyCommand != "" ||
-		access.GitSigningKeyCommand != "" {
+	if access.commands() {
 		from = fmt.Sprintf("%s (or %s)", from, localConfigFileName)
 	}
 	t, err := openTTY()
@@ -367,10 +398,10 @@ func (l *launcher) approvedBinds(binds []bind) ([]approvedBind, error) {
 	return out, nil
 }
 
-// applyProject is the profile with sandbox.nix's additions: its binds on
+// withManifest is the profile with sandbox.nix's additions: its binds on
 // top, and its Claude config (already merged with the profile's by
 // project.nix) in place of the profile's - none without one in the profile.
-func applyProject(p profile, m *manifest) profile {
+func withManifest(p profile, m *manifest) profile {
 	p.Binds = slices.Concat(p.Binds, m.Binds)
 	if p.ClaudeDir != "" && m.ClaudeDir != "" {
 		p.ClaudeDir, p.claudeFromProject = m.ClaudeDir, true

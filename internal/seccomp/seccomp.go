@@ -68,8 +68,10 @@ func rules() []rule {
 	// can hold host credentials.
 	deny(errno(unix.EPERM), "keyctl", "add_key", "request_key")
 
-	// The sandbox shares the host's tty (no --new-session, to keep job
-	// control), so these could type into the parent shell after it exits.
+	// Started without a terminal of the launcher's own in between (see
+	// popuprelay) - its output piped, say - the sandbox has the host's tty
+	// on any descriptor left (no --new-session, to keep job control), so
+	// these could type into the parent shell after it exits.
 	// dev.tty.legacy_tiocsti=0 already blocks TIOCSTI; this doesn't depend
 	// on it. Masked to 32 bits since the kernel ignores the upper half of the
 	// command - CVE-2019-10063 was Flatpak comparing all 64.
