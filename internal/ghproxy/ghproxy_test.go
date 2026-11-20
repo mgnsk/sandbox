@@ -288,7 +288,7 @@ func TestGh(t *testing.T) {
 			t.Fatalf("%v %q %+v", err, errOut, u.Seen())
 		}
 		if len(asked) != 1 || !strings.Contains(asked[0].Text, "POST api.github.com/repos/o/r/labels") {
-			t.Errorf("asked %q", asked)
+			t.Errorf("asked %+v", asked)
 		}
 	})
 	t.Run("approved write goes through", func(t *testing.T) {

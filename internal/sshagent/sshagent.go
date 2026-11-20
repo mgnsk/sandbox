@@ -91,7 +91,7 @@ func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer) bool {
 	}
 	ask := g.Ask
 	if ask == nil {
-		ask = popup.Ask
+		ask = func(name, text string) popup.Answer { return popup.AskFrom(name, text, who.Session) }
 	}
 	return g.approvals.Approve(func() popup.Answer {
 		return ask("ssh-agent-guard", "Allow SSH agent to sign?\n\n"+

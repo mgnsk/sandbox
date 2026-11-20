@@ -76,6 +76,7 @@ func inside() {
 type session struct {
 	t      *testing.T
 	term   *os.File // The user's side of the terminal.
+	cmd    *exec.Cmd
 	sock   string
 	done   chan error
 	mu     sync.Mutex
@@ -83,7 +84,10 @@ type session struct {
 	mark   int
 }
 
-func newSession(t *testing.T) *session {
+func newSession(t *testing.T) *session { return newSessionWith(t, nil) }
+
+// newSessionWith is newSession with notifier, if not nil.
+func newSessionWith(t *testing.T, notifier Notifier) *session {
 	term, tty, err := pty.Open()
 	if err != nil {
 		t.Skip("needs a pty:", err)
@@ -96,8 +100,9 @@ func newSession(t *testing.T) *session {
 	}
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), insideEnv+"=1")
+	s.cmd = cmd
 	signals := make(chan os.Signal)
-	go func() { s.done <- run(tty, tty, cmd, ln, signals, testGrace) }()
+	go func() { s.done <- run(tty, tty, cmd, ln, signals, testGrace, notifier) }()
 	go func() {
 		buf := make([]byte, 4096)
 		for {

@@ -142,7 +142,7 @@ func TestWritesAsk(t *testing.T) {
 			w.refused(t, resp, body, 403, "declined by user")
 			want := []popup.Request{{Name: "test-proxy", Text: "Allow it?\n\n" + method + " api.example/ok/labels\n"}}
 			if got := w.popups.Asked(); !slices.Equal(got, want) {
-				t.Errorf("asked %q", got)
+				t.Errorf("asked %+v", got)
 			}
 		})
 	}
@@ -196,7 +196,7 @@ func TestPopupTextIsCleanedNotTruncated(t *testing.T) {
 	do(t, c, "DELETE", "https://api.example/ok/%1b[31m/"+long, nil)
 	asked := w.popups.Asked()
 	if len(asked) != 1 || strings.Contains(asked[0].Text, "\x1b") || !strings.Contains(asked[0].Text, long) {
-		t.Errorf("asked %q", asked)
+		t.Errorf("asked %+v", asked)
 	}
 }
 

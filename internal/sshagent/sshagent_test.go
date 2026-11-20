@@ -226,7 +226,7 @@ func TestPopupText(t *testing.T) {
 	c.Sign(w.key, []byte("session"))
 	asked := w.popups.Asked()
 	if len(asked) != 2 {
-		t.Fatalf("asked %q", asked)
+		t.Fatalf("asked %+v", asked)
 	}
 	if !strings.Contains(asked[0].Text, "  comment:  unknown\n") {
 		t.Errorf("before listing: %q", asked[0].Text)

@@ -20,6 +20,9 @@ type config struct {
 		} `json:"sshAgent"`
 		SecretService bool `json:"secretService"`
 		OpenURL       bool `json:"openUrl"`
+		// The guards' popups as desktop notifications too, in a sandbox
+		// with a Wayland display.
+		Notifications bool `json:"notifications"`
 		Wayland       struct {
 			// nil leaves it to the project's sandbox.nix.
 			Enable *bool `json:"enable"`

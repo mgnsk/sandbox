@@ -318,6 +318,49 @@ wrapped rather than cut, with the line count shown when it needs scrolling.
 Guards reach the launcher over a socket in its private temp dir, never bound
 in.
 
+### As desktop notifications too
+
+In a sandbox with a Wayland display (and `guards.notifications.enable`, on by
+default), the launcher also shows a request as a desktop notification
+(`internal/notify`), unless it is for a process on the sandbox's own
+terminal. The terminal popup is always there as well; the first answer
+counts.
+
+- **Where a request comes from** is the session of the process the guard
+  serves, read from the host's `/proc` when it connects (as its command line
+  is, see `internal/peer`) and compared with the session whose controlling
+  terminal is the sandbox's pty. Only a match is "from the terminal". A
+  process inside can leave that session (`setsid`) and so get a notification
+  shown for its request; it can't make a request look as if it came from the
+  terminal without being on it, and either way the request still needs an
+  answer.
+- **The sandbox can't answer or forge one.** The launcher sends it on the
+  host's session bus; inside there is only the private bus with the Secret
+  Service. Through the Wayland guard a client inside has no synthetic input
+  and no surfaces over other windows, so it can't click the notification
+  either - but it can open a window of its own to draw the eye, or time a
+  request for when a click is about to land. Answers in the first half second
+  after a notification is shown are dropped, as keys are, and it is shown
+  again.
+- **Not always all that's approved.** On the terminal a request is shown
+  whole, and approved for exactly that. Notification daemons cut or collapse
+  long bodies, each its own way, and nothing tells the sender, so the
+  launcher cuts text beyond 400 characters or 10 lines itself and ends it
+  with a line saying so. The answers stay: one given there approves the
+  whole request on the strength of its start. The guards put what decides
+  it first - a URL's host before the URL, an API request's method and path
+  before its body - but what follows the cut is unseen unless the user looks
+  at the terminal, and sandboxed code chooses what's there (a URL's query, a
+  request's body). Text is shown with anything non-printable replaced, and
+  escaped where the daemon reads markup.
+- **Not a boundary of its own.** Anything on the host's session bus can
+  send, close or answer notifications; that is the host, which is trusted
+  here. A notification that expires or is hidden (do-not-disturb) changes
+  nothing: the request waits on the terminal. Closing one without an answer
+  is a no.
+- The launcher connects to the bus named by `DBUS_SESSION_BUS_ADDRESS`, or
+  the one at `$XDG_RUNTIME_DIR/bus`, and never starts one.
+
 `A` lasts as long as the guard that was asked: it is only held in that guard's
 memory, and each `sandbox` run starts its own guards and kills them on exit.
 The next sandbox asks again, and so does another one running on the same

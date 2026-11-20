@@ -139,7 +139,7 @@ func (g *Guard) confirm(rawURL string, who peer.Peer) popup.Answer {
 	u, _ := url.Parse(rawURL)
 	ask := g.Ask
 	if ask == nil {
-		ask = popup.Ask
+		ask = func(name, text string) popup.Answer { return popup.AskFrom(name, text, who.Session) }
 	}
 	return ask("open-url-guard", "Open in the host's browser?\n\n"+
 		"  host:     "+popup.Clean(u.Hostname())+"\n"+
