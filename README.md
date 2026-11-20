@@ -192,6 +192,12 @@ written into your `$HOME`: your `.bashrc`/`.bash_profile` - your own, a bind
 can override anything. bash-completion is also at the fixed path
 `/usr/share/bash-completion`.
 
+**Prompt.** The host name inside is the project's directory name, and
+`/etc/bashrc` sets the prompt to `user@project:directory$` where it would be
+bash's bare default (`bash-5.3$`), so a terminal says which project's sandbox
+it is in - `nix develop`'s shell and a VS Code terminal too. A `PS1` of your
+own, from your shell files or the dev shell, replaces it.
+
 With direnv, `use flake` in `.envrc` does the same whenever you `cd` in.
 `direnv` and `nix-direnv` come from the project's dev shell, or from your
 `~/.nix-profile` or home-manager with the sandbox installed through

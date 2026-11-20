@@ -112,6 +112,29 @@ func volumeName(project string) string {
 	return strings.ReplaceAll(project, "/", "_") + "-" + hex.EncodeToString(digest[:4])
 }
 
+// hostName is the host name inside: the project's directory name as a DNS
+// label, so that a prompt or a window title says which project a shell is
+// in. The sandbox has its own UTS namespace, and would otherwise show the
+// name pasta gave its own.
+func hostName(project string) string {
+	name := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + 'a' - 'A'
+		}
+		return '-'
+	}, filepath.Base(project))
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	if name = strings.Trim(name, "-"); name == "" {
+		return "sandbox"
+	}
+	return name
+}
+
 const nixBase32 = "0123456789abcdfghijklmnpqrsvwxyz"
 
 // isStorePath says whether p is a path in the nix store, in its canonical

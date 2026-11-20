@@ -215,6 +215,10 @@ func TestNamespacesAndTheBaseFilesystem(t *testing.T) {
 		}
 	}
 	opt := func(flag string) string { return a[slices.Index(a, flag)+1] }
+	// The project's directory name, for the prompt.
+	if got := opt("--hostname"); got != hostName(h.project) {
+		t.Errorf("--hostname %q", got)
+	}
 	if opt("--uid") != strconv.Itoa(os.Getuid()) || opt("--gid") != strconv.Itoa(os.Getgid()) || opt("--cap-drop") != "ALL" {
 		t.Errorf("%q", a)
 	}
