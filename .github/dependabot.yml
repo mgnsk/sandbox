@@ -9,9 +9,9 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Bumps flake.lock (nixpkgs). The packages inside - claude-code, gh, ... -
-  # come from it for everyone on the flake's default package, so a stale
-  # lock means stale tools.
+  # Bumps flake.lock (nixpkgs). What the sandbox runs and brings - bwrap,
+  # pasta, nix, git, ... - comes from it for everyone on the flake's default
+  # package, so a stale lock means stale tools.
   - package-ecosystem: nix
     directory: /
     schedule:
