@@ -34,7 +34,7 @@ Not reachable - don't probe, plan around it:
 Works: nix builds (through the host's nix-daemon, landing in the host
 store), network, git push over ssh (gated by a popup on the host, which
 the user can allow for the rest of the sandbox session; commit signing
-has no popup), `xdg-open` for http(s) URLs (opens the host's browser
+with the user's signing key has no popup), `xdg-open` for http(s) URLs (opens the host's browser
 after the same kind of popup), the project dir read-write.
 
 `dangerouslyDisableSandbox` and the user's `!` prefix still run inside
