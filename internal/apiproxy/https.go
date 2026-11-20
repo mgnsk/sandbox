@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/hostname"
 	"github.com/mgnsk/sandbox/internal/mitmca"
 	"github.com/mgnsk/sandbox/internal/popup"
@@ -49,6 +50,24 @@ func NewHTTPS(p *Proxy, hosts ...string) (*HTTPS, error) {
 		secret:   secret,
 		expected: []byte("Basic " + base64.StdEncoding.EncodeToString([]byte("sandbox:"+secret))),
 	}, nil
+}
+
+// RunHTTPS serves p as an intercepting HTTPS proxy on the launcher's
+// listener until ctx ends, its CA signing for hosts only: a guard's Run,
+// once it has its tokens.
+func RunHTTPS(ctx context.Context, p *Proxy, hosts ...string) error {
+	proxy, err := NewHTTPS(p, hosts...)
+	if err != nil {
+		return err
+	}
+	ln, err := guard.Listener()
+	if err != nil {
+		return err
+	}
+	if err := guard.Ready(proxy.Info()); err != nil {
+		return err
+	}
+	return proxy.Serve(ctx, ln)
 }
 
 // Info is the proxy's secret and CA.

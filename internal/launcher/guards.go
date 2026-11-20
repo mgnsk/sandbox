@@ -125,16 +125,29 @@ func (g *guards) argsFile(a bwrapArgs) (string, error) {
 	return path, os.WriteFile(path, data, 0o600)
 }
 
-// start runs argv with the guards' environment and the launcher's stdio,
-// with listener (if any) passed in, and waits for its ready line (see
-// package guard). Failing here names the guard, rather than leaving bwrap to
-// trip over a missing socket.
-func (g *guards) start(ctx context.Context, name string, argv []string, listener *os.File, secret []byte) ([]byte, error) {
-	return g.startEnv(ctx, name, argv, g.env, listener, secret)
+// process is a program started with the guards: a guard, or what one needs
+// (its bus, its proxy).
+type process struct {
+	// Names it in errors.
+	name string
+	argv []string
+	// The guards' environment when nil.
+	env []string
+	// What it serves on, passed in as guard.ListenerFD; nil for none.
+	listener interface{ File() (*os.File, error) }
+	// Handed over on guard.SecretFD, over a pipe - never on disk, argv or
+	// the environment; nil for none.
+	secret []byte
 }
 
-// startEnv is start, with env in place of the guards' environment.
-func (g *guards) startEnv(ctx context.Context, name string, argv, env []string, listener *os.File, secret []byte) ([]byte, error) {
+// start runs p with the launcher's stdio and waits for its ready line (see
+// package guard), which it returns. Failing here names the guard, rather
+// than leaving bwrap to trip over a missing socket.
+func (g *guards) start(ctx context.Context, p process) ([]byte, error) {
+	name, argv, env, secret := p.name, p.argv, p.env, p.secret
+	if env == nil {
+		env = g.env
+	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -150,11 +163,15 @@ func (g *guards) startEnv(ctx context.Context, name string, argv, env []string, 
 		// A launcher that's killed leaves no guard behind, holding a token.
 		SysProcAttr: &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM},
 	}
-	if listener != nil {
-		cmd.ExtraFiles = append(cmd.ExtraFiles, listener)
+	if p.listener != nil {
+		f, err := p.listener.File()
+		if err != nil {
+			w.Close()
+			return nil, err
+		}
+		defer f.Close()
+		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 	}
-	// The guard's secret (guard.SecretFD), over a pipe: never on disk,
-	// argv or the environment.
 	var sw *os.File
 	if secret != nil {
 		sr, pw, err := os.Pipe()
@@ -179,12 +196,12 @@ func (g *guards) startEnv(ctx context.Context, name string, argv, env []string, 
 	if err != nil {
 		return nil, fmt.Errorf("can't start %s: %w", name, err)
 	}
-	p := &proc{cmd: cmd, done: make(chan struct{})}
+	started := &proc{cmd: cmd, done: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
-		close(p.done)
+		close(started.done)
 	}()
-	g.procs = append(g.procs, p)
+	g.procs = append(g.procs, started)
 
 	ready := make(chan []byte, 1)
 	go func() {
@@ -197,7 +214,7 @@ func (g *guards) startEnv(ctx context.Context, name string, argv, env []string, 
 			return line, nil
 		}
 		select {
-		case <-p.done:
+		case <-started.done:
 			return nil, fmt.Errorf("%s exited with status %d", name, cmd.ProcessState.ExitCode())
 		case <-time.After(stopTimeout):
 			return nil, fmt.Errorf("%s closed its ready pipe", name)
@@ -215,56 +232,23 @@ func (g *guards) program(name string, args ...string) []string {
 	return append([]string{g.self, name}, args...)
 }
 
-// guard starts the guard name with a listener made for it.
-func (g *guards) guard(ctx context.Context, name string, ln listener, args ...string) ([]byte, error) {
-	return g.guardWithSecret(ctx, name, ln, nil, args...)
-}
-
-// guardWithSecret is guard, with secret handed over on guard.SecretFD.
-func (g *guards) guardWithSecret(ctx context.Context, name string, ln listener, secret []byte, args ...string) ([]byte, error) {
-	f, err := ln.File()
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	return g.start(ctx, name, g.program(name, args...), f, secret)
-}
-
-type listener interface {
-	File() (*os.File, error)
-	Close() error
-}
-
-// unixListener listens at path; the socket file stays when it's closed, for
-// the guard that serves on it.
-func unixListener(path string) (*net.UnixListener, error) {
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
-	if err == nil {
-		ln.SetUnlinkOnClose(false)
-	}
-	return ln, err
-}
-
-// unixGuard starts the guard name on a socket named sock in a temp dir of
-// its own; the socket's path.
-func (g *guards) unixGuard(ctx context.Context, name, sock string, args ...string) (string, error) {
-	return g.unixGuardWithSecret(ctx, name, sock, nil, args...)
-}
-
-// unixGuardWithSecret is unixGuard, with secret handed over on
-// guard.SecretFD.
-func (g *guards) unixGuardWithSecret(ctx context.Context, name, sock string, secret []byte, args ...string) (string, error) {
+// unixGuard starts the guard name, with secret if any (see process), on a
+// socket named sock in a private dir of its own; the socket's path. The
+// socket file stays when the launcher closes its end, for the guard that
+// serves on it.
+func (g *guards) unixGuard(ctx context.Context, name, sock string, secret []byte, args ...string) (string, error) {
 	dir, err := g.tempdir()
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, sock)
-	ln, err := unixListener(path)
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return "", err
 	}
+	ln.SetUnlinkOnClose(false)
 	defer ln.Close()
-	_, err = g.guardWithSecret(ctx, name, ln, secret, args...)
+	_, err = g.start(ctx, process{name: name, argv: g.program(name, args...), listener: ln, secret: secret})
 	return path, err
 }
 
@@ -301,7 +285,7 @@ func (g *guards) sshAgent(ctx context.Context, a *bwrapArgs, vars map[string]str
 		fmt.Fprintln(os.Stderr, "sandbox: no ssh agent ($SSH_AUTH_SOCK unset), none inside")
 		return nil
 	}
-	sock, err := g.unixGuard(ctx, "ssh-agent-guard", "agent.sock", upstream, strings.Join(signingKeys, "\n"))
+	sock, err := g.unixGuard(ctx, "ssh-agent-guard", "agent.sock", nil, upstream, strings.Join(signingKeys, "\n"))
 	if err != nil {
 		return err
 	}
@@ -344,14 +328,14 @@ func (g *guards) secretService(ctx context.Context, a *bwrapArgs, hostBus, proje
 		return err
 	}
 	// The bus first, which prints its address once it listens.
-	address, err := g.start(ctx, "dbus-daemon", []string{g.cfg.DBusDaemon,
+	address, err := g.start(ctx, process{name: "dbus-daemon", argv: []string{g.cfg.DBusDaemon,
 		"--config-file=" + conf, "--nofork", "--nopidfile", "--print-address=" + strconv.Itoa(guard.ReadyFD),
-	}, nil, nil)
+	}})
 	if err != nil {
 		return err
 	}
 	argv := g.program("secret-service-guard", strings.TrimSpace(string(address)), hostBus, project)
-	if _, err := g.start(ctx, "secret-service-guard", argv, nil, nil); err != nil {
+	if _, err := g.start(ctx, process{name: "secret-service-guard", argv: argv}); err != nil {
 		return err
 	}
 	inside := runtimeDir + "/bus"
@@ -374,7 +358,7 @@ func (g *guards) httpsProxy(ctx context.Context, name string, secret []byte) (st
 		return "", err
 	}
 	defer ln.Close()
-	line, err := g.guardWithSecret(ctx, name, ln, secret)
+	line, err := g.start(ctx, process{name: name, argv: g.program(name), listener: ln, secret: secret})
 	if err != nil {
 		return "", err
 	}
@@ -390,7 +374,7 @@ func (g *guards) httpsProxy(ctx context.Context, name string, secret []byte) (st
 
 // github: gh inside (any gh, through the router) has just a placeholder
 // token; gh-api-proxy, out here, intercepts its requests, swaps in token -
-// from the token command, held only in its memory; "" for none - and gates
+// from the token command, held only in its memory - and gates
 // writes behind a popup. Never a per-sandbox OAuth login: those hit
 // GitHub's cap on simultaneously valid tokens.
 func (g *guards) github(ctx context.Context, a *bwrapArgs, token string) error {
@@ -454,7 +438,7 @@ func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 // socket to claude-api-proxy, which adds key - from the key command, held
 // only in its memory; the managed apiKeyHelper gives it a placeholder key.
 func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, key, runtimeDir string) error {
-	sock, err := g.unixGuardWithSecret(ctx, "claude-api-proxy", "claude-api.sock", []byte(key))
+	sock, err := g.unixGuard(ctx, "claude-api-proxy", "claude-api.sock", []byte(key))
 	if err != nil {
 		return err
 	}
@@ -470,7 +454,7 @@ func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, key, runtimeDir st
 // hands http(s) URLs to open-url-guard, which opens them in the host's
 // browser behind a popup.
 func (g *guards) openURL(ctx context.Context, a *bwrapArgs, runtimeDir string) error {
-	sock, err := g.unixGuard(ctx, "open-url-guard", "open-url.sock")
+	sock, err := g.unixGuard(ctx, "open-url-guard", "open-url.sock", nil)
 	if err != nil {
 		return err
 	}
@@ -526,7 +510,7 @@ func (g *guards) wayland(ctx context.Context, a *bwrapArgs, runtimeDir string, g
 	env = append(env, "XDG_RUNTIME_DIR="+dir, "WAYLAND_DISPLAY="+upstream, "RUST_LOG=error")
 	argv := append([]string{g.cfg.Tools.WlVeil, "-i", "-f", strings.Join(globals, ","), "--"},
 		g.program("wayland-guard")...)
-	line, err := g.startEnv(ctx, "wl-veil", argv, env, nil, nil)
+	line, err := g.start(ctx, process{name: "wl-veil", argv: argv, env: env})
 	if err != nil {
 		return err
 	}

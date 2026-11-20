@@ -397,16 +397,16 @@ func TestReadProjectFile(t *testing.T) {
 	}
 }
 
-func TestApplyProject(t *testing.T) {
+func TestWithManifest(t *testing.T) {
 	p := profile{ClaudeDir: "/store/claude-default", Binds: []bind{{Src: "a"}}}
 	m := &manifest{ClaudeDir: "/store/claude-project", Binds: []bind{{Src: "b"}}}
-	got := applyProject(p, m)
-	if got.ClaudeDir != "/store/claude-project" || len(got.Binds) != 2 || len(p.Binds) != 1 {
+	got := withManifest(p, m)
+	if got.ClaudeDir != "/store/claude-project" || !got.claudeFromProject || len(got.Binds) != 2 || len(p.Binds) != 1 {
 		t.Errorf("%+v", got)
 	}
 	// Without Claude Code in the profile, none comes in through the
 	// project.
-	if got := applyProject(profile{}, m); got.ClaudeDir != "" {
+	if got := withManifest(profile{}, m); got.ClaudeDir != "" {
 		t.Errorf("%+v", got)
 	}
 }
@@ -426,16 +426,34 @@ func TestHostAccessString(t *testing.T) {
 	}
 }
 
-func TestProjectTokenCommands(t *testing.T) {
-	prof := profile{GitHubTokenCommand: "mine", ForgejoTokenCommands: map[string]string{"a.example": "mine-a"}}
-	m := &manifest{GitHubTokenCommand: "theirs", ForgejoTokenCommands: map[string]string{"a.example": "theirs-a", "b.example": "theirs-b"}}
-	projectTokenCommands(prof, m)
-	if m.GitHubTokenCommand != "" || !maps.Equal(m.ForgejoTokenCommands, map[string]string{"b.example": "theirs-b"}) {
-		t.Errorf("left to approve: %+v", m)
+// Whose token command runs: the user's config's, then .sandbox.yml's, then
+// sandbox.nix's - per guard, and per Forgejo host. What the user's config
+// already sets is neither asked about nor run.
+func TestTokenCommandsPrecedence(t *testing.T) {
+	mine := tokenCommands{GitHubTokenCommand: "mine", ForgejoTokenCommands: map[string]string{"a.example": "mine-a"}}
+	local := tokenCommands{ClaudeAPIKeyCommand: "local-claude", ForgejoTokenCommands: map[string]string{"b.example": "local-b"}}
+	theirs := tokenCommands{GitHubTokenCommand: "theirs", ClaudeAPIKeyCommand: "theirs-claude",
+		ForgejoTokenCommands: map[string]string{"a.example": "theirs-a", "b.example": "theirs-b", "c.example": "theirs-c"}}
+	project := local.over(theirs)
+	if project.GitHubTokenCommand != "theirs" || project.ClaudeAPIKeyCommand != "local-claude" ||
+		!maps.Equal(project.ForgejoTokenCommands, map[string]string{"a.example": "theirs-a", "b.example": "local-b", "c.example": "theirs-c"}) {
+		t.Errorf("the project's: %+v", project)
 	}
-	got := withProjectTokenCommands(prof, m)
-	if got.GitHubTokenCommand != "mine" || !maps.Equal(got.ForgejoTokenCommands, map[string]string{"a.example": "mine-a", "b.example": "theirs-b"}) {
+	asked := project.without(mine)
+	if asked.GitHubTokenCommand != "" || asked.ClaudeAPIKeyCommand != "local-claude" ||
+		!maps.Equal(asked.ForgejoTokenCommands, map[string]string{"b.example": "local-b", "c.example": "theirs-c"}) {
+		t.Errorf("left to approve: %+v", asked)
+	}
+	if len(theirs.ForgejoTokenCommands) != 3 || len(project.ForgejoTokenCommands) != 3 {
+		t.Error("an argument changed")
+	}
+	got := mine.over(asked)
+	if got.GitHubTokenCommand != "mine" || got.ClaudeAPIKeyCommand != "local-claude" ||
+		!maps.Equal(got.ForgejoTokenCommands, map[string]string{"a.example": "mine-a", "b.example": "local-b", "c.example": "theirs-c"}) {
 		t.Errorf("used: %+v", got)
+	}
+	if !(tokenCommands{}).empty() || asked.empty() || !theirs.without(theirs).empty() {
+		t.Error("empty")
 	}
 	if _, err := forgejoHosts("x", map[string]string{"not a host": "c"}); err == nil {
 		t.Error("bad host taken")

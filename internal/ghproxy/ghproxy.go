@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"slices"
 	"strings"
 
@@ -74,7 +73,7 @@ func New(token string) *apiproxy.Proxy {
 			if !slices.Contains(TokenHosts, host) {
 				return apiproxy.Route{}, fmt.Errorf("host not allowed: %s", host)
 			}
-			return apiproxy.Route{Host: host, Header: http.Header{"Authorization": {"token " + token}}}, nil
+			return apiproxy.TokenRoute(host, token), nil
 		},
 		Describe: describe,
 		Tunnel:   tunnel,
@@ -93,16 +92,5 @@ func Run(ctx context.Context) error {
 	if !tokens.Valid(token) {
 		return errors.New("the launcher's token isn't one")
 	}
-	proxy, err := apiproxy.NewHTTPS(New(token), TokenHosts...)
-	if err != nil {
-		return err
-	}
-	ln, err := guard.Listener()
-	if err != nil {
-		return err
-	}
-	if err := guard.Ready(proxy.Info()); err != nil {
-		return err
-	}
-	return proxy.Serve(ctx, ln)
+	return apiproxy.RunHTTPS(ctx, New(token), TokenHosts...)
 }

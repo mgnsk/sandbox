@@ -65,11 +65,7 @@ func ParseAnswer(s string) Answer {
 // blocks for the answer: No also when there's no terminal to ask on, or on
 // any failure.
 func Ask(name, text string) Answer {
-	path := os.Getenv(Env)
-	if path == "" {
-		return No
-	}
-	return AskAt(path, Request{Name: name, Text: text})
+	return AskFrom(name, text, 0)
 }
 
 // AskFrom is Ask for a request from a process of the session session (see

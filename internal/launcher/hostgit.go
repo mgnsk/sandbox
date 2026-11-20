@@ -60,7 +60,7 @@ func sshSigningKey(value, home string) string {
 		path += ".pub"
 	}
 	key := readPublicKey(path)
-	if !isSSHPublicKey(key) || strings.Contains(key, "\n") {
+	if !isSSHPublicKey(key) {
 		return ""
 	}
 	return key
@@ -74,28 +74,4 @@ func readPublicKey(path string) string {
 		return ""
 	}
 	return string(bytes.TrimSpace(data))
-}
-
-// fill sets what env doesn't have yet from h: explicit settings win, and a
-// signing key or command from .sandbox.yml or sandbox.nix keeps the host's
-// key out.
-func (h hostGit) fill(env *localConfig) {
-	if env.GitUserName == "" {
-		env.GitUserName = h.Name
-	}
-	if env.GitUserEmail == "" {
-		env.GitUserEmail = h.Email
-	}
-	if env.GitSigningKey == "" && env.GitSigningKeyCommand == "" {
-		env.GitSigningKey = h.SigningKey
-	}
-}
-
-// gitFromHost says whether to fill the git settings from the host:
-// .sandbox.yml's git.fromHost, else sandbox.nix's.
-func gitFromHost(env *localConfig, m *manifest) bool {
-	if env != nil && env.GitFromHost != nil {
-		return *env.GitFromHost
-	}
-	return m != nil && m.GitFromHost
 }

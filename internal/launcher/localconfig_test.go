@@ -30,11 +30,11 @@ git:
 	}
 	if c.GitHubTokenCommand != `op read "op://Employee/GitHub/token"` || c.ClaudeAPIKeyCommand != "op read op://Employee/Claude/key" ||
 		!maps.Equal(c.ForgejoTokenCommands, map[string]string{"codeberg.org": "op read op://Employee/Codeberg/token"}) ||
-		c.GitUserName != "Some One" || c.GitUserEmail != "some.one@example.com" || c.GitSigningKey != signingKey ||
-		c.GitFromHost == nil || *c.GitFromHost {
+		c.Git.UserName != "Some One" || c.Git.UserEmail != "some.one@example.com" || c.Git.SigningKey != signingKey ||
+		c.Git.FromHost == nil || *c.Git.FromHost {
 		t.Errorf("got %+v", c)
 	}
-	if c, err := parseLocalConfig(nil); err != nil || c.GitFromHost != nil || c.GitHubTokenCommand != "" {
+	if c, err := parseLocalConfig(nil); err != nil || c.Git.FromHost != nil || !c.tokenCommands.empty() {
 		t.Errorf("empty: %+v %v", c, err)
 	}
 
@@ -54,11 +54,11 @@ git:
 	}
 }
 
-func TestLocalConfigGit(t *testing.T) {
-	env := &localConfig{GitUserName: "Some One", GitUserEmail: "a@example.com", GitSigningKey: signingKey}
+func TestGitEnv(t *testing.T) {
+	git := gitSettings{UserName: "Some One", UserEmail: "a@example.com", SigningKey: signingKey}
 	// After the profile's own git config entries.
 	inside := map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "pull.rebase", "GIT_CONFIG_VALUE_0": "true"}
-	env.setGit(inside)
+	git.setEnv(inside)
 	want := map[string]string{
 		"GIT_AUTHOR_NAME": "Some One", "GIT_COMMITTER_NAME": "Some One",
 		"GIT_AUTHOR_EMAIL": "a@example.com", "GIT_COMMITTER_EMAIL": "a@example.com",
@@ -74,7 +74,7 @@ func TestLocalConfigGit(t *testing.T) {
 	}
 	// Only what's set.
 	inside = map[string]string{}
-	(&localConfig{GitUserEmail: "a@example.com"}).setGit(inside)
+	gitSettings{UserEmail: "a@example.com"}.setEnv(inside)
 	if !maps.Equal(inside, map[string]string{"GIT_AUTHOR_EMAIL": "a@example.com", "GIT_COMMITTER_EMAIL": "a@example.com"}) {
 		t.Errorf("got %v", inside)
 	}
@@ -82,8 +82,8 @@ func TestLocalConfigGit(t *testing.T) {
 
 func TestReadLocalConfigRefusesALink(t *testing.T) {
 	dir := t.TempDir()
-	if env, err := readLocalConfig(dir); env != nil || err != nil {
-		t.Errorf("none: %v %v", env, err)
+	if c, err := readLocalConfig(dir); err != nil || !c.tokenCommands.empty() || c.Git != (gitSettings{}) {
+		t.Errorf("none: %+v %v", c, err)
 	}
 	os.WriteFile(filepath.Join(dir, "elsewhere"), []byte("git:\n  userName: x\n"), 0o644)
 	os.Symlink(filepath.Join(dir, "elsewhere"), filepath.Join(dir, localConfigFileName))

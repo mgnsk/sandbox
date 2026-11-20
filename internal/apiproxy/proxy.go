@@ -101,6 +101,12 @@ type Route struct {
 	Header http.Header
 }
 
+// TokenRoute is the route to host with token as its credential, the way
+// GitHub's and Forgejo's APIs take one.
+func TokenRoute(host, token string) Route {
+	return Route{Host: host, Header: http.Header{"Authorization": {"token " + token}}}
+}
+
 // Proxy runs a Guard.
 type Proxy struct {
 	Guard

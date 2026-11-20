@@ -16,14 +16,92 @@ import (
 	"github.com/mgnsk/sandbox/internal/tokens"
 )
 
-// Token commands are shell commands run on the host at each start, each
-// printing a token for an API guard. They come from the user's config
-// (home-manager, a flake with mkSandbox: trusted, run as they are) or from
-// the project's sandbox.nix (run only once approved on the terminal, see
-// approveProject); the user's win.
+// tokenCommands are shell commands run on the host at each start, each
+// printing a token for an API guard; a Claude API key command puts Claude
+// Code on that key. They come from the user's config (a profile's, or the
+// top level's: trusted, run as they are) or from the project - a user's
+// .sandbox.yml over its sandbox.nix - and those run only once approved on
+// the terminal (see approve). The user's config's win.
+type tokenCommands struct {
+	GitHubTokenCommand string `json:"githubTokenCommand,omitempty"`
+	// By host[:port].
+	ForgejoTokenCommands map[string]string `json:"forgejoTokenCommands,omitempty"`
+	ClaudeAPIKeyCommand  string            `json:"claudeApiKeyCommand,omitempty"`
+}
 
-// forgejoHosts is commands keyed by normalized host[:port].
+// over is t with base's command wherever t has none: per guard, and per
+// Forgejo host.
+func (t tokenCommands) over(base tokenCommands) tokenCommands {
+	if t.GitHubTokenCommand == "" {
+		t.GitHubTokenCommand = base.GitHubTokenCommand
+	}
+	if t.ClaudeAPIKeyCommand == "" {
+		t.ClaudeAPIKeyCommand = base.ClaudeAPIKeyCommand
+	}
+	if len(base.ForgejoTokenCommands) > 0 {
+		all := maps.Clone(base.ForgejoTokenCommands)
+		maps.Copy(all, t.ForgejoTokenCommands)
+		t.ForgejoTokenCommands = all
+	}
+	return t
+}
+
+// without is t less the commands that wouldn't run, because over has one
+// for that guard or host: they're neither asked about nor run.
+func (t tokenCommands) without(over tokenCommands) tokenCommands {
+	if over.GitHubTokenCommand != "" {
+		t.GitHubTokenCommand = ""
+	}
+	if over.ClaudeAPIKeyCommand != "" {
+		t.ClaudeAPIKeyCommand = ""
+	}
+	t.ForgejoTokenCommands = maps.Clone(t.ForgejoTokenCommands)
+	maps.DeleteFunc(t.ForgejoTokenCommands, func(host, _ string) bool {
+		_, ok := over.ForgejoTokenCommands[host]
+		return ok
+	})
+	return t
+}
+
+func (t tokenCommands) empty() bool {
+	return t.GitHubTokenCommand == "" && len(t.ForgejoTokenCommands) == 0 && t.ClaudeAPIKeyCommand == ""
+}
+
+// check tidies t as a project's file has it - commands trimmed, Forgejo
+// hosts as host[:port] - and says what's wrong with it.
+func (t *tokenCommands) check() error {
+	hosts, err := forgejoHosts("guards.forgejo.tokenCommands", t.ForgejoTokenCommands)
+	if err != nil {
+		return err
+	}
+	t.ForgejoTokenCommands = hosts
+	t.GitHubTokenCommand = strings.TrimSpace(t.GitHubTokenCommand)
+	t.ClaudeAPIKeyCommand = strings.TrimSpace(t.ClaudeAPIKeyCommand)
+	for host, c := range hosts {
+		if hosts[host] = strings.TrimSpace(c); hosts[host] == "" {
+			return fmt.Errorf("guards.forgejo.tokenCommands.%q is empty", host)
+		}
+		if err := checkCommand(c); err != nil {
+			return err
+		}
+	}
+	return errors.Join(checkCommand(t.GitHubTokenCommand), checkCommand(t.ClaudeAPIKeyCommand))
+}
+
+// checkCommand refuses a command that wouldn't show on the terminal as it
+// is (see plainText): it's approved there before it runs.
+func checkCommand(c string) error {
+	if !plainText(c) {
+		return fmt.Errorf("a command with control characters: %q", c)
+	}
+	return nil
+}
+
+// forgejoHosts is commands keyed by normalized host[:port]; nil for none.
 func forgejoHosts(from string, commands map[string]string) (map[string]string, error) {
+	if len(commands) == 0 {
+		return nil, nil
+	}
 	out := make(map[string]string, len(commands))
 	for name, c := range commands {
 		host, ok := hostname.Normalize(name)
@@ -33,41 +111,6 @@ func forgejoHosts(from string, commands map[string]string) (map[string]string, e
 		out[host] = c
 	}
 	return out, nil
-}
-
-// projectTokenCommands drops from m the token commands that wouldn't run -
-// those the user's config already sets - so they're neither asked about
-// nor run.
-func projectTokenCommands(prof profile, m *manifest) {
-	if prof.GitHubTokenCommand != "" {
-		m.GitHubTokenCommand = ""
-	}
-	// Without Claude Code in the sandbox (no managed config), no key.
-	if prof.ClaudeDir == "" || prof.ClaudeAPIKeyCommand != "" {
-		m.ClaudeAPIKeyCommand = ""
-	}
-	for host := range m.ForgejoTokenCommands {
-		if _, ok := prof.ForgejoTokenCommands[host]; ok {
-			delete(m.ForgejoTokenCommands, host)
-		}
-	}
-}
-
-// withProjectTokenCommands is prof with the approved commands from
-// sandbox.nix where the user's config has none.
-func withProjectTokenCommands(prof profile, m *manifest) profile {
-	if prof.GitHubTokenCommand == "" {
-		prof.GitHubTokenCommand = m.GitHubTokenCommand
-	}
-	if prof.ClaudeAPIKeyCommand == "" {
-		prof.ClaudeAPIKeyCommand = m.ClaudeAPIKeyCommand
-	}
-	if len(m.ForgejoTokenCommands) > 0 {
-		all := maps.Clone(m.ForgejoTokenCommands)
-		maps.Copy(all, prof.ForgejoTokenCommands)
-		prof.ForgejoTokenCommands = all
-	}
-	return prof
 }
 
 // runTokenCommand runs command with bash on the host, as the user, with the

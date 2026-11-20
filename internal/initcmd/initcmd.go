@@ -41,6 +41,10 @@ import (
 // Where the launcher mounts the profile's managed Claude Code config.
 const managedClaudeDir = "/etc/claude-code"
 
+// The home-manager generation whose files the last start finished linking,
+// in the volume.
+const generationMarker = ".local/state/sandbox/home-manager-generation"
+
 func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "sandbox-bin init: "+format+"\n", a...)
 }
@@ -146,11 +150,23 @@ func linkGeneration(home, generation string) error {
 	if err != nil {
 		return err
 	}
-	for _, link := range staleLinks(home, filepath.Dir(homeFiles), homeFiles, mountPoints(home)) {
-		if err := os.Remove(link); err != nil {
-			return err
+	// Links into another generation are from before a home-manager switch
+	// on the host. They're looked for all over the volume - slow in a large
+	// one, with its caches and dependency trees - so only when the
+	// generation isn't the one the last start finished linking.
+	marker := filepath.Join(home, generationMarker)
+	if linked, _ := os.ReadFile(marker); string(linked) != generation {
+		for _, link := range staleLinks(home, filepath.Dir(homeFiles), homeFiles, mountPoints(home)) {
+			if err := os.Remove(link); err != nil {
+				return err
+			}
 		}
 	}
+	defer func() {
+		if os.MkdirAll(filepath.Dir(marker), 0o777) == nil {
+			_ = os.WriteFile(marker, []byte(generation), 0o666)
+		}
+	}()
 	for _, rel := range generationFiles(homeFiles) {
 		dst := filepath.Join(home, rel)
 		src := filepath.Join(homeFiles, rel)
@@ -188,6 +204,7 @@ func unlinkGeneration(home string) error {
 			return err
 		}
 	}
+	_ = os.Remove(filepath.Join(home, generationMarker))
 	return os.Remove(profile)
 }
 

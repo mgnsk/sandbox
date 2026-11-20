@@ -166,49 +166,17 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 	g.runtimeDir = l.runtimeDir
 
-	prof := selectProfile(l.cfg, l.cwd, l.project, l.vars)
-	hostPorts := l.cfg.HostPorts
-	// The project's settings: sandbox.nix (committed) and .sandbox.yml
-	// (each user's), the latter's token commands over the former's.
-	var m *manifest
-	var env *localConfig
-	if !l.opts.NoProjectConfig && !l.opts.Eval {
-		var err error
-		if env, err = readLocalConfig(l.project); err != nil {
-			return nil, nil, err
-		}
-		if lexists(filepath.Join(l.project, projectFileName)) {
-			claudeKey := env != nil && env.ClaudeAPIKeyCommand != "" && prof.ClaudeAPIKeyCommand == ""
-			if m, err = l.projectManifest(ctx, prof.ClaudeDir, claudeKey); err != nil {
-				return nil, nil, err
-			}
-		}
-		if env != nil {
-			if m == nil {
-				m = &manifest{}
-			}
-			env.overlay(m)
-		}
+	prof, project, err := l.applyProject(ctx, selectProfile(l.cfg, l.cwd, l.project, l.vars))
+	if err != nil {
+		return nil, nil, err
 	}
-	if m != nil {
-		projectTokenCommands(prof, m)
-		if err := l.approveProject(m); err != nil {
-			return nil, nil, err
-		}
-		prof = withProjectTokenCommands(applyProject(prof, m), m)
-		hostPorts = slices.Concat(hostPorts, m.HostPorts)
-		if len(l.command) == 0 {
-			l.command = m.Command
-		}
-	}
-	if !l.opts.Eval {
-		if err := l.resolveWayland(m); err != nil {
-			return nil, nil, err
-		}
-	}
-	// Also $SANDBOX_HOST_PORTS; none where sandbox.nix is evaluated.
-	if hostPorts = hostPortSpecs(hostPorts); l.opts.Eval {
+	// The configured ports, the project's and $SANDBOX_HOST_PORTS; none,
+	// like no Wayland display, where sandbox.nix is evaluated.
+	hostPorts := hostPortSpecs(slices.Concat(l.cfg.HostPorts, project.hostPorts))
+	if l.opts.Eval {
 		hostPorts = nil
+	} else if err := l.resolveWayland(project.wayland); err != nil {
+		return nil, nil, err
 	}
 	tcp, udp, err := parseHostPorts(hostPorts)
 	if err != nil {
@@ -219,28 +187,9 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 
 	inside := insideEnv(l.cfg, prof, l.vars)
-	env = withProjectSigning(env, m)
-	// The host's git identity: for git.fromHost, and its signing key for
-	// the ssh agent guard either way - git inside may be on the user's own
-	// git config, which home-manager links in.
-	var host hostGit
-	if !l.opts.Eval && (gitFromHost(env, m) || l.cfg.Guards.SSHAgent.Enable) {
-		host = readHostGit(ctx, l.home)
+	if err := l.gitEnv(ctx, project.git, inside); err != nil {
+		return nil, nil, err
 	}
-	if gitFromHost(env, m) {
-		if env == nil {
-			env = &localConfig{}
-		}
-		host.fill(env)
-	}
-	if env != nil {
-		if err := env.resolveSigningKey(ctx, l); err != nil {
-			return nil, nil, err
-		}
-		env.setGit(inside)
-		l.signingKeys = append(l.signingKeys, env.GitSigningKey)
-	}
-	l.signingKeys = append(l.signingKeys, host.SigningKey)
 	a := baseArgs(l.cfg, inside)
 	a.add("--hostname", hostName(l.project))
 	// Must precede every mount under $HOME - bwrap layers mounts in argv
@@ -260,24 +209,8 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		}
 	}
 
-	// Claude Code's managed settings, memory and MCP servers: managed
-	// settings outrank user/project/local ones, so ~/.claude in the volume
-	// can't override them.
-	switch {
-	case prof.ClaudeDir == "":
-	case prof.claudeFromProject:
-		// A link, which is resolved inside: on the host, where bwrap
-		// resolves what it binds, a store path the sandbox made could
-		// lead to any host directory. Its settings already say whether
-		// Claude Code is on an API key (see projectManifest).
-		a.add("--symlink", prof.ClaudeDir, "/etc/claude-code")
-	default:
-		a.roBind(prof.ClaudeDir, "/etc/claude-code")
-		if prof.ClaudeAPIKeyCommand != "" {
-			if err := claudeKeySettings(g, &a, prof.ClaudeDir); err != nil {
-				return nil, nil, err
-			}
-		}
+	if err := claudeConfig(g, &a, prof); err != nil {
+		return nil, nil, err
 	}
 	resolver, err := l.resolvConf(g, &a)
 	if err != nil {
@@ -300,6 +233,27 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		return nil, nil, err
 	}
 	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, args, l.initCommand(), resolver), g.popups, nil
+}
+
+// claudeConfig puts Claude Code's managed settings, memory and MCP servers
+// at /etc/claude-code: managed settings outrank user/project/local ones, so
+// ~/.claude in the volume can't override them.
+func claudeConfig(g *guards, a *bwrapArgs, prof profile) error {
+	switch {
+	case prof.ClaudeDir == "":
+	case prof.claudeFromProject:
+		// A link, which is resolved inside: on the host, where bwrap
+		// resolves what it binds, a store path the sandbox made could
+		// lead to any host directory. Its settings already say whether
+		// Claude Code is on an API key (see projectManifest).
+		a.add("--symlink", prof.ClaudeDir, "/etc/claude-code")
+	default:
+		a.roBind(prof.ClaudeDir, "/etc/claude-code")
+		if prof.ClaudeAPIKeyCommand != "" {
+			return claudeKeySettings(g, a, prof.ClaudeDir)
+		}
+	}
+	return nil
 }
 
 // locate finds the user, home and project, and checks the launcher may run
@@ -455,17 +409,13 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 
 // resolveWayland decides whether the Wayland guard runs, and with which
 // globals. The user's own config says whether it does; when it doesn't
-// say, the project's sandbox.nix (m, approved already) does. The
+// say, the project's sandbox.nix (project, approved already) does. The
 // allowlist is the defaults, then the project's changes, then the user's:
 // theirs win.
-func (l *launcher) resolveWayland(m *manifest) error {
+func (l *launcher) resolveWayland(project waylandAccess) error {
 	wc := l.cfg.Guards.Wayland
 	if err := waylandguard.CheckGlobals(wc.Globals); err != nil {
 		return err
-	}
-	var project waylandAccess
-	if m != nil {
-		project = m.Wayland
 	}
 	enable := project.Enable
 	if wc.Enable != nil {
