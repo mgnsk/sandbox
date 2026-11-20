@@ -35,9 +35,10 @@ type Info struct {
 	CA     string `json:"ca"`
 }
 
-// NewHTTPS makes an HTTPS proxy for p with a fresh CA and secret.
-func NewHTTPS(p *Proxy) (*HTTPS, error) {
-	ca, err := mitmca.New("sandbox " + p.Name)
+// NewHTTPS makes an HTTPS proxy for p with a fresh CA and secret. With
+// hosts (without ports), the CA signs for those only.
+func NewHTTPS(p *Proxy, hosts ...string) (*HTTPS, error) {
+	ca, err := mitmca.New("sandbox "+p.Name, hosts...)
 	if err != nil {
 		return nil, err
 	}

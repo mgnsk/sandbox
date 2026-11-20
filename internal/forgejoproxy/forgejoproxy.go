@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"net"
 	"net/http"
 	"path"
 	"strings"
@@ -87,7 +88,15 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("the launcher's token for %s isn't one", host)
 		}
 	}
-	proxy, err := apiproxy.NewHTTPS(New(hostTokens))
+	// The CA signs for the instances only, whatever their port.
+	var hosts []string
+	for host := range hostTokens {
+		if name, _, err := net.SplitHostPort(host); err == nil {
+			host = name
+		}
+		hosts = append(hosts, host)
+	}
+	proxy, err := apiproxy.NewHTTPS(New(hostTokens), hosts...)
 	if err != nil {
 		return err
 	}

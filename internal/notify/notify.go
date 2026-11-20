@@ -186,10 +186,12 @@ func (n *Notifier) Show(req popup.Request) (uint32, error) {
 	if n.markup {
 		body = escape.Replace(body)
 	}
+	// Deny first: where a daemon makes the first action the one a stray
+	// click or key lands on.
 	actions := []string{
+		string(popup.No), "Deny",
 		string(popup.Once), "Allow once",
 		string(popup.Always), "Always in this sandbox",
-		string(popup.No), "Deny",
 	}
 	hints := map[string]dbus.Variant{"urgency": dbus.MakeVariant(byte(2))}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)

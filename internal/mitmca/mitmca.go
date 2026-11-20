@@ -45,8 +45,11 @@ func serial() (*big.Int, error) {
 	return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 159))
 }
 
-// New makes a CA named name.
-func New(name string) (*CA, error) {
+// New makes a CA named name. With hosts (DNS names or IP addresses), its
+// certificates are only valid for those: every client inside trusts it, and
+// name constraints keep that trust to the hosts its proxy stands in for,
+// whatever becomes of the key.
+func New(name string, hosts ...string) (*CA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -67,6 +70,9 @@ func New(name string) (*CA, error) {
 		MaxPathLenZero:        true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 	}
+	if len(hosts) > 0 {
+		constrain(tmpl, hosts)
+	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		return nil, err
@@ -76,6 +82,33 @@ func New(name string) (*CA, error) {
 		return nil, err
 	}
 	return &CA{key: key, cert: cert, der: der, configs: map[string]*tls.Config{}}, nil
+}
+
+// constrain limits what tmpl's CA can sign for to hosts. A DNS constraint
+// says nothing of IP addresses, so those are excluded outright unless some
+// are named.
+func constrain(tmpl *x509.Certificate, hosts []string) {
+	tmpl.PermittedDNSDomainsCritical = true
+	for _, host := range hosts {
+		switch ip := net.ParseIP(host); {
+		case ip == nil:
+			tmpl.PermittedDNSDomains = append(tmpl.PermittedDNSDomains, host)
+		case ip.To4() != nil:
+			tmpl.PermittedIPRanges = append(tmpl.PermittedIPRanges, &net.IPNet{IP: ip.To4(), Mask: net.CIDRMask(32, 32)})
+		default:
+			tmpl.PermittedIPRanges = append(tmpl.PermittedIPRanges, &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)})
+		}
+	}
+	if len(tmpl.PermittedIPRanges) == 0 {
+		tmpl.ExcludedIPRanges = []*net.IPNet{
+			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
+			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		}
+	}
+	if len(tmpl.PermittedDNSDomains) == 0 {
+		// No name at all: a DNS name no host has.
+		tmpl.PermittedDNSDomains = []string{"invalid"}
+	}
 }
 
 // PEM is the CA certificate, PEM-encoded.

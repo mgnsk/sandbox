@@ -78,6 +78,8 @@ func New(token string) *apiproxy.Proxy {
 		},
 		Describe: describe,
 		Tunnel:   tunnel,
+		// Any other host is refused before a certificate is made for it.
+		Handles: func(host string) bool { return slices.Contains(TokenHosts, host) },
 	}}
 }
 
@@ -91,7 +93,7 @@ func Run(ctx context.Context) error {
 	if !tokens.Valid(token) {
 		return errors.New("the launcher's token isn't one")
 	}
-	proxy, err := apiproxy.NewHTTPS(New(token))
+	proxy, err := apiproxy.NewHTTPS(New(token), TokenHosts...)
 	if err != nil {
 		return err
 	}

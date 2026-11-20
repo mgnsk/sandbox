@@ -50,6 +50,12 @@ func TestValidate(t *testing.T) {
 		"https://example.com/\x1b[2J",
 		"https://example.com/\x7f",
 		"https://exаmple.com", // Cyrillic а.
+		// The same, percent-encoded: a parser decodes it, and the popup would
+		// show the name as it looks.
+		"https://ex%D0%B0mple.com/",
+		"https://g%D1%96thub.com/login",
+		"https://example%2ecom/",
+		"https://example.com%00.evil.example/",
 		"https://github.com@evil.example",
 		"https://user:pass@example.com",
 		`https://github.com\.evil.example`,

@@ -89,6 +89,16 @@ func TestApprovals(t *testing.T) {
 	if !a.Approve(ask(Always)) || !a.Approve(ask(No)) || asked != 4 {
 		t.Fatalf("always: asked %d", asked)
 	}
+	// Never: no, and not asked again - what stops a sandbox that keeps
+	// asking.
+	var b Approvals
+	asked = 0
+	if b.Approve(ask(Never)) || b.Approve(ask(Always)) || b.Approve(ask(Once)) || asked != 1 {
+		t.Fatalf("never: asked %d", asked)
+	}
+	if ParseAnswer("never") != Never || ParseAnswer("Never") != No {
+		t.Error("ParseAnswer")
+	}
 }
 
 // Requests queued behind an "always" answer see it instead of asking.

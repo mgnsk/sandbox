@@ -1157,7 +1157,7 @@ func (h *harness) openURL(url string) (*ptyRun, string) {
 func TestOpenURL(t *testing.T) {
 	h := newHarness(t)
 	p, log := h.openURL("https://example.org/x")
-	if shown := p.expect("y = once, A = always in this sandbox, N = no:"); !strings.Contains(shown, "https://example.org/x") {
+	if shown := p.expect("y = once, A = always in this sandbox, N = no, D = never:"); !strings.Contains(shown, "https://example.org/x") {
 		t.Errorf("%q", shown)
 	}
 	time.Sleep(600 * time.Millisecond) // Keys typed right after a popup appears are dropped.
@@ -1192,7 +1192,7 @@ func TestOpenURL(t *testing.T) {
 
 	h = newHarness(t)
 	p, log = h.openURL("https://example.org/x")
-	p.expect("N = no:")
+	p.expect("D = never:")
 	time.Sleep(600 * time.Millisecond)
 	p.send("n\r")
 	if r := p.wait(); r.code != 4 || !strings.Contains(r.stdout, "denied") || exists(log) {

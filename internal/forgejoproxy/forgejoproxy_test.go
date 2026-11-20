@@ -116,7 +116,7 @@ func TestWritesAsk(t *testing.T) {
 	}
 	if asked := w.popups.Asked(); len(asked) != 4 || asked[0] != (popup.Request{
 		Name: "forgejo-api-proxy",
-		Text: "Allow sandboxed Forgejo API write?\n\nPOST " + host + "/api/v1/repos/o/r/issues\n",
+		Text: "Allow sandboxed Forgejo API write?\n\nPOST " + host + "/api/v1/repos/o/r/issues\n\n{\n  \"title\": \"x\"\n}\n",
 	}) {
 		t.Errorf("asked %+v", asked)
 	}

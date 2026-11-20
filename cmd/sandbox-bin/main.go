@@ -86,8 +86,8 @@ func root() *cli.Command {
 			routerCommand(),
 			xdgOpen(),
 			guardCommand("ssh-agent-guard", "gate SSH agent signatures behind a popup",
-				[]string{"UPSTREAM_SOCKET"}, func(ctx context.Context, a []string) error {
-					return sshagent.Run(ctx, a[0])
+				[]string{"UPSTREAM_SOCKET", "SIGNING_KEYS"}, func(ctx context.Context, a []string) error {
+					return sshagent.Run(ctx, a[0], a[1])
 				}),
 			guardCommand("secret-service-guard", "serve the host's Secret Service on the sandbox's bus, one project's items",
 				[]string{"BUS_ADDRESS", "HOST_BUS_ADDRESS", "PROJECT"}, func(ctx context.Context, a []string) error {

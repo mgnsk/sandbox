@@ -160,7 +160,7 @@ func TestShowAndEvents(t *testing.T) {
 	want := shown{App: "sandbox", Summary: "sandbox tools: ssh-agent-guard",
 		// Markup made literal, escapes replaced.
 		Body:    "Allow SSH agent to sign?\n\n  command:  ssh &lt;host&gt; &amp; more?[0m",
-		Actions: []string{"once", "Allow once", "always", "Always in this sandbox", "no", "Deny"},
+		Actions: []string{"no", "Deny", "once", "Allow once", "always", "Always in this sandbox"},
 		// Critical, and never expiring: it stays until answered.
 		Urgency: 2, Timeout: 0}
 	if got.App != want.App || got.Summary != want.Summary || got.Body != want.Body ||
@@ -212,7 +212,7 @@ func TestLongTextIsCutAndSaysSo(t *testing.T) {
 	}
 	got := d.shown[0]
 	// Still answered here, on the start of it: the host comes first.
-	if !slices.Equal(got.Actions, []string{"once", "Allow once", "always", "Always in this sandbox", "no", "Deny"}) {
+	if !slices.Equal(got.Actions, []string{"no", "Deny", "once", "Allow once", "always", "Always in this sandbox"}) {
 		t.Errorf("actions %v", got.Actions)
 	}
 	if want := (head + url)[:maxBodyRunes] + "\n" + cutNote; got.Body != want {

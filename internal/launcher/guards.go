@@ -289,8 +289,9 @@ func (g *guards) close() {
 }
 
 // sshAgent: sandboxed processes only see this proxy's socket, never the
-// real one - signatures other than commit signing are gated behind a popup.
-func (g *guards) sshAgent(ctx context.Context, a *bwrapArgs, vars map[string]string) error {
+// real one - signatures other than commit signing with one of signingKeys
+// (public keys) are gated behind a popup.
+func (g *guards) sshAgent(ctx context.Context, a *bwrapArgs, vars map[string]string, signingKeys []string) error {
 	cfg := g.cfg.Guards.SSHAgent
 	upstream := os.Getenv("SSH_AUTH_SOCK")
 	if cfg.Socket != "" {
@@ -300,7 +301,7 @@ func (g *guards) sshAgent(ctx context.Context, a *bwrapArgs, vars map[string]str
 		fmt.Fprintln(os.Stderr, "sandbox: no ssh agent ($SSH_AUTH_SOCK unset), none inside")
 		return nil
 	}
-	sock, err := g.unixGuard(ctx, "ssh-agent-guard", "agent.sock", upstream)
+	sock, err := g.unixGuard(ctx, "ssh-agent-guard", "agent.sock", upstream, strings.Join(signingKeys, "\n"))
 	if err != nil {
 		return err
 	}

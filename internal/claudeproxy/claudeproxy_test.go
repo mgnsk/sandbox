@@ -24,8 +24,15 @@ func TestAllowPath(t *testing.T) {
 		"/v1/messages/batches":           false,
 		"/v1/files":                      false,
 		"/v1/models/../files":            false,
-		"/api/oauth/profile":             false,
-		"/":                              false,
+		// What some server might read as another path.
+		"/api/claude_code/..;/v1/files": false,
+		"/api/claude_code/x;y":          false,
+		"/v1/models/\\..\\files":        false,
+		"/v1/models//files":             false,
+		"/v1/models/./x":                false,
+		"/v1/messages/":                 false,
+		"/api/oauth/profile":            false,
+		"/":                             false,
 	} {
 		if got := allowPath(path); got != want {
 			t.Errorf("allowPath(%q) = %v", path, got)

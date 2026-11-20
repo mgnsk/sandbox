@@ -11,7 +11,7 @@ import (
 	"github.com/mgnsk/sandbox/internal/popup"
 )
 
-const prompt = "y = once, A = always in this sandbox, N = no: "
+const prompt = "y = once, A = always in this sandbox, N = no, D = never: "
 
 // sanitize turns anything non-printable (escape sequences, bidi overrides,
 // line separators) into "?": popup text is drawn on the terminal as is.
@@ -68,9 +68,24 @@ func wrap(text string, cols int) []string {
 	return lines
 }
 
-// nextKey splits the first key off data: a CSI or SS3 escape sequence, or
-// one byte.
+// nextKey splits the first key off data: a CSI or SS3 escape sequence, a
+// control string, or one byte.
 func nextKey(data []byte) (key string, rest []byte) {
+	// A control string (OSC, DCS, APC, PM, SOS), up to its terminator, or
+	// all there is: what a terminal answers a query with - its title, its
+	// colors - which the sandbox may have asked for just before the popup.
+	// Its text is no key.
+	if len(data) >= 2 && data[0] == '\x1b' && strings.IndexByte("]P_^X", data[1]) >= 0 {
+		for i := 2; i < len(data); i++ {
+			switch {
+			case data[i] == '\a':
+				return string(data[:i+1]), data[i+1:]
+			case data[i] == '\\' && data[i-1] == '\x1b':
+				return string(data[:i+1]), data[i+1:]
+			}
+		}
+		return string(data), nil
+	}
 	if len(data) >= 3 && data[0] == '\x1b' {
 		switch data[1] {
 		case '[':
@@ -136,6 +151,8 @@ func (p *pop) feed(data []byte, now time.Time) (answer popup.Answer, ok bool) {
 				return popup.Once, true
 			case "a":
 				return popup.Always, true
+			case "d":
+				return popup.Never, true
 			}
 			return popup.No, true
 		case "\x03", "\x04": // Ctrl-C, Ctrl-D.
