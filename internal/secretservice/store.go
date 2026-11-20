@@ -5,6 +5,8 @@ import (
 	"encoding/json/v2"
 	"maps"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite" // The "sqlite" driver.
@@ -133,4 +135,21 @@ func (s *Store) delete(id int64) error {
 	defer s.mu.Unlock()
 	_, err := s.db.Exec("DELETE FROM items WHERE id = ?", id)
 	return err
+}
+
+// ghLogins lists the hosts gh stored a token for: go-keyring's items, with
+// service "gh:HOST".
+func (s *Store) ghLogins() ([]string, error) {
+	items, err := s.items()
+	if err != nil {
+		return nil, err
+	}
+	var hosts []string
+	for _, it := range items {
+		if host, ok := strings.CutPrefix(it.attributes["service"], "gh:"); ok && !slices.Contains(hosts, host) {
+			hosts = append(hosts, host)
+		}
+	}
+	slices.Sort(hosts)
+	return hosts, nil
 }

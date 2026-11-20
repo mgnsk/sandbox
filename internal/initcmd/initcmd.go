@@ -279,6 +279,7 @@ func Run(nixProfile, generation string, command []string) int {
 		return 1
 	}
 	writeGhConfig(home)
+	warnStoredLogins(home)
 	env, err := router.Start(os.Environ())
 	if err != nil {
 		warn("%v", err)

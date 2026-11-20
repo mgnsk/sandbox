@@ -183,13 +183,27 @@ intercepts the rest; it tunnels none, and per request:
   client's `Authorization` and adding that token - printed by that host's
   token command at start and held in memory, as for GitHub. The host fj's
   `keys.json` is never read;
+- refuses Forgejo's OAuth endpoints (`/login/oauth/...`, path cleaned and
+  lowercased first), where `fj auth login` would trade its code for a token
+  stored inside;
 - forwards `GET`/`HEAD`, and holds everything else for a popup.
 
 ## Token commands
 
 Never run `gh auth login` or `fj auth login` inside the sandbox: a token
 stored inside is readable by all sandboxed code and bypasses the proxies
-and their popups.
+and their popups. Nothing inside can be made to refuse a token pasted into
+it, so the sandbox makes the usual ways fail and reports the rest:
+
+- with the GitHub guard on, `GH_TOKEN` is set, and gh refuses `auth login`
+  while it is (clearing it gets past that);
+- forgejo-api-proxy refuses the OAuth token exchange of `fj auth login`, for
+  instances with a token command;
+- a Claude Code hook (`nix/claude/deny-cli-login.sh`) denies `gh auth
+  login|refresh|token` and `fj auth login|add-token|add-key`, guard or not;
+- at each start, init warns of a login stored in the volume - hosts in gh's
+  `hosts.yml` or fj's `keys.json` - and secret-service-guard of gh tokens
+  in its database, with the commands to remove them.
 
 The GitHub and Forgejo tokens, and the Claude API key, come from shell
 commands the launcher runs on the host at each start, with bash from the store, the user's environment

@@ -1,6 +1,6 @@
 # Forgejo
 
-**NEVER run `fj auth login` inside the sandbox.** A token inside is
+**NEVER run `fj auth login` (or `fj auth add-token`) inside the sandbox.** A token inside is
 readable by all sandboxed code and bypasses the host proxy's write popups.
 If `fj` has no access, tell the user to set
 `guards.forgejo.tokenCommands.<host>` and restart.
