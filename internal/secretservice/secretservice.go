@@ -30,7 +30,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -288,6 +291,12 @@ func Run(ctx context.Context, busAddress, database string) error {
 		return err
 	}
 	defer st.Close()
+	if hosts, err := st.ghLogins(); err == nil && len(hosts) > 0 {
+		fmt.Fprintf(os.Stderr, "sandbox: WARNING: the sandbox's keyring holds gh tokens for %s, from a gh auth login inside -"+
+			" readable by everything in the sandbox, and used around the GitHub guard's popups.\n"+
+			"  Run `gh auth logout --hostname HOST` inside, revoke those tokens, and use guards.github.tokenCommand instead.\n",
+			strings.Join(hosts, ", "))
+	}
 	conn, err := dbus.Connect(busAddress)
 	if err != nil {
 		return err

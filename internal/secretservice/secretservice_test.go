@@ -311,3 +311,28 @@ func TestAttributesAreStoredSorted(t *testing.T) {
 		t.Errorf("search %v", got)
 	}
 }
+
+// gh's logins are go-keyring items with service "gh:HOST", one per user.
+func TestGhLogins(t *testing.T) {
+	st, err := OpenStore(filepath.Join(t.TempDir(), "s.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if hosts, err := st.ghLogins(); err != nil || len(hosts) != 0 {
+		t.Errorf("empty: %v %v", hosts, err)
+	}
+	for _, attrs := range []map[string]string{
+		{"service": "gh:github.com", "username": ""},
+		{"service": "gh:github.com", "username": "me"},
+		{"service": "gh:ghe.example", "username": ""},
+		{"service": "docker"},
+	} {
+		if _, err := st.put("x", attrs, "text/plain", []byte("t"), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hosts, err := st.ghLogins(); err != nil || !slices.Equal(hosts, []string{"ghe.example", "github.com"}) {
+		t.Errorf("%v %v", hosts, err)
+	}
+}

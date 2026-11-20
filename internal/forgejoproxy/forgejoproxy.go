@@ -13,6 +13,9 @@
 // sandbox.nix), piped in by the launcher and kept in memory only. The host's fj, and any login it
 // has, is never used. Per request (the mechanics are apiproxy's):
 //
+//   - OAuth endpoints (/login/oauth/...) are refused, so `fj auth login`
+//     can't get a token inside: one stored there would be readable by all
+//     sandboxed code and used around this proxy;
 //   - GET/HEAD are forwarded as they are;
 //   - everything else waits for the user's approval in a popup.
 //
@@ -24,6 +27,8 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/mgnsk/sandbox/internal/apiproxy"
 	"github.com/mgnsk/sandbox/internal/guard"
@@ -53,7 +58,16 @@ func New(hostTokens map[string]string) *apiproxy.Proxy {
 			}
 			return apiproxy.Route{Host: host, Header: http.Header{"Authorization": {"token " + token}}}, nil
 		},
+		AllowPath: allowPath,
 	}}
+}
+
+// allowPath refuses Forgejo's OAuth endpoints, where `fj auth login` trades
+// its authorization code for a token. Cleaned and lowercased first, so
+// `//login/./OAuth/...` doesn't slip past.
+func allowPath(p string) bool {
+	p = strings.ToLower(path.Clean("/" + p))
+	return p != "/login/oauth" && !strings.HasPrefix(p, "/login/oauth/")
 }
 
 // Run serves on the launcher's listener until stopped.

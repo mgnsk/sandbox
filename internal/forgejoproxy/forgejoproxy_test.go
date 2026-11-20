@@ -122,6 +122,24 @@ func TestWritesAsk(t *testing.T) {
 	}
 }
 
+// fj auth login's token exchange never reaches the instance, however the
+// path is spelled.
+func TestOAuthRefused(t *testing.T) {
+	w := newWorld(t)
+	w.tokens[host] = "real-token"
+	for _, p := range []string{"/login/oauth/access_token", "/login/oauth", "//login/./OAuth/access_token", "/x/../login/oauth/authorize"} {
+		if status, msg := w.do(t, "POST", "https://"+host+p); status != 403 || !strings.Contains(msg, "path not allowed") {
+			t.Errorf("%s: %d %q", p, status, msg)
+		}
+	}
+	if len(w.upstream.Seen()) != 0 || len(w.popups.Asked()) != 0 {
+		t.Error("an OAuth request got through")
+	}
+	if status, _ := w.do(t, "GET", "https://"+host+"/login/oauthx"); status != 200 {
+		t.Errorf("neighbour path: %d", status)
+	}
+}
+
 // -- end to end, with a real fj --
 
 func TestFj(t *testing.T) {

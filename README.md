@@ -606,7 +606,7 @@ The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
 | `guards.wayland.enable` | `null` | Windows on your Wayland display, through a filtering proxy: `true` or `false` for every project, `null` to leave it to each project's `sandbox.nix`. See [Wayland](#wayland). |
 | `guards.wayland.globals.<name>` | `{ }` | Changes to the allowlist of Wayland globals: `true` adds one, `false` removes one. Yours go over a project's. |
 | `claude.enable` | on | Claude Code's managed config (settings, memory, MCP and language servers) at `/etc/claude-code`, for the `claude` your dev shell or profile brings: the sandbox ships none. |
-| `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
+| `claude.settings` | autoupdater off, hooks steering GitHub HTTP requests to `gh` and denying `gh`/`fj` logins | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
 | `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
 | `claude.lspServers.<name>` | `{ }` | `{ package; executable; args; extensionToLanguage; settings; }`: language servers as enabled plugins of a generated `sandbox` marketplace in the store. The server is always `package`'s `bin/<executable>` (default: its `meta.mainProgram`), never a command on `PATH`. |
@@ -682,6 +682,12 @@ programs.sandbox.settings = { lib, pkgs, ... }: {
 > popups.** Tokens come only from a token command, which runs on the host
 > (see below). If you already logged in inside, run `gh auth logout` /
 > `fj auth logout` there and revoke that token.
+>
+> The sandbox blocks the usual ways in - gh refuses to log in while the
+> guard's `GH_TOKEN` is set, forgejo-api-proxy refuses fj's OAuth login,
+> and a Claude Code hook denies the login commands - and warns at each
+> start of any login it finds stored inside. A token pasted in by hand
+> still can't be stopped.
 
 **gh and fj** talk to their APIs through host proxies that add a token to
 each request (writes behind a popup). The token never enters the sandbox and

@@ -93,6 +93,16 @@ let
     text = builtins.readFile ./claude/deny-github-http.sh;
   };
 
+  loginHook = pkgs.writeShellApplication {
+    name = "deny-cli-login";
+    runtimeInputs = [
+      pkgs.jq
+      pkgs.gnugrep
+      pkgs.gnused
+    ];
+    text = builtins.readFile ./claude/deny-cli-login.sh;
+  };
+
   # The userland inside, fixed: what the sandbox itself needs (a shell, nix
   # to enter the project's dev shell, terminfo; git and ssh, which its
   # ssh-agent guard and commit signing are for - pushes run ssh, ssh signing
@@ -588,6 +598,10 @@ in
               {
                 type = "command";
                 command = lib.getExe githubHook;
+              }
+              {
+                type = "command";
+                command = lib.getExe loginHook;
               }
             ];
           }
