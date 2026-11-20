@@ -288,3 +288,42 @@ func TestSkipsMountsOverTheVolume(t *testing.T) {
 		t.Error("not relinked")
 	}
 }
+
+func TestWithoutThemRemovesWhatAnEarlierStartLinked(t *testing.T) {
+	e := newEnv(t)
+	e.generation(t, "a", map[string]string{".bashrc": "a\n", ".config/foo/conf": "foo\n"})
+	if _, errOut, err := run(t, e.home, "/nix/profile", e.current, "true"); err != nil {
+		t.Fatalf("%v %q", err, errOut)
+	}
+	os.WriteFile(filepath.Join(e.home, ".config/own"), []byte("own\n"), 0o644)
+	out, errOut, err := run(t, e.home, "", "", "echo", "ran")
+	if err != nil || out != "ran\n" {
+		t.Fatalf("%v %q %q", err, out, errOut)
+	}
+	for _, rel := range []string{".nix-profile", ".bashrc", ".config/foo/conf", ".local/state/nix/profiles/home-manager"} {
+		if isLink(filepath.Join(e.home, rel)) {
+			t.Errorf("%s still linked", rel)
+		}
+	}
+	if e.read(".config/own") != "own\n" {
+		t.Error("the volume's own file is gone")
+	}
+	// The next start without it links them again.
+	if _, errOut, err := run(t, e.home, "/nix/profile", e.current, "true"); err != nil || e.read(".bashrc") != "a\n" {
+		t.Fatalf("%v %q", err, errOut)
+	}
+}
+
+func TestWithoutThemLeavesAProfileOfTheVolume(t *testing.T) {
+	home := t.TempDir()
+	own := filepath.Join(home, ".local/state/nix/profiles/profile")
+	os.MkdirAll(own, 0o755)
+	os.Symlink(own, filepath.Join(home, ".nix-profile"))
+	// Nothing linked before: nothing to remove either.
+	if out, errOut, err := run(t, home, "", "", "echo", "ran"); err != nil || out != "ran\n" {
+		t.Fatalf("%v %q %q", err, out, errOut)
+	}
+	if !isLink(filepath.Join(home, ".nix-profile")) {
+		t.Error("the volume's own profile is unlinked")
+	}
+}

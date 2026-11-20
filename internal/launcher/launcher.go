@@ -467,7 +467,8 @@ func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (string, error) {
 }
 
 // initArgs runs sandbox-bin init, which links the nix profile and home-manager
-// generation into the volume, then execs the login shell; --login reads
+// generation into the volume - or, for one that is off or not there, removes
+// the links of an earlier start - then execs the login shell; --login reads
 // .bash_profile/.profile, and the exec trick runs a given command after
 // that same chain.
 func (l *launcher) initArgs(a *bwrapArgs) {

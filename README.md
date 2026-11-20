@@ -24,9 +24,10 @@ What you get, per project:
   unless you bind it in.
 - **No host userland, and no tools of its own.** `PATH` has a fixed
   minimum - bash, nix, git and ssh, and the coreutils/grep/sed/tar/make set
-  that `nix develop` adds anyway - plus `~/.nix-profile/bin`. Everything
-  else, Claude Code included, comes from the project's dev shell (or
-  your `~/.nix-profile`, home-manager); no configuration adds tools.
+  that `nix develop` adds anyway. Everything
+  else, Claude Code included, comes from the project's dev shell (or, with
+  the sandbox installed through home-manager,
+  your `~/.nix-profile` and home-manager); no configuration adds tools.
   `/bin/sh`, `/usr/bin/env` and nix-ld for prebuilt binaries are provided.
 - **Nix builds** through the host's daemon (`/nix` is read-only inside).
 - **Network** out, but not to the host's own services, except the ports you
@@ -79,7 +80,8 @@ Pick one of two ways to get a `sandbox` command:
   runs the `claude` it provides: the sandbox ships no Claude Code, so the
   project's flake has `pkgs.claude-code` in its dev shell (see
   [Using it in a project](#using-it-in-a-project)) - or it's in your
-  `~/.nix-profile` or home-manager.
+  `~/.nix-profile` or home-manager, with the sandbox installed through
+  home-manager.
 
   An alias in your shell config makes it `sandbox`:
 
@@ -154,7 +156,8 @@ The sandbox brings no tools beyond a shell, nix, git and ssh, and the basics
 `nix develop` adds anyway; the dev shell brings the rest, Claude Code and gh
 included, and the project's environment variables (`mkShell` attributes,
 `shellHook`). Tools you want in every project instead come from your
-`~/.nix-profile` or home-manager.
+`~/.nix-profile` or home-manager, with the sandbox installed through
+home-manager.
 
 Start the sandbox in the project and enter the dev shell inside it:
 
@@ -186,12 +189,15 @@ can override anything. bash-completion is also at the fixed path
 `/usr/share/bash-completion`.
 
 With direnv, `use flake` in `.envrc` does the same whenever you `cd` in.
-`direnv` and `nix-direnv` come from your `~/.nix-profile` or home-manager.
+`direnv` and `nix-direnv` come from the project's dev shell, or from your
+`~/.nix-profile` or home-manager with the sandbox installed through
+home-manager.
 
 **The project's `$HOME`** (`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ...)
 persists between runs and isn't shared with other projects. From your real
-home it only gets what's linked or bound in: `~/.nix-profile`, your
-home-manager files (with the home-manager module) and `binds`.
+home it only gets what's linked or bound in: `binds`, and with the sandbox
+installed through home-manager your `~/.nix-profile` and
+home-manager files.
 
 **Git identity.** That `$HOME` starts without a `~/.gitconfig`, so without
 the home-manager module (which links your home-manager git config in) the
@@ -212,7 +218,8 @@ that isn't bound in, a credential helper that isn't on the sandbox's `PATH`,
 devenv on `PATH`. Its shell, scripts, tasks, processes and services all run
 sandboxed.
 
-devenv itself comes from your side, installed in `~/.nix-profile` or
+devenv itself comes from your side with the sandbox installed through
+home-manager, where it is in `~/.nix-profile` or installed
 through home-manager, or from the project (see
 [devenv from the project's flake](#devenv-from-the-projects-flake) below).
 
@@ -235,7 +242,8 @@ What to know:
 - **Who configures what.** devenv.nix describes the dev environment
   (languages, packages, env, services); sandbox.nix describes the sandbox
   around it (host ports, binds, Claude config). Tools you want in every
-  project come from your `~/.nix-profile` or home-manager instead.
+  project come from your `~/.nix-profile` or home-manager instead, with the
+  sandbox installed through home-manager.
 - **Services are inside.** A Postgres or Redis from `services.*` runs in the
   sandbox, so the project reaches it on `127.0.0.1` without `hostPorts`
   (that's for services on the host). Ports bound inside are reachable from
@@ -336,7 +344,9 @@ its commands; see devenv's docs on flakes.
 
 `nix run github:mgnsk/sandbox` has no config of yours, only the defaults;
 the project's files still apply. Your own tools for every project come from
-`~/.nix-profile` or home-manager, not from any of these.
+`~/.nix-profile` or home-manager, with the sandbox installed through
+home-manager, not from any of these: `nix run github:mgnsk/sandbox` links
+neither.
 
 ### The project's sandbox.nix
 
@@ -547,9 +557,17 @@ modules = [
 Updating is updating the flake input your home-manager config takes it from,
 then switching.
 
-The home-manager module also links your current home-manager generation into
-each project's `$HOME` at every start (`homeManager.enable`), so your shell
-config, git config, etc. apply inside.
+Only the sandbox installed this way brings your own environment in. It
+links your current home-manager generation into each project's `$HOME` at
+every start (`homeManager.enable`), so your shell config, git config, etc.
+apply inside, and your `~/.nix-profile` (`nixProfile.enable`), with its
+`bin/` on `PATH`.
+
+The sandbox a project starts with `nix run github:mgnsk/sandbox` links
+neither, so that everyone gets the same environment there: the project's dev
+shell. A project has one `$HOME` whichever sandbox starts it, so such a
+start also removes the links your own `sandbox` made in it; your next start
+with that links them again.
 
 ### Options
 
@@ -565,8 +583,8 @@ The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
 | `stateDir` | `$XDG_DATA_HOME/sandbox` | One folder per project: its `$HOME`, Secret Service data, exchange dir, `sandbox.nix` approvals and cache. `$SANDBOX_STATE_DIR` overrides. |
 | `nixLd.libraries` | libstdc++, zlib, openssl, curl, libgcc | For prebuilt binaries. |
 | `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
-| `nixProfile.enable` | on | Link the host's `~/.nix-profile` in and put its `bin/` on `PATH`, after the sandbox's own. |
-| `homeManager.enable` | off (on with the home-manager module) | Link your current home-manager generation into each project's `$HOME` at every start. |
+| `nixProfile.enable` | off (on with the home-manager module) | Link the host's `~/.nix-profile` in and put its `bin/` on `PATH`, after the sandbox's own. Off, a link from an earlier start is removed. |
+| `homeManager.enable` | off (on with the home-manager module) | Link your current home-manager generation into each project's `$HOME` at every start. Off, the links of an earlier start are removed. |
 | `locales` | C.UTF-8, en_US.UTF-8 | glibcLocales build for `LOCALE_ARCHIVE`; override to add yours. |
 | `guards.sshAgent` | on, `$SSH_AUTH_SOCK` | `enable`, `socket` (host) and `path` (inside). See [SSH agent](#ssh-agent). |
 | `guards.github.tokenCommand` | none | A shell command printing the token, run on the host at each start (see [Authentication](#authentication)); the host's gh is never used. |
