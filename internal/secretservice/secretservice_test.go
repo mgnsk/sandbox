@@ -2,7 +2,11 @@ package secretservice
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"maps"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -20,6 +24,7 @@ type world struct {
 	keyring *secretservicetest.Keyring
 	service *dbus.Conn
 	client  *dbus.Conn
+	session dbus.ObjectPath // A plain one.
 }
 
 func newWorld(t *testing.T) *world {
@@ -35,7 +40,18 @@ func newWorldLocked(t *testing.T, locked bool) *world {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { w.client.Close() })
+	w.session = w.openSession(t)
 	return w
+}
+
+func (w *world) openSession(t *testing.T) dbus.ObjectPath {
+	t.Helper()
+	var output dbus.Variant
+	var session dbus.ObjectPath
+	if err := w.call(servicePath, serviceIface+".OpenSession", "plain", dbus.MakeVariant("")).Store(&output, &session); err != nil {
+		t.Fatal(err)
+	}
+	return session
 }
 
 // start serves the Secret Service on the bus, as a new sandbox's guard does.
@@ -62,6 +78,7 @@ func (w *world) start(t *testing.T) {
 func (w *world) restart(t *testing.T) {
 	w.service.Close()
 	w.start(t)
+	w.session = w.openSession(t)
 }
 
 func (w *world) call(path dbus.ObjectPath, method string, args ...any) *dbus.Call {
@@ -76,7 +93,7 @@ func (w *world) create(t *testing.T, label string, attrs map[string]string, valu
 	}
 	var item, prompt dbus.ObjectPath
 	err := w.call(collectionPath, collectionIface+".CreateItem", props,
-		secret{"/org/freedesktop/secrets/session/s1", []byte{}, value, "text/plain"}, replace).Store(&item, &prompt)
+		secret{w.session, []byte{}, value, "text/plain"}, replace).Store(&item, &prompt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +115,7 @@ func (w *world) search(t *testing.T, attrs map[string]string) []dbus.ObjectPath 
 
 func (w *world) get(item dbus.ObjectPath) (secret, error) {
 	var s secret
-	err := w.call(item, itemIface+".GetSecret", dbus.ObjectPath("/s")).Store(&s)
+	err := w.call(item, itemIface+".GetSecret", w.session).Store(&s)
 	return s, err
 }
 
@@ -114,7 +131,7 @@ func TestStoreSearchGet(t *testing.T) {
 		t.Errorf("search found %v", got)
 	}
 	s, err := w.get(item)
-	if err != nil || string(s.Value) != "secret1" || s.ContentType != "text/plain" || s.Session != "/s" {
+	if err != nil || string(s.Value) != "secret1" || s.ContentType != "text/plain" || s.Session != w.session {
 		t.Errorf("get: %+v %v", s, err)
 	}
 }
@@ -152,7 +169,7 @@ func TestBinarySecretsAndContentTypes(t *testing.T) {
 		itemIface + ".Attributes": dbus.MakeVariant(map[string]string{"k": "v"}),
 	}
 	if err := w.call(collectionPath, collectionIface+".CreateItem", props,
-		secret{"/s", []byte{}, value, "application/octet-stream"}, true).Store(&item, &prompt); err != nil {
+		secret{w.session, []byte{}, value, "application/octet-stream"}, true).Store(&item, &prompt); err != nil {
 		t.Fatal(err)
 	}
 	if s, _ := w.get(item); !bytes.Equal(s.Value, value) || s.ContentType != "application/octet-stream" {
@@ -191,7 +208,7 @@ func TestPersistence(t *testing.T) {
 
 func TestService(t *testing.T) {
 	w := newWorld(t)
-	for _, want := range []dbus.ObjectPath{"/org/freedesktop/secrets/session/s1", "/org/freedesktop/secrets/session/s2"} {
+	for _, want := range []dbus.ObjectPath{"/org/freedesktop/secrets/session/s2", "/org/freedesktop/secrets/session/s3"} {
 		var output dbus.Variant
 		var session dbus.ObjectPath
 		if err := w.call(servicePath, serviceIface+".OpenSession", "plain", dbus.MakeVariant("")).Store(&output, &session); err != nil || session != want {
@@ -226,7 +243,7 @@ func TestWhatAClientGetsWrong(t *testing.T) {
 		{itemIface + ".Attributes": dbus.MakeVariant(map[string]string{"k": "v"})},
 		{itemIface + ".Label": dbus.MakeVariant("label")},
 	} {
-		if err := w.call(collectionPath, collectionIface+".CreateItem", props, secret{"/s", []byte{}, []byte("x"), "text/plain"}, true).Err; err == nil {
+		if err := w.call(collectionPath, collectionIface+".CreateItem", props, secret{w.session, []byte{}, []byte("x"), "text/plain"}, true).Err; err == nil {
 			t.Errorf("created with %v", props)
 		}
 	}
@@ -351,5 +368,74 @@ func TestGhLogins(t *testing.T) {
 	w.keyring.Lock()
 	if hosts, err := host.ghLogins(); err != nil || len(hosts) != 0 || w.keyring.Prompts() != 0 {
 		t.Errorf("locked: %v %v", hosts, err)
+	}
+}
+
+// libsecret's own client: what secret-tool, Python keyring and GNOME apps
+// use. It asks for an encrypted session first, then a plain one.
+func TestSecretTool(t *testing.T) {
+	tool, err := exec.LookPath("secret-tool")
+	if err != nil {
+		t.Skip("needs secret-tool")
+	}
+	w := newWorld(t)
+	// Its stdout; secret-tool search prints attributes on stderr, which
+	// goes in the error.
+	runBoth := func(stdin string, args ...string) (string, string, error) {
+		cmd := exec.Command(tool, args...)
+		cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS="+w.address)
+		cmd.Stdin = strings.NewReader(stdin)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		return string(out), stderr.String(), err
+	}
+	run := func(stdin string, args ...string) (string, error) {
+		out, stderr, err := runBoth(stdin, args...)
+		if err != nil {
+			err = fmt.Errorf("%v: %s", err, stderr)
+		}
+		return out, err
+	}
+
+	value := "s3cret value"
+	if _, err := run(value, "store", "--label=my token", "service", "demo", "user", "me"); err != nil {
+		t.Fatal(err)
+	}
+	items := w.keyring.Items()
+	if len(items) != 1 || string(items[0].Value) != value || items[0].Label != "sandbox proj: my token" ||
+		items[0].Attributes["sandbox:service"] != "demo" || items[0].Attributes[ProjectAttribute] != project {
+		t.Fatalf("on the host: %+v", items)
+	}
+	if out, err := run("", "lookup", "service", "demo"); err != nil || out != value {
+		t.Errorf("lookup %q %v", out, err)
+	}
+	// What secret-tool search shows comes from the item's properties.
+	out, attrs, err := runBoth("", "search", "--all", "service", "demo")
+	if err != nil || !strings.Contains(out, "label = my token") || !strings.Contains(out, "secret = "+value) ||
+		strings.Contains(out, "created = \n") ||
+		!strings.Contains(attrs, "attribute.user = me") || strings.Contains(attrs, ProjectAttribute) {
+		t.Errorf("search %q %q %v", out, attrs, err)
+	}
+	// A host item with the same attributes is no business of the sandbox.
+	w.keyring.Put(secretservicetest.Item{Label: "host", Attributes: map[string]string{"service": "demo"}, Value: []byte("host")})
+	if _, err := run("", "clear", "service", "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if items := w.keyring.Items(); len(items) != 1 || items[0].Label != "host" {
+		t.Errorf("after clear: %+v", items)
+	}
+	if out, err := run("", "lookup", "service", "demo"); err == nil || out != "" {
+		t.Errorf("lookup after clear %q %v", out, err)
+	}
+}
+
+// Only plain sessions, refused the way libsecret then asks for one.
+func TestOnlyPlainSessions(t *testing.T) {
+	w := newWorld(t)
+	err := w.call(servicePath, serviceIface+".OpenSession", "dh-ietf1024-sha256-aes128-cbc-pkcs7", dbus.MakeVariant([]byte{2})).Err
+	var e dbus.Error
+	if !errors.As(err, &e) || e.Name != "org.freedesktop.DBus.Error.NotSupported" {
+		t.Errorf("%v", err)
 	}
 }

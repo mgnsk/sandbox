@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
@@ -199,6 +200,8 @@ func (k *Keyring) putLocked(it *Item) dbus.ObjectPath {
 	_, _ = prop.Export(k.conn, path, prop.Map{itemIface: {
 		"Attributes": {Value: maps.Clone(it.Attributes), Emit: prop.EmitFalse},
 		"Label":      {Value: it.Label, Emit: prop.EmitFalse},
+		"Created":    {Value: uint64(time.Now().Unix()), Emit: prop.EmitFalse},
+		"Modified":   {Value: uint64(time.Now().Unix()), Emit: prop.EmitFalse},
 	}})
 	return path
 }

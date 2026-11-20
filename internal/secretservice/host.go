@@ -211,7 +211,7 @@ func (h *Host) create(label string, attrs map[string]string, contentType string,
 	}
 	defer closeSession()
 	props := map[string]dbus.Variant{
-		itemIface + ".Label":      dbus.MakeVariant("sandbox " + filepath.Base(h.project) + ": " + label),
+		itemIface + ".Label":      dbus.MakeVariant(h.labelPrefix() + label),
 		itemIface + ".Attributes": dbus.MakeVariant(h.hostAttributes(attrs)),
 	}
 	var item, prompt dbus.ObjectPath
@@ -284,4 +284,39 @@ func (h *Host) ghLogins() ([]string, error) {
 	}
 	slices.Sort(hosts)
 	return hosts, nil
+}
+
+// itemProperties are an item's properties, as the sandbox sees them.
+type itemProperties struct {
+	label             string
+	attributes        map[string]string
+	created, modified uint64
+}
+
+// properties reads an item's properties: its label and attributes as the
+// sandbox stored them. A locked item's are read without unlocking - the
+// host has them - so listing items shows no prompt.
+func (h *Host) properties(item dbus.ObjectPath) (itemProperties, error) {
+	var all map[string]dbus.Variant
+	if err := h.call(item, "org.freedesktop.DBus.Properties.GetAll", itemIface).Store(&all); err != nil {
+		return itemProperties{}, err
+	}
+	var p itemProperties
+	label, _ := all["Label"].Value().(string)
+	p.label = strings.TrimPrefix(label, h.labelPrefix())
+	attrs, _ := all["Attributes"].Value().(map[string]string)
+	p.attributes = map[string]string{}
+	for k, v := range attrs {
+		if k, ok := strings.CutPrefix(k, AttributePrefix); ok {
+			p.attributes[k] = v
+		}
+	}
+	p.created, _ = all["Created"].Value().(uint64)
+	p.modified, _ = all["Modified"].Value().(uint64)
+	return p, nil
+}
+
+// labelPrefix is in front of the label of every item a sandbox stores.
+func (h *Host) labelPrefix() string {
+	return "sandbox " + filepath.Base(h.project) + ": "
 }

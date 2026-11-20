@@ -21,18 +21,16 @@
 // Docker credential helpers, `npm login`, Python `keyring`, and anything
 // else that speaks the protocol.
 //
-// It implements just enough of the Secret Service spec for those clients:
-// OpenSession("plain"), Unlock (always succeeds),
-// Collection.SearchItems/CreateItem on a single fixed collection,
-// Item.GetSecret/Delete. The Prompt object/signal dance is never triggered
-// inside, because Unlock/CreateItem/Delete always return the null prompt
-// path "/": when the host's keyring is locked, the guard has the host show
-// its own unlock prompt, and the call waits for it.
-//
-// TODO: support libsecret clients (secret-tool, GNOME apps), then drop this
-// note. libsecret opens only a dh-ietf1024-sha256-aes128-cbc-pkcs7 session
-// (never "plain") and searches with Service.SearchItems, both missing here;
-// done once `secret-tool store`/`lookup`/`clear` work against this guard.
+// It implements just enough of the Secret Service spec for those clients and
+// libsecret's (secret-tool, Python keyring, GNOME apps): OpenSession
+// ("plain" only: libsecret, refused its encrypted one, asks for that next;
+// the bus is the sandbox's own), Service.SearchItems, GetSecrets and Unlock
+// (always succeeds), Collection.SearchItems/CreateItem
+// on a single fixed collection, Item.GetSecret/Delete and its properties.
+// The Prompt object/signal dance is never triggered inside, because
+// Unlock/CreateItem/Delete always return the null prompt path "/": when the
+// host's keyring is locked, the guard has the host show its own unlock
+// prompt, and the call waits for it.
 package secretservice
 
 import (
@@ -65,10 +63,17 @@ const (
 	itemIface       = "org.freedesktop.Secret.Item"
 )
 
-var errNoSuchObject = &dbus.Error{
-	Name: "org.freedesktop.Secret.Error.NoSuchObject",
-	Body: []any{"no such item"},
-}
+var (
+	errNoSuchObject = &dbus.Error{
+		Name: "org.freedesktop.Secret.Error.NoSuchObject",
+		Body: []any{"no such item"},
+	}
+	// What libsecret takes as the cue to ask for a plain session.
+	errNotSupported = &dbus.Error{
+		Name: "org.freedesktop.DBus.Error.NotSupported",
+		Body: []any{"only plain sessions"},
+	}
+)
 
 // secret is the spec's Secret struct, (oayays), always unencrypted.
 type secret struct {
@@ -111,13 +116,13 @@ func method(name string, in, out []string) introspect.Method {
 // item is org.freedesktop.Secret.Item, one per host item the sandbox has
 // been shown.
 type item struct {
-	host *Host
+	c    *collection
 	path dbus.ObjectPath // On the host.
 }
 
 // GetSecret returns the item's secret, unencrypted.
 func (it *item) GetSecret(session dbus.ObjectPath) (secret, *dbus.Error) {
-	s, err := it.host.get(it.path)
+	s, err := it.c.host.get(it.path)
 	if err != nil {
 		return secret{}, hostError(err)
 	}
@@ -126,10 +131,49 @@ func (it *item) GetSecret(session dbus.ObjectPath) (secret, *dbus.Error) {
 
 // Delete deletes the item, with no prompt inside (the host may show one).
 func (it *item) Delete() (dbus.ObjectPath, *dbus.Error) {
-	if err := it.host.delete(it.path); err != nil {
+	if err := it.c.host.delete(it.path); err != nil {
 		return "", hostError(err)
 	}
 	return nullPath, nil
+}
+
+// itemProps is an item's org.freedesktop.DBus.Properties, read from the
+// host at each call: Label and Attributes as the sandbox stored them, and
+// never Locked - the guard unlocks the host's keyring when it needs to.
+type itemProps struct{ it *item }
+
+func (p itemProps) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+	if iface != itemIface {
+		return map[string]dbus.Variant{}, nil
+	}
+	props, err := p.it.c.host.properties(p.it.path)
+	if err != nil {
+		return nil, hostError(err)
+	}
+	return map[string]dbus.Variant{
+		"Label":      dbus.MakeVariant(props.label),
+		"Attributes": dbus.MakeVariant(props.attributes),
+		"Locked":     dbus.MakeVariant(false),
+		"Created":    dbus.MakeVariant(props.created),
+		"Modified":   dbus.MakeVariant(props.modified),
+	}, nil
+}
+
+func (p itemProps) Get(iface, name string) (dbus.Variant, *dbus.Error) {
+	all, err := p.GetAll(iface)
+	if err != nil {
+		return dbus.Variant{}, err
+	}
+	v, ok := all[name]
+	if !ok {
+		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownProperty", Body: []any{name}}
+	}
+	return v, nil
+}
+
+// Set: an item's label and attributes are set when it's created.
+func (p itemProps) Set(iface, name string, value dbus.Variant) *dbus.Error {
+	return &dbus.Error{Name: "org.freedesktop.DBus.Error.PropertyReadOnly", Body: []any{name + " is read-only here"}}
 }
 
 // hostError is err from the host as an error for the sandbox: an item gone
@@ -151,8 +195,9 @@ type collection struct {
 	conn *dbus.Conn
 	host *Host
 
-	mu  sync.Mutex
-	ids map[dbus.ObjectPath]int64 // Host item paths, by their number here.
+	mu    sync.Mutex
+	ids   map[dbus.ObjectPath]int64 // Host item paths, by their number here.
+	items map[dbus.ObjectPath]*item // By their path here.
 }
 
 // export exports a host item's object, once per process; its path here.
@@ -165,21 +210,30 @@ func (c *collection) export(hostPath dbus.ObjectPath) (dbus.ObjectPath, error) {
 	}
 	id := int64(len(c.ids) + 1)
 	path := itemPath(id)
-	if err := c.conn.Export(&item{host: c.host, path: hostPath}, path, itemIface); err != nil {
+	it := &item{c: c, path: hostPath}
+	if err := c.conn.Export(it, path, itemIface); err != nil {
 		return "", err
 	}
-	if _, err := prop.Export(c.conn, path, prop.Map{itemIface: {}}); err != nil {
+	if err := c.conn.Export(itemProps{it}, path, "org.freedesktop.DBus.Properties"); err != nil {
 		return "", err
 	}
-	err := c.conn.Export(introspectable(itemIface,
+	node := introspectable(itemIface,
 		method("GetSecret", []string{"o"}, []string{"(oayays)"}),
 		method("Delete", nil, []string{"o"}),
-	), path, "org.freedesktop.DBus.Introspectable")
-	if err != nil {
+	)
+	if err := c.conn.Export(node, path, "org.freedesktop.DBus.Introspectable"); err != nil {
 		return "", err
 	}
 	c.ids[hostPath] = id
+	c.items[path] = it
 	return path, nil
+}
+
+// item is the exported item at path here, or nil.
+func (c *collection) item(path dbus.ObjectPath) *item {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.items[path]
 }
 
 // SearchItems returns the items whose attributes include all of attrs.
@@ -224,12 +278,43 @@ func (c *collection) CreateItem(props map[string]dbus.Variant, s secret, replace
 // service is org.freedesktop.Secret.Service: always unlocked, no password.
 type service struct {
 	sessions atomic.Int64
+	coll     *collection
 }
 
 // OpenSession opens a "plain" (unencrypted) session.
 func (s *service) OpenSession(algorithm string, input dbus.Variant) (dbus.Variant, dbus.ObjectPath, *dbus.Error) {
+	if algorithm != "plain" {
+		return dbus.Variant{}, "", errNotSupported
+	}
 	n := s.sessions.Add(1)
 	return dbus.MakeVariant(""), dbus.ObjectPath(sessionPrefix + strconv.FormatInt(n, 10)), nil
+}
+
+// SearchItems is the collection's, every item unlocked.
+func (s *service) SearchItems(attrs map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
+	unlocked, err := s.coll.SearchItems(attrs)
+	return unlocked, []dbus.ObjectPath{}, err
+}
+
+// GetSecrets returns the secrets of items, for session; items that aren't
+// there are left out.
+func (s *service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]secret, *dbus.Error) {
+	out := map[dbus.ObjectPath]secret{}
+	for _, path := range items {
+		it := s.coll.item(path)
+		if it == nil {
+			continue
+		}
+		sec, err := it.GetSecret(session)
+		if err == errNoSuchObject {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[path] = sec
+	}
+	return out, nil
 }
 
 // Unlock reports everything as already unlocked, with no prompt.
@@ -242,7 +327,8 @@ func (s *service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.Obj
 
 // Export serves the Secret Service on conn, from host.
 func Export(conn *dbus.Conn, host *Host) error {
-	if err := conn.Export(&service{}, servicePath, serviceIface); err != nil {
+	coll := &collection{conn: conn, host: host, ids: map[dbus.ObjectPath]int64{}, items: map[dbus.ObjectPath]*item{}}
+	if err := conn.Export(&service{coll: coll}, servicePath, serviceIface); err != nil {
 		return err
 	}
 	// Collections deliberately empty, so go-keyring falls back to
@@ -255,13 +341,14 @@ func Export(conn *dbus.Conn, host *Host) error {
 	}
 	err = conn.Export(introspectable(serviceIface,
 		method("OpenSession", []string{"s", "v"}, []string{"v", "o"}),
+		method("SearchItems", []string{"a{ss}"}, []string{"ao", "ao"}),
+		method("GetSecrets", []string{"ao", "o"}, []string{"a{o(oayays)}"}),
 		method("Unlock", []string{"ao"}, []string{"ao", "o"}),
 	), servicePath, "org.freedesktop.DBus.Introspectable")
 	if err != nil {
 		return err
 	}
 
-	coll := &collection{conn: conn, host: host, ids: map[dbus.ObjectPath]int64{}}
 	if err := conn.Export(coll, collectionPath, collectionIface); err != nil {
 		return err
 	}
