@@ -217,6 +217,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		env.setGit(inside)
 	}
 	a := baseArgs(l.cfg, inside)
+	a.add("--hostname", hostName(l.project))
 	// Must precede every mount under $HOME - bwrap layers mounts in argv
 	// order, so those narrower binds shadow the volume, not the other way
 	// round.

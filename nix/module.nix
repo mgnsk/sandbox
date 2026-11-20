@@ -133,6 +133,12 @@ let
   # through PATH. The user's own files run after these.
   bashrc = pkgs.writeText "sandbox-bashrc" ''
     # Managed by the sandbox, read-only; your ~/.bashrc runs after this.
+    # A prompt that says who and where: the sandbox's host name is the
+    # project's directory name. Only over bash's own default, which shows
+    # neither.
+    if [[ $- == *i* ]] && [ "''${PS1-}" = '\s-\v\$ ' ]; then
+      PS1='\u@\h:\w\$ '
+    fi
     if [[ $- == *i* ]] && [ -z "''${BASH_COMPLETION_VERSINFO-}" ]; then
       . ${pkgs.bash-completion}/share/bash-completion/bash_completion
     fi

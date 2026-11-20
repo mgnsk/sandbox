@@ -186,6 +186,21 @@ func TestVolumeName(t *testing.T) {
 	}
 }
 
+func TestHostName(t *testing.T) {
+	for project, want := range map[string]string{
+		"/home/u/tools":                      "tools",
+		"/home/u/My Project_2":               "my-project-2",
+		"/home/u/.dotfiles":                  "dotfiles",
+		"/home/u/---":                        "sandbox",
+		"/":                                  "sandbox",
+		"/home/u/" + strings.Repeat("a", 70): strings.Repeat("a", 63),
+	} {
+		if got := hostName(project); got != want {
+			t.Errorf("hostName(%q) = %q, want %q", project, got, want)
+		}
+	}
+}
+
 func TestIsStorePath(t *testing.T) {
 	hash := strings.Repeat("a", 32)
 	for path, want := range map[string]bool{
