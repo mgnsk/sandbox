@@ -19,7 +19,7 @@ func TestWrap(t *testing.T) {
 		{strings.Repeat("界", 7), []string{"界界界界界", "界界"}},
 		// Escapes, bidi overrides and carriage returns become "?"; tabs
 		// four spaces.
-		{"a\x1b[2Jb‮c\rd\tz", []string{"a?[2Jb?c?d", "    z"}},
+		{"a\x1b[2Jb\u202ec\rd\tz", []string{"a?[2Jb?c?d", "    z"}},
 		// Trailing blank lines go.
 		{"a\n\nb\n\n\n", []string{"a", "", "b"}},
 	} {

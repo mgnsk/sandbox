@@ -573,13 +573,6 @@ func (p *ptyRun) expect(text string) string {
 
 func (p *ptyRun) send(text string) { io.WriteString(p.term, text) }
 
-// typeSecret types text once the prompt is out and echo is off.
-func (p *ptyRun) typeSecret(prompt, text string) {
-	p.expect(prompt)
-	time.Sleep(300 * time.Millisecond)
-	p.send(text + "\r")
-}
-
 // wait waits for the launcher to exit; how it went.
 func (p *ptyRun) wait() *result {
 	p.h.t.Helper()
