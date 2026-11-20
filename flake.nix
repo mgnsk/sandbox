@@ -44,11 +44,13 @@
         default = pkgs.mkShell {
           packages = [
             pkgs.go
-            # gh and fj, which the proxy tests run, and the bus the
-            # secret-service tests start.
+            # gh and fj, which the proxy tests run, and the bus and
+            # secret-tool (libsecret's client) the secret-service tests
+            # start.
             pkgs.gh
             pkgs.forgejo-cli
             pkgs.dbus
+            pkgs.libsecret
             # What the real-sandbox tests (e2e) run inside, by store path:
             # the sandbox itself has none of them.
             pkgs.python3
