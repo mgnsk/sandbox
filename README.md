@@ -150,7 +150,8 @@ Say a project has just a `flake.nix` with a dev shell:
 }
 ```
 
-The sandbox brings no tools beyond a shell, nix, git and ssh, and the basics
+The sandbox brings no tools beyond a shell, nix, git (with `less`, its
+pager) and ssh, and the basics
 `nix develop` adds anyway; the dev shell brings the rest, Claude Code and gh
 included, and the project's environment variables (`mkShell` attributes,
 `shellHook`). Tools you want in every project instead come from your
