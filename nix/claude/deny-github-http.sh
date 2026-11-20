@@ -9,7 +9,11 @@ clients='(^|[[:space:];&|(`])(fetch-url|curl|wget|xh|aria2c)([[:space:]]|$)'
 interp='(^|[[:space:];&|(`])(python3?|node|deno)([[:space:]]|$)'
 hit=
 # Interpreters run inline code that may contain `;`, so check the whole command.
-grep -Eq "$hosts" <<<"$cmd" && grep -Eq "$interp" <<<"$cmd" && hit=1
+# A GitHub host name alone (e.g. in a README edit) is fine; it only counts
+# when the code also uses an HTTP/socket API.
+netapi='urllib|urlopen|requests|httpx|aiohttp|http\.client|https?\.(get|request)|socket|curl_cffi|fetch[[:space:]]*\(|XMLHttpRequest|WebSocket'
+grep -Eq "$hosts" <<<"$cmd" && grep -Eq "$interp" <<<"$cmd" &&
+	grep -Eq "$netapi" <<<"$cmd" && hit=1
 while [ -z "$hit" ] && IFS= read -r seg; do
 	if grep -Eq "$hosts" <<<"$seg" && grep -Eq "$clients" <<<"$seg"; then
 		hit=1
