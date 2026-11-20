@@ -8,6 +8,8 @@
   pkg-config,
   bash,
   coreutils,
+  fetchFromGitHub,
+  rustPlatform,
   wl-proxy,
 }:
 let
@@ -51,25 +53,43 @@ let
   '';
 
   # The Wayland guard's proxy: wl-veil passes only the listed globals on to
-  # clients. As released it only leaves the others out of the registry's
-  # listing, and still forwards a bind of one, by a guessed name, to the
-  # compositor; the patch has it forward binds of announced globals only.
-  # TODO: drop the patch once wl-veil refuses such binds upstream.
-  wl-veil = wl-proxy.overrideAttrs (old: {
-    pname = "sandbox-wl-veil";
-    patches = (old.patches or [ ]) ++ [ ./patches/wl-veil-bind.patch ];
-    cargoBuildFlags = [
-      "--bin"
-      "wl-veil"
-    ];
-    # The other programs of the package, their completions and its tests
-    # aren't the sandbox's.
-    postInstall = "";
-    doCheck = false;
-    meta = old.meta // {
-      mainProgram = "wl-veil";
-    };
-  });
+  # clients. As released (0.1.5) it only leaves the others out of the
+  # registry's listing, and still forwards a bind of one, by a guessed name,
+  # to the compositor; from this commit it refuses the bind of a global it
+  # didn't announce, or of a higher version than it announced
+  # (mahkoh/wl-proxy#144).
+  # TODO: back to nixpkgs' wl-proxy as it is once that has a release with
+  # the fix (one after 0.1.5).
+  wl-veil = wl-proxy.overrideAttrs (
+    finalAttrs: old: {
+      pname = "sandbox-wl-veil";
+      version = "0.1.5-unstable-2026-11-20";
+      src = fetchFromGitHub {
+        owner = "mahkoh";
+        repo = "wl-proxy";
+        rev = "deff40c548e38f1d561d7da737a25609377d0965";
+        hash = "sha256-D2u/1yErzJi//Y4LLLGRlcxxHvbhAH7z4WFERKdeSAw=";
+      };
+      # Its own, of this source: the sandbox is built with the user's
+      # nixpkgs through home-manager, and not every one makes the
+      # package's from an overridden src.
+      cargoDeps = rustPlatform.fetchCargoVendor {
+        inherit (finalAttrs) pname version src;
+        hash = "sha256-mdJmlbtWwnf1OETZi9XqPfdYmMg2bjFC7MVK1A6/FQ4=";
+      };
+      cargoBuildFlags = [
+        "--bin"
+        "wl-veil"
+      ];
+      # The other programs of the package, their completions and its tests
+      # aren't the sandbox's.
+      postInstall = "";
+      doCheck = false;
+      meta = old.meta // {
+        mainProgram = "wl-veil";
+      };
+    }
+  );
 in
 {
   inherit

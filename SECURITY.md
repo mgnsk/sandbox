@@ -316,13 +316,14 @@ of a proxy on the host, wl-veil, started with an allowlist of globals
 (interface names): what isn't on it is neither announced to a client nor
 bound for it.
 
-- wl-veil as released only leaves the other globals out of the registry's
-  listing, and forwards a `wl_registry.bind` of any name a client sends: a
-  client that guesses a hidden global's numeric name (they're small
-  integers) binds it all the same. The sandbox builds wl-veil with a patch
-  (`nix/patches/wl-veil-bind.patch`) that has it renumber the globals it
-  announces and forward binds of those only. The allowlist rests on that
-  patch.
+- Leaving a global out of the registry's listing isn't enough: its numeric
+  name is a small integer, and a client that guesses it can send a
+  `wl_registry.bind` for it all the same. wl-veil 0.1.5, the last release,
+  forwards such a bind. The sandbox builds wl-veil from the upstream commit
+  that refuses it (`nix/packages.nix`, mahkoh/wl-proxy#144): a bind of a
+  global the client wasn't told of, or of a higher version than it was
+  told, is answered with a protocol error, which ends the client's
+  connection. The allowlist rests on that.
 - The default allowlist (`nix/wayland.nix`) has what a program needs for
   its own windows. It leaves out the clipboard and drag-and-drop
   (`wl_data_device_manager`, `zwp_primary_selection_device_manager_v1`):
