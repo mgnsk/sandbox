@@ -7,7 +7,10 @@ Not reachable - don't probe, plan around it:
 
 - systemd/journalctl/loginctl, the host D-Bus (only a private bus with
   a fake Secret Service exists), flatpak/portals
-- Wayland/X/pipewire sockets, so no GUI apps
+- X and pipewire sockets, and the Wayland one unless `$WAYLAND_DISPLAY` is
+  set: then GUI apps open windows through a filtering proxy, without the
+  clipboard, screen capture or a GPU (Electron needs `--no-sandbox
+  --ozone-platform=wayland`)
 - nested namespaces (bwrap, unshare, user namespaces)
 - sudo/setuid (no_new_privs, all caps dropped), files owned by other
   users

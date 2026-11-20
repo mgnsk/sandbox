@@ -20,6 +20,14 @@ type config struct {
 		} `json:"sshAgent"`
 		SecretService bool `json:"secretService"`
 		OpenURL       bool `json:"openUrl"`
+		Wayland       struct {
+			// nil leaves it to the project's sandbox.nix.
+			Enable *bool `json:"enable"`
+			// The user's changes to the allowlist, over the defaults and
+			// the project's.
+			Globals        map[string]bool `json:"globals"`
+			DefaultGlobals []string        `json:"defaultGlobals"`
+		} `json:"wayland"`
 	} `json:"guards"`
 	Default    profile   `json:"default"`
 	Profiles   []profile `json:"profiles"`
@@ -43,6 +51,8 @@ type config struct {
 		Bash  string `json:"bash"`
 		Bwrap string `json:"bwrap"`
 		Shell string `json:"shell"`
+		// The Wayland guard's proxy.
+		WlVeil string `json:"wlVeil"`
 	} `json:"tools"`
 	Init struct {
 		NixProfile  bool `json:"nixProfile"`

@@ -83,6 +83,30 @@ let
               default = null;
               description = "A shell command printing a Claude API key for Claude Code inside, approved like guards.github.tokenCommand.";
             };
+            guards.wayland.enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = ''
+                Windows on the host's Wayland display, for GUI programs
+                inside, through a proxy that passes on only an allowlist of
+                the compositor's globals. Takes the user's yes on the
+                terminal (asked once, and again whenever it changes); their
+                own config can turn it on or off for every project.
+              '';
+            };
+            guards.wayland.globals = lib.mkOption {
+              type = lib.types.attrsOf lib.types.bool;
+              default = { };
+              example = {
+                wl_data_device_manager = true;
+              };
+              description = ''
+                Changes to the allowlist of Wayland globals, by interface
+                name: true adds one to the default list, which takes the
+                user's yes like enable; false removes one. The user's own
+                changes go over these.
+              '';
+            };
           };
         }
         { _module.args.pkgs = lib.mkDefault pkgs; }
@@ -121,6 +145,9 @@ layer.json.generate "sandbox-project.json" {
   gitSigningKey = cfg.git.signingKey;
   gitSigningKeyCommand = cfg.git.signingKeyCommand;
   forgejoTokenCommands = cfg.guards.forgejo.tokenCommands;
+  wayland = {
+    inherit (cfg.guards.wayland) enable globals;
+  };
   binds = map (b: {
     inherit (b)
       src

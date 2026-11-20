@@ -8,6 +8,7 @@
   pkg-config,
   bash,
   coreutils,
+  wl-proxy,
 }:
 let
   # sandbox-bin: the launcher, init and the guards, as subcommands.
@@ -48,6 +49,27 @@ let
     ln -s ${coreutils}/bin/env $out/usr/bin/env
     ln -s ${xdg-open}/bin/xdg-open $out/usr/bin/xdg-open
   '';
+
+  # The Wayland guard's proxy: wl-veil passes only the listed globals on to
+  # clients. As released it only leaves the others out of the registry's
+  # listing, and still forwards a bind of one, by a guessed name, to the
+  # compositor; the patch has it forward binds of announced globals only.
+  # TODO: drop the patch once wl-veil refuses such binds upstream.
+  wl-veil = wl-proxy.overrideAttrs (old: {
+    pname = "sandbox-wl-veil";
+    patches = (old.patches or [ ]) ++ [ ./patches/wl-veil-bind.patch ];
+    cargoBuildFlags = [
+      "--bin"
+      "wl-veil"
+    ];
+    # The other programs of the package, their completions and its tests
+    # aren't the sandbox's.
+    postInstall = "";
+    doCheck = false;
+    meta = old.meta // {
+      mainProgram = "wl-veil";
+    };
+  });
 in
 {
   inherit
@@ -55,5 +77,6 @@ in
     seccomp
     xdg-open
     fhs
+    wl-veil
     ;
 }

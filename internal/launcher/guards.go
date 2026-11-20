@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/mgnsk/sandbox/internal/guard"
 	"github.com/mgnsk/sandbox/internal/popup"
 	"github.com/mgnsk/sandbox/internal/popuprelay"
+	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
 
 const (
@@ -95,13 +97,18 @@ func (g *guards) tempdir() (string, error) {
 // package guard). Failing here names the guard, rather than leaving bwrap to
 // trip over a missing socket.
 func (g *guards) start(ctx context.Context, name string, argv []string, listener *os.File, secret []byte) ([]byte, error) {
+	return g.startEnv(ctx, name, argv, g.env, listener, secret)
+}
+
+// startEnv is start, with env in place of the guards' environment.
+func (g *guards) startEnv(ctx context.Context, name string, argv, env []string, listener *os.File, secret []byte) ([]byte, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 	cmd := &exec.Cmd{
-		Path: argv[0], Args: argv, Env: g.env,
+		Path: argv[0], Args: argv, Env: env,
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		ExtraFiles: []*os.File{w},
 	}
@@ -428,5 +435,66 @@ func (g *guards) openURL(ctx context.Context, a *bwrapArgs, runtimeDir string) e
 	// display variable, and npm's open honors it when it can't detect a
 	// desktop.
 	a.setenv("BROWSER", "/usr/bin/xdg-open")
+	return nil
+}
+
+// wayland: windows on the host's display, through wl-veil: a proxy that
+// passes only the globals named on to clients inside, never the real
+// socket, which gives any client whatever the compositor offers - on
+// wlroots compositors the screen's contents, the clipboard at any time and
+// synthetic input.
+//
+// wl-veil listens at the first free wayland-N of its $XDG_RUNTIME_DIR - a
+// dir of its own here, so that's a path only the launcher knows - and
+// serves for as long as the program it starts runs: wayland-guard, which
+// reports the socket's name.
+func (g *guards) wayland(ctx context.Context, a *bwrapArgs, runtimeDir string, globals []string) error {
+	display := os.Getenv("WAYLAND_DISPLAY")
+	if display == "" {
+		fmt.Fprintln(os.Stderr, "sandbox: no Wayland display ($WAYLAND_DISPLAY unset), none inside")
+		return nil
+	}
+	upstream := display
+	if !filepath.IsAbs(upstream) {
+		upstream = filepath.Join(runtimeDir, display)
+	}
+	if !exists(upstream) {
+		fmt.Fprintf(os.Stderr, "sandbox: no Wayland display at %s, none inside\n", upstream)
+		return nil
+	}
+	if len(globals) == 0 {
+		return errors.New("guards.wayland.globals allows no global")
+	}
+	dir, err := g.tempdir()
+	if err != nil {
+		return err
+	}
+	var env []string
+	for _, kv := range g.env {
+		name, _, _ := strings.Cut(kv, "=")
+		// WAYLAND_SOCKET would be a connection of the launcher's own; the
+		// popup socket is for guards that ask, which this one never does.
+		if !slices.Contains([]string{"XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "RUST_LOG", popup.Env}, name) {
+			env = append(env, kv)
+		}
+	}
+	// Errors only: wl-veil logs on the terminal the sandbox runs on.
+	env = append(env, "XDG_RUNTIME_DIR="+dir, "WAYLAND_DISPLAY="+upstream, "RUST_LOG=error")
+	argv := append([]string{g.cfg.Tools.WlVeil, "-i", "-f", strings.Join(globals, ","), "--"},
+		g.program("wayland-guard")...)
+	line, err := g.startEnv(ctx, "wl-veil", argv, env, nil, nil)
+	if err != nil {
+		return err
+	}
+	var info waylandguard.Info
+	if err := json.Unmarshal(line, &info); err != nil {
+		return fmt.Errorf("wl-veil: %w", err)
+	}
+	sock := filepath.Join(dir, info.Display)
+	if filepath.Base(info.Display) != info.Display || !exists(sock) {
+		return fmt.Errorf("wl-veil: no socket %q", info.Display)
+	}
+	a.bind(sock, runtimeDir+"/wayland-0")
+	a.setenv("WAYLAND_DISPLAY", "wayland-0")
 	return nil
 }

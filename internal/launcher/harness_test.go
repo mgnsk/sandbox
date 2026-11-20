@@ -54,6 +54,9 @@ var helpers = map[string]func() int{
 	"agent-list":  agentList,
 	"proxy-check": proxyCheck,
 	"wait-ready":  waitReady,
+	// On the host, for the Wayland guard, and inside.
+	"wl-veil":       fakeWlVeil,
+	"wayland-check": waylandCheck,
 }
 
 func TestMain(m *testing.M) {
@@ -104,8 +107,14 @@ loop:
 				data, _ := os.ReadFile(src)
 				files[src] = string(data)
 			}
-			if strings.HasPrefix(dst, runtime+"/") && !lexists(dst) {
-				os.Symlink(src, dst)
+			if strings.HasPrefix(dst, runtime+"/") {
+				// Over the link an earlier run left, to a socket that's gone.
+				if fi, err := os.Lstat(dst); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+					os.Remove(dst)
+				}
+				if !lexists(dst) {
+					os.Symlink(src, dst)
+				}
 			}
 			i += 2
 		case "--chdir":

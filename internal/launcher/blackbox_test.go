@@ -413,6 +413,9 @@ func manifestJSON(t *testing.T, m manifest) string {
 	if m.Command != nil {
 		v["command"] = m.Command
 	}
+	if m.Wayland.Enable || m.Wayland.Globals != nil {
+		v["wayland"] = m.Wayland
+	}
 	return marshal(t, v)
 }
 

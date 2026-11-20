@@ -58,6 +58,10 @@ assert fails [ { guards.forgejo.enable = true; } ];
 runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .hostPorts == ["5432"]
+    and .guards.wayland.enable == null
+    and .guards.wayland.globals == {zwp_tablet_manager_v2: false}
+    and (.guards.wayland.defaultGlobals | index("xdg_wm_base") != null)
+    and (.guards.wayland.defaultGlobals | index("wl_data_device_manager") == null)
     and .default.claudeApiKeyCommand == null
     and ([.profiles[] | {name, paths, claudeApiKeyCommand}]
          == [{name: "work", paths: ["~/work"], claudeApiKeyCommand: "op read op://v/claude/key"}])
@@ -65,6 +69,7 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   bin=$(jq -r '.default.env.PATH | split(":")[0]' ${config})
   for tool in bash nix sed make tic git ssh ssh-keygen xdg-open; do test -x "$bin/$tool"; done
   for tool in claude curl python3 hello; do test ! -e "$bin/$tool"; done
+  test -x "$(jq -r '.tools.wlVeil' ${config})"
   test -f "$(jq -r '.default.claudeDir' ${config})/managed-settings.json"
   test -f "$(jq -r '.fhs.bashCompletion' ${config})/bash_completion"
   grep -q bash_completion "$(jq -r '.fhs.bashrc' ${config})"

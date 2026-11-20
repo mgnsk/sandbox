@@ -40,6 +40,8 @@ What you get, per project:
   - the GitHub API, on a token from a token command, from `gh` or any
     other client: writes ask, reads don't;
   - Forgejo APIs (opt-in): the same;
+  - windows on your Wayland display (opt-in), through a proxy that passes
+    on only what a program needs for its own windows: never asks;
   - the Claude API on an API key from a key command (opt-in): never asks;
   - opening http(s) URLs in the host's browser: asks.
 - **A Secret Service** per project, so tools storing credentials via libsecret
@@ -328,7 +330,7 @@ its commands; see devenv's docs on flakes.
 | Where | What it can set | Trust |
 | --- | --- | --- |
 | **Your sandbox config**: home-manager's `programs.sandbox.settings` | Every [option](#options), including `profiles`; the only place for everything `sandbox.nix` can't set (the ssh agent, open-URL and Secret Service guards, the ssh agent socket, `passEnv`, `stateDir`, ...) | Trusted: applies without asking, and wins over the project's settings |
-| **The project's [`sandbox.nix`](#the-projects-sandboxnix)**, committed | `command`, `claude.*`, `hostPorts`, `binds`, the guards' token commands, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: binds, host ports and commands run on the host need your yes on the terminal, asked the first time and again only if they change |
+| **The project's [`sandbox.nix`](#the-projects-sandboxnix)**, committed | `command`, `claude.*`, `hostPorts`, `binds`, the guards' token commands, `guards.wayland`, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: binds, host ports and commands run on the host need your yes on the terminal, asked the first time and again only if they change |
 | **The project's [`.sandbox.yml`](#per-user-project-settings-sandboxyml)**, gitignored, each user's own | The guards' token commands and `git.*` (identity, signing, `fromHost`) | As `sandbox.nix`; its token commands and git settings override `sandbox.nix`'s |
 | **The project's dev shell** (a flake's `devShells`, devenv) | Tools - Claude Code, gh, fj, linters - and the project's environment variables | Runs inside |
 
@@ -391,6 +393,12 @@ A full example, with every option it can set:
   guards.github.tokenCommand = "op read op://Employee/GitHub/token";
   guards.forgejo.tokenCommands."codeberg.org" = "op read op://Employee/Codeberg/token";
   guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
+
+  # Windows on the user's Wayland display, for GUI programs in the dev
+  # shell, and changes to the allowlist of globals (true adds, false
+  # removes). Asked on the terminal the first time; see Wayland below.
+  guards.wayland.enable = true;
+  guards.wayland.globals.wl_data_device_manager = true;   # clipboard, drag-and-drop
 
   # Git inside: identity and signing key from each user's host git config,
   # and/or a signing key (or a command printing it, asked the first time
@@ -546,8 +554,8 @@ config, git config, etc. apply inside.
 ### Options
 
 The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
-`binds`, `hostPorts`, `claude.*` (except `enable`) and the token commands
-can also be set by a project's `sandbox.nix`.
+`binds`, `hostPorts`, `claude.*` (except `enable`), the token commands and
+`guards.wayland` can also be set by a project's `sandbox.nix`.
 
 | Option | Default | |
 | --- | --- | --- |
@@ -566,6 +574,8 @@ can also be set by a project's `sandbox.nix`.
 | `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key, run on the host at each start: Claude Code then runs on it, held outside. See [Claude Code](#claude-code). |
 | `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
 | `guards.secretService.enable` | on | A per-project Secret Service on a private D-Bus, for tools using libsecret. |
+| `guards.wayland.enable` | `null` | Windows on your Wayland display, through a filtering proxy: `true` or `false` for every project, `null` to leave it to each project's `sandbox.nix`. See [Wayland](#wayland). |
+| `guards.wayland.globals.<name>` | `{ }` | Changes to the allowlist of Wayland globals: `true` adds one, `false` removes one. Yours go over a project's. |
 | `claude.enable` | on | Claude Code's managed config (settings, memory, MCP and language servers) at `/etc/claude-code`, for the `claude` your dev shell or profile brings: the sandbox ships none. |
 | `claude.settings` | autoupdater off, a hook steering GitHub HTTP requests to `gh` | managed-settings.json, merged across modules. |
 | `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
@@ -759,6 +769,54 @@ programs.sandbox.settings.profiles.work = {
   guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
 };
 ```
+
+### Wayland
+
+Off by default: without it there is no display inside, and no GUI programs.
+With `guards.wayland.enable`, programs inside open windows on your Wayland
+display:
+
+```nix
+# sandbox.nix, for everyone working on the project (approved on the
+# terminal the first time), or your own sandbox config (trusted)
+guards.wayland.enable = true;
+```
+
+Inside, `WAYLAND_DISPLAY` is `wayland-0`, a socket of the sandbox's own. Your
+compositor's real socket is never bound in: on it, any client gets whatever
+the compositor offers, which on wlroots compositors (sway, ...) includes the
+screen's contents, the clipboard at any time and synthetic keyboard and
+pointer input. The guard is a proxy on the host,
+[wl-veil](https://github.com/mahkoh/wl-proxy), which passes on only an
+allowlist of the compositor's globals - by default what a program needs to
+show and drive its own windows ([nix/wayland.nix](nix/wayland.nix)) - and
+only binds of those. It works the same on every compositor, and never asks.
+
+**The clipboard is off by default.** `wl_data_device_manager` (the clipboard
+and drag-and-drop) and `zwp_primary_selection_device_manager_v1` (the primary
+selection) let a window read what you last copied on the host whenever it
+has the keyboard focus, so they're not on the list: copy and paste between
+the host and a program inside doesn't work, and some programs (foot) don't
+start. Add them where you want that:
+
+```nix
+guards.wayland.globals = {
+  wl_data_device_manager = true;                   # add to the allowlist
+  zwp_primary_selection_device_manager_v1 = true;
+  zwp_pointer_constraints_v1 = false;              # or take one off it
+};
+```
+
+The allowlist is the defaults, then the project's `sandbox.nix`'s changes,
+then your own config's: yours win. A global a project adds needs your yes
+like turning the guard on does; one it removes doesn't. A name wl-veil
+doesn't know is reported at start and ignored.
+
+What the sandbox doesn't have, with or without the guard: a GPU (`/dev/dri`
+isn't there, so programs render in software), X11, and fonts or a fontconfig
+of the host's - the dev shell brings those. Chromium and Electron programs
+need `--no-sandbox` (their own sandbox wants user namespaces) and
+`--ozone-platform=wayland`.
 
 ### SSH agent
 
