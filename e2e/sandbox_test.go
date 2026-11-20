@@ -792,3 +792,52 @@ func TestGuardsDoNotSurviveTheSandbox(t *testing.T) {
 	}
 	t.Errorf("guards survived the sandbox: %v", leaked)
 }
+
+// processes are the pids of the processes running exactly argv.
+func processes(argv ...string) []string {
+	var pids []string
+	entries, _ := os.ReadDir("/proc")
+	for _, e := range entries {
+		cmdline, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err == nil && string(cmdline) == strings.Join(argv, "\x00")+"\x00" {
+			pids = append(pids, e.Name())
+		}
+	}
+	return pids
+}
+
+// Killed, the launcher stops nothing itself: the sandbox and the guards,
+// which hold the tokens, go on their own.
+func TestAKilledLauncherTakesTheSandboxAndItsGuardsWithIt(t *testing.T) {
+	p := newProject(t)
+	before := guardPids()
+	started := func() []string {
+		return slices.Collect(func(yield func(string) bool) {
+			for pid := range maps.Keys(guardPids()) {
+				if !before[pid] && !yield(pid) {
+					return
+				}
+			}
+		})
+	}
+	// The sandbox command is a script that execs the launcher: its pid.
+	command := []string{"sleep", "31415"}
+	cmd := p.command("", nil, command...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	for deadline := time.Now().Add(time.Minute); len(processes(command...)) == 0 || len(started()) == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("not started: command %v, guards %v", processes(command...), started())
+		}
+	}
+	cmd.Process.Kill()
+	cmd.Wait()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if len(processes(command...)) == 0 && len(started()) == 0 {
+			return
+		}
+	}
+	t.Errorf("outlived the killed launcher: command %v, guards %v", processes(command...), started())
+}

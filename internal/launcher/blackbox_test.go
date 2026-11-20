@@ -1258,3 +1258,50 @@ func TestSIGTERMStopsTheSandboxAndItsGuards(t *testing.T) {
 		t.Error("the guard outlived the sandbox")
 	}
 }
+
+// running says whether pid is a process that hasn't exited: one that has
+// may still be there, unreaped.
+func running(pid int) bool {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	_, rest, _ := strings.Cut(string(stat), ") ")
+	return !strings.HasPrefix(rest, "Z")
+}
+
+// Killed, the launcher stops nothing itself: its guards, which hold the
+// tokens, and the sandbox go on their own, signaled when it dies.
+func TestAKilledLauncherLeavesNothingRunning(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Guards.OpenURL = true
+	ready := filepath.Join(h.tmp, "ready")
+	cmd := h.command("", map[string]string{"READY": ready}, h.tool("wait-ready"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(20 * time.Second); !exists(ready); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("never ready")
+		}
+	}
+	launcher := cmd.Process.Pid
+	guards, pastas := children(launcher, "open-url-guard"), children(launcher, "pasta")
+	if len(guards) != 1 || len(pastas) != 1 {
+		t.Fatalf("guards %v, pasta %v", guards, pastas)
+	}
+	inside := children(pastas[0], "wait-ready")
+	if len(inside) != 1 {
+		t.Fatalf("inside %v", inside)
+	}
+	cmd.Process.Kill()
+	cmd.Wait()
+	left := map[string]int{"the guard": guards[0], "pasta": pastas[0], "the sandboxed command": inside[0]}
+	for deadline := time.Now().Add(10 * time.Second); len(left) > 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		maps.DeleteFunc(left, func(_ string, pid int) bool { return !running(pid) })
+	}
+	for what := range left {
+		t.Errorf("%s outlived the killed launcher", what)
+	}
+}
