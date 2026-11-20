@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -33,7 +34,13 @@ import (
 	"github.com/mgnsk/sandbox/internal/popup"
 )
 
-const maxURLSize = 4096
+const (
+	maxURLSize = 4096
+	// How long a client has to send its URL.
+	readTimeout = 10 * time.Second
+	// How much of the requester's own words a popup shows.
+	displayLimit = 200
+)
 
 // Validate says why rawURL must not be opened, or returns nil if it may be
 // offered to the user.
@@ -71,10 +78,18 @@ func Validate(rawURL string) error {
 }
 
 // validHost says whether u's host reads the same to a browser: brackets
-// only around an IPv6 address.
+// only around an IPv6 address, and nothing percent-encoded - the parser
+// decodes g%D1%96thub.com to a name with a Cyrillic letter, which the popup
+// would show as it looks, where a browser loads its punycode.
 func validHost(u *url.URL) bool {
+	if strings.ContainsFunc(u.Host, func(r rune) bool {
+		return r > unicode.MaxASCII || !unicode.IsGraphic(r) || unicode.IsSpace(r)
+	}) {
+		return false
+	}
 	if !strings.HasPrefix(u.Host, "[") {
-		return !strings.ContainsAny(u.Host, "[]")
+		// The % of an escape the parser left alone.
+		return !strings.ContainsAny(u.Host, "[]%")
 	}
 	addr, err := netip.ParseAddr(u.Hostname())
 	return err == nil && addr.Is6()
@@ -102,6 +117,7 @@ func (g *Guard) Handle(conn net.Conn) {
 }
 
 func (g *Guard) handle(conn net.Conn, who peer.Peer) error {
+	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 	rawURL, err := readLine(conn)
 	if err != nil {
 		return err
@@ -143,8 +159,8 @@ func (g *Guard) confirm(rawURL string, who peer.Peer) popup.Answer {
 	}
 	return ask("open-url-guard", "Open in the host's browser?\n\n"+
 		"  host:     "+popup.Clean(u.Hostname())+"\n"+
-		"  cwd:      "+popup.Clean(who.Cwd)+"\n"+
-		"  command:  "+popup.Clean(who.Cmdline)+"\n\n"+
+		"  cwd:      "+popup.CleanLimit(who.Cwd, displayLimit)+"\n"+
+		"  command:  "+popup.CleanLimit(who.Cmdline, displayLimit)+"\n\n"+
 		rawURL+"\n\n")
 }
 

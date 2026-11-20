@@ -133,14 +133,37 @@ func TestReadsAreForwardedWithTheRealToken(t *testing.T) {
 	}
 }
 
+// What would have the real host see another request than the one judged
+// here never gets there.
+func TestUpgradesAndMethodOverridesAreNotForwarded(t *testing.T) {
+	w := newWorld(t)
+	c, _, _ := w.https(t)
+	resp, body := do(t, c, "GET", "https://api.example/ok/user", nil, "Connection", "Upgrade", "Upgrade", "websocket")
+	w.refused(t, resp, body, 501, "protocol upgrades aren't forwarded")
+	if resp, _ := do(t, c, "GET", "https://api.example/ok/user", nil,
+		"X-HTTP-Method-Override", "DELETE", "X-HTTP-Method", "DELETE", "X-Method-Override", "DELETE"); resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	seen := w.upstream.Seen()
+	if len(seen) != 1 {
+		t.Fatalf("seen %+v", seen)
+	}
+	for name := range seen[0].Header {
+		if strings.Contains(strings.ToLower(name), "method") {
+			t.Errorf("%s forwarded", name)
+		}
+	}
+}
+
 func TestWritesAsk(t *testing.T) {
 	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
 		t.Run(method, func(t *testing.T) {
 			w := newWorld(t)
 			c, _, _ := w.https(t)
-			resp, body := do(t, c, method, "https://api.example/ok/labels", strings.NewReader("{}"))
+			resp, body := do(t, c, method, "https://api.example/ok/labels", strings.NewReader(`{"name":"bug"}`))
 			w.refused(t, resp, body, 403, "declined by user")
-			want := []popup.Request{{Name: "test-proxy", Text: "Allow it?\n\n" + method + " api.example/ok/labels\n"}}
+			// With what it would write: the path alone doesn't say.
+			want := []popup.Request{{Name: "test-proxy", Text: "Allow it?\n\n" + method + " api.example/ok/labels\n\n{\n  \"name\": \"bug\"\n}\n"}}
 			if got := w.popups.Asked(); !slices.Equal(got, want) {
 				t.Errorf("asked %+v", got)
 			}

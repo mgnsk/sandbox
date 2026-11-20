@@ -25,8 +25,10 @@ package apiproxy
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"maps"
@@ -34,6 +36,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +44,22 @@ import (
 	"github.com/mgnsk/sandbox/internal/popup"
 )
 
-// Each read of a client's request head.
-const headerTimeout = 60 * time.Second
+const (
+	// Each read of a client's request head.
+	headerTimeout = 60 * time.Second
+	// How long a connection may sit between requests.
+	idleTimeout = 2 * time.Minute
+	// The largest request body read to show it in a popup; a larger one
+	// is described, not shown.
+	maxShownBody = 256 << 10
+	// How much of a body a popup shows: it has to fit the launcher's
+	// limit on a request, with room to spare.
+	maxShown = 32 << 10
+)
+
+// Headers that have a server treat a request as another method than the
+// one this proxy judged it by; never forwarded.
+var methodOverrides = []string{"X-Http-Method-Override", "X-Http-Method", "X-Method-Override"}
 
 // StatusNotHandled answers a CONNECT to a host the guard doesn't take (see
 // Guard.Handles).
@@ -61,7 +78,7 @@ type Guard struct {
 	AllowPath func(path string) bool
 	// Describe describes a write for the approval popup, or returns "" for a
 	// read; it may read the body with ReadBody. Unset, everything but GET
-	// and HEAD is a write.
+	// and HEAD is a write, described by DescribeWrite.
 	Describe func(r *http.Request, host string) (string, error)
 	// Handles, if set, says which hosts (lowercase, without ":443") this
 	// guard takes at all. A CONNECT to any other is answered
@@ -119,6 +136,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.refuse(w, http.StatusBadRequest, "expected an origin-form request target")
 		return
 	}
+	// A connection that leaves HTTP, with the guard's credentials on it
+	// and nothing read of what follows.
+	if r.Header.Get("Upgrade") != "" {
+		p.refuse(w, http.StatusNotImplemented, "protocol upgrades aren't forwarded")
+		return
+	}
 	host := strings.TrimSuffix(strings.ToLower(r.Host), ":443")
 	if target, ok := r.Context().Value(connectKey{}).(string); ok && host != target {
 		p.refuse(w, http.StatusMisdirectedRequest, "Host "+popup.Clean(host)+" isn't the CONNECT target")
@@ -157,7 +180,59 @@ func (p *Proxy) describe(r *http.Request, host string) (string, error) {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return "", nil
 	}
-	return Target(r, host), nil
+	return DescribeWrite(r, host)
+}
+
+// DescribeWrite describes a write for the approval popup: its target, then
+// its body - a path alone doesn't say whether a PATCH renames a repository
+// or makes it public. A JSON body of a known, moderate size is shown; any
+// other is said to be there, with its size and type.
+func DescribeWrite(r *http.Request, host string) (string, error) {
+	target := Target(r, host)
+	kind, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch {
+	case r.ContentLength == 0:
+		return target, nil
+	case r.ContentLength < 0:
+		return target + "\n\n(a body of unknown size, not shown)", nil
+	case r.ContentLength > maxShownBody || kind != "" && kind != "application/json" && !strings.HasSuffix(kind, "+json"):
+		return fmt.Sprintf("%s\n\n(a body of %d bytes, %s, not shown)", target, r.ContentLength, orUnknown(kind)), nil
+	}
+	body, err := ReadBody(r, maxShownBody)
+	if err != nil {
+		return "", err
+	}
+	// Of no stated type, only what turns out to be JSON.
+	if kind == "" && !jsontext.Value(body).IsValid() {
+		return fmt.Sprintf("%s\n\n(a body of %d bytes, %s, not shown)", target, len(body), orUnknown(kind)), nil
+	}
+	return target + "\n\n" + Shown(string(indented(body))), nil
+}
+
+func orUnknown(kind string) string {
+	if kind == "" {
+		return "of unknown type"
+	}
+	return kind
+}
+
+// indented is JSON data indented, or data as it is if it isn't JSON.
+func indented(data []byte) []byte {
+	v := jsontext.Value(bytes.Clone(data))
+	if v.Indent(jsontext.WithIndent("  ")) != nil {
+		return data
+	}
+	return v
+}
+
+// Shown is text as a popup shows it: cut to maxShown bytes, saying how
+// much is left out.
+func Shown(text string) string {
+	if len(text) <= maxShown {
+		return text
+	}
+	return fmt.Sprintf("%s\n... (%d more bytes, not shown)", strings.ToValidUTF8(text[:maxShown], ""), len(text)-maxShown)
 }
 
 // Target is a request's method, host and path, as a popup shows it.
@@ -192,7 +267,7 @@ func (p *Proxy) init() {
 			pr.SetURL(&url.URL{Scheme: "https", Host: route.Host})
 			// The client's credentials are placeholders, never forwarded;
 			// Expect is answered here.
-			for _, name := range append([]string{"Authorization", "Expect"}, p.DropHeaders...) {
+			for _, name := range slices.Concat([]string{"Authorization", "Expect"}, methodOverrides, p.DropHeaders) {
 				pr.Out.Header.Del(name)
 			}
 			maps.Copy(pr.Out.Header, route.Header)
@@ -224,6 +299,7 @@ func newServer(h http.Handler) *http.Server {
 	return &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: headerTimeout,
+		IdleTimeout:       idleTimeout,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 }

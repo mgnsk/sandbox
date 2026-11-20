@@ -4,12 +4,12 @@
 // The launcher owns the terminal the sandbox runs on and listens on a socket
 // only the guards know: $SANDBOX_POPUP_SOCKET, in a private temp dir that's
 // never bound in. A guard sends a JSON Request and gets the user's answer
-// back: "once", "always", or anything else for no.
+// back: "once", "always", "never", or anything else for no.
 //
 // Each guard runs on the host, one process per sandbox, for as long as that
-// sandbox does. So an Approvals held in a guard's memory is what "always in
-// this sandbox" means: nothing is written down, and the next sandbox asks
-// again.
+// sandbox does. So an Approvals held in a guard's memory is what "always"
+// and "never in this sandbox" mean: nothing is written down, and the next
+// sandbox asks again.
 package popup
 
 import (
@@ -44,6 +44,9 @@ const (
 	No     Answer = "no"
 	Once   Answer = "once"
 	Always Answer = "always"
+	// No, to this request and every later one of the guard: what stops a
+	// sandbox that keeps asking.
+	Never Answer = "never"
 )
 
 // The longest answer read; anything longer is a no.
@@ -52,7 +55,7 @@ const maxAnswer = 64
 // ParseAnswer reads an answer off the wire; anything unknown is No.
 func ParseAnswer(s string) Answer {
 	switch a := Answer(s); a {
-	case Once, Always:
+	case Once, Always, Never:
 		return a
 	}
 	return No
@@ -101,20 +104,20 @@ func AskAt(path string, req Request) Answer {
 
 // Approvals are one guard's approvals for the life of its process.
 type Approvals struct {
-	mu     sync.Mutex
-	always bool
+	mu            sync.Mutex
+	always, never bool
 }
 
 // Approve says whether to let a request through, calling ask for the user's
-// answer unless they have already answered Always.
+// answer unless they have already answered Always or Never.
 //
 // The lock is held across the popup: one at a time, and requests queued
-// behind an Always answer see it instead of popping up themselves.
+// behind an Always or Never answer see it instead of popping up themselves.
 func (a *Approvals) Approve(ask func() Answer) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.always {
-		return true
+	if a.always || a.never {
+		return a.always
 	}
 	switch ask() {
 	case Always:
@@ -122,6 +125,8 @@ func (a *Approvals) Approve(ask func() Answer) bool {
 		return true
 	case Once:
 		return true
+	case Never:
+		a.never = true
 	}
 	return false
 }

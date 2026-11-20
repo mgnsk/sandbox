@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 
@@ -52,13 +53,15 @@ var (
 
 var errNoKey = errors.New("no Claude API key - the launcher passed none")
 
-// allowPath says whether Claude Code needs path.
-func allowPath(path string) bool {
-	if slices.Contains(strings.Split(path, "/"), "..") {
+// allowPath says whether Claude Code needs p. Only a path that reads the
+// same to any server: clean, and without the characters some take for a
+// separator or a parameter.
+func allowPath(p string) bool {
+	if path.Clean(p) != p || strings.ContainsAny(p, `;\`) {
 		return false
 	}
-	return slices.Contains(paths, path) || slices.ContainsFunc(pathPrefixes, func(prefix string) bool {
-		return strings.HasPrefix(path, prefix)
+	return slices.Contains(paths, p) || slices.ContainsFunc(pathPrefixes, func(prefix string) bool {
+		return strings.HasPrefix(p, prefix)
 	})
 }
 

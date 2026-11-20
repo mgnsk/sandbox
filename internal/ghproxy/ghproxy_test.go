@@ -40,6 +40,17 @@ func describeBody(t *testing.T, method, path string, body []byte) string {
 	return description
 }
 
+// Only the API hosts are this guard's: any other is refused before a
+// certificate is made for it.
+func TestHandlesOnlyTheTokenHosts(t *testing.T) {
+	g := New("token")
+	for host, want := range map[string]bool{"api.github.com": true, "uploads.github.com": true, "github.com": false, "evil.example": false} {
+		if got := g.Handles(host); got != want {
+			t.Errorf("Handles(%s) = %v", host, got)
+		}
+	}
+}
+
 func TestRESTReadsAndWrites(t *testing.T) {
 	for _, method := range []string{"GET", "HEAD"} {
 		if d := describeBody(t, method, "/repos/o/r/pulls", nil); d != "" {
@@ -52,8 +63,13 @@ func TestRESTReadsAndWrites(t *testing.T) {
 		}
 	}
 	r := httptest.NewRequest("POST", "https://uploads.github.com/repos/o/r/releases/1/assets", strings.NewReader("x"))
-	if d, _ := describe(r, "uploads.github.com"); d != "POST uploads.github.com/repos/o/r/releases/1/assets" {
+	r.Header.Set("Content-Type", "application/zip")
+	if d, _ := describe(r, "uploads.github.com"); d != "POST uploads.github.com/repos/o/r/releases/1/assets\n\n(a body of 1 bytes, application/zip, not shown)" {
 		t.Errorf("upload: %q", d)
+	}
+	// What a write would change is in its body.
+	if d := describeBody(t, "PATCH", "/repos/o/r", []byte(`{"private":false}`)); d != "PATCH api.github.com/repos/o/r\n\n{\n  \"private\": false\n}" {
+		t.Errorf("body: %q", d)
 	}
 }
 
@@ -68,6 +84,46 @@ func TestGraphQLQueriesNeedNoPopup(t *testing.T) {
 		if d := describeBody(t, "POST", "/graphql", graphql(t, query)); d != "" {
 			t.Errorf("%s asks: %q", query, d)
 		}
+	}
+}
+
+// A document of queries is a read only as what the endpoint is known to
+// take: a POST of JSON, with no query in the URL a server might read a
+// document from. However the path is spelled, it's the GraphQL endpoint.
+func TestGraphQLOnlyAsPostedJSONIsARead(t *testing.T) {
+	query := graphql(t, "{ viewer { login } }")
+	request := func(method, target, kind string) *http.Request {
+		r := httptest.NewRequest(method, "https://api.github.com"+target, bytes.NewReader(query))
+		if kind != "" {
+			r.Header.Set("Content-Type", kind)
+		}
+		return r
+	}
+	for _, r := range []*http.Request{
+		request("POST", "/graphql", ""),
+		request("POST", "/graphql", "application/json; charset=utf-8"),
+		request("POST", "/GraphQL/", "application/json"),
+	} {
+		if d, err := describe(r, apiHost); err != nil || d != "" {
+			t.Errorf("%s %s asks: %q %v", r.Method, r.URL, d, err)
+		}
+	}
+	for _, r := range []*http.Request{
+		request("GET", "/graphql", "application/json"),
+		request("GET", "/GraphQL", "application/json"),
+		request("POST", "/graphql?query=mutation%7Bx%7D", "application/json"),
+		request("POST", "/graphql", "application/x-www-form-urlencoded"),
+		request("PUT", "/graphql", "application/json"),
+	} {
+		if d, err := describe(r, apiHost); err != nil || d == "" {
+			t.Errorf("%s %s (%s) doesn't ask: %v", r.Method, r.URL, r.Header.Get("Content-Type"), err)
+		}
+	}
+	// A mutation there is shown as one, not as a plain POST.
+	mutation := graphql(t, `mutation { deleteRepository(input: {repositoryId: "R_1"}) { clientMutationId } }`)
+	if d := describeBody(t, "POST", "//GRAPHQL", mutation); !strings.Contains(d, "mutation (anonymous): deleteRepository") ||
+		!strings.Contains(d, `repositoryId: "R_1"`) {
+		t.Errorf("%q", d)
 	}
 }
 
@@ -110,7 +166,8 @@ func TestUnparseableGraphQLNeedsAPopup(t *testing.T) {
 	}
 }
 
-// Operations with their top-level fields (not aliases), and variables as
+// Operations with their top-level fields (not aliases, and through
+// fragments, which would hide them), then the document and the variables as
 // sent: key order kept, indented, non-ASCII as it is.
 func TestGraphQLPopupText(t *testing.T) {
 	query := "query Q { viewer { login } } " +
@@ -120,7 +177,8 @@ func TestGraphQLPopupText(t *testing.T) {
 	body := []byte(`{"query": ` + string(must(json.Marshal(query))) + `, "variables": {"z": {"nested": [1, -2, 1.5, true, false, null], "empty": {}}, "a": "quote \" ctl \u0001 日本"}}`)
 	want := "POST api.github.com/graphql\n\n" +
 		"query Q: viewer\n" +
-		"mutation (anonymous): addStar, removeStar\n\n" +
+		"mutation (anonymous): addStar, x, removeStar\n\n" +
+		query + "\n\n" +
 		"variables:\n" +
 		"{\n" +
 		"  \"z\": {\n" +

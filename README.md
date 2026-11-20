@@ -38,8 +38,9 @@ What you get, per project:
   (dev servers, OAuth callbacks).
 - **Guarded host access**, credentials kept outside; what could act on your
   behalf waits for a popup on the terminal the sandbox runs in (answer once,
-  or "always, for this sandbox"):
-  - your ssh agent: logins and pushes ask, commit signing doesn't;
+  or "always" or "never, for this sandbox"):
+  - your ssh agent: logins and pushes ask, commit signing with your signing
+    key doesn't;
   - the GitHub API, on a token from a token command, from `gh` or any
     other client: writes ask, reads don't;
   - Forgejo APIs (opt-in): the same;
@@ -856,8 +857,8 @@ doesn't know is reported at start and ignored.
 The guards' popups are drawn on the terminal the sandbox runs on, which you
 aren't looking at while you work in a window: a push from an editor inside
 would just seem to hang. So in a sandbox with a Wayland display, a request
-is shown as a desktop notification as well, with the same three answers -
-Allow once, Always in this sandbox, Deny - unless it comes from a program on
+is shown as a desktop notification as well, with three of the answers -
+Deny, Allow once, Always in this sandbox - unless it comes from a program on
 the sandbox's own terminal (a `git push` typed there asks there alone, as
 ever).
 
@@ -894,8 +895,10 @@ the sandbox starts (`guards.sshAgent.socket` in your sandbox config to pick
 another, e.g. if you start `sandbox` from somewhere it isn't set). Inside,
 only the guard's proxy is visible, never the real socket. A sign request (an
 ssh login, `git push` over ssh) gets the sandbox's popup first, except git
-commit and tag signatures; the agent's own approval, if it has one, still
-applies on top.
+commit and tag signatures with your signing key: `git.signingKey`, or the
+`user.signingKey` of your global git config on the host. With any other key
+in the agent a git signature asks too. The agent's own approval, if it has
+one, still applies on top.
 
 If your shell config sets `SSH_AUTH_SOCK` unconditionally (e.g. home-manager
 session variables, which the shell inside sources too with

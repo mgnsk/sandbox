@@ -130,9 +130,10 @@ router and left out of the command's environment, sent as Basic
 port. The secret is on no command line, which other users of the host could
 read: bwrap takes its arguments from a file only the user can read.
 
-For the two API hosts (`TOKEN_HOSTS`), it answers the TLS handshake itself,
-with a certificate from a CA it generated at startup. The CA's key exists only
-in the proxy's memory and dies with it. Its certificate is trusted
+For the two API hosts (`ghproxy.TokenHosts`), it answers the TLS handshake
+itself, with a certificate from a CA it generated at startup. The CA's key
+exists only in the proxy's memory and dies with it, and its name constraints
+limit what it can sign for to those hosts. Its certificate is trusted
 sandbox-wide (`SSL_CERT_FILE`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and
 `REQUESTS_CA_BUNDLE` all name `SANDBOX_CA_FILE`, the system bundle plus the guards' CAs, which is
 also bound over the system bundle at `/etc/ssl/certs/ca-bundle.crt`), so any
@@ -142,17 +143,26 @@ router sends to a guard ever meet one. Inside the tunnel, per request, it:
 
 - requires `Host` to be the `CONNECT` target;
 - drops the client's `Authorization` and adds the real token;
-- forwards REST `GET`/`HEAD` and GraphQL documents containing only queries;
+- forwards REST `GET`/`HEAD`, and GraphQL documents containing only queries
+  when they come as the endpoint is known to take them: a `POST` of JSON,
+  with no query in the URL;
 - holds everything else - REST writes, GraphQL mutations and subscriptions,
-  anything it can't parse - for a popup (see "Popup answers");
-- refuses chunked request bodies, and requests with more than one `Host` or
-  `Content-Length`.
+  anything it can't parse - for a popup (see "Popup answers"). The popup
+  shows what would be written: a JSON body of up to 256 kB (its first 32 kB;
+  any other body is said to be there, with its size and type), and for
+  GraphQL the operations, the document and the variables;
+- refuses protocol upgrades (`Upgrade`), and drops the headers that have a
+  server treat a request as another method (`X-HTTP-Method-Override`, ...).
+
+Requests are read and written again by Go's HTTP server and client, never
+passed on as bytes, so a request can't be smuggled in another's body; one
+with more than one `Host`, or conflicting `Content-Length`s, is refused.
 
 The router sends only the two API hosts here; `github.com`, the download
 hosts and everything else it dials itself. The proxy still tunnels the
 download hosts and `github.com` unread, without a token, for a client that
-talks to it directly, and intercepts and refuses every other host, so it
-can't be used to reach the host's own services.
+talks to it directly, and refuses every other host, so it can't be used to
+reach the host's own services.
 
 The gate is the proxy, not `gh`: anything in the sandbox that honors
 `HTTPS_PROXY` - curl, a script, an npm package - reaches it through the
@@ -199,7 +209,10 @@ intercepts the rest; it tunnels none, and per request:
 - refuses Forgejo's OAuth endpoints (`/login/oauth/...`, path cleaned and
   lowercased first), where `fj auth login` would trade its code for a token
   stored inside;
-- forwards `GET`/`HEAD`, and holds everything else for a popup.
+- forwards `GET`/`HEAD`, and holds everything else for a popup, which
+  shows a JSON body as the GitHub guard's does.
+
+Its CA is constrained to the instances there's a token for.
 
 ## Token commands
 
@@ -277,12 +290,38 @@ The host's `xdg-open` chooses an application from the scheme or file type, so
 on sandbox-chosen input it could start any host handler. The guard only passes
 it printable-ASCII `http`/`https` URLs with a host and no user info, never
 through a shell, and only after a popup (default no) showing the host, the
-whole URL and the requesting process. No terminal means no opening.
+whole URL and what the requesting process says of itself (its command line
+and directory are its own words). A host with a percent-escape is refused:
+decoded, it could show as a name it isn't. No terminal means no opening.
 
 An approved URL still loads in the real browser with the user's logins, so it
 can send a GET to a site they're signed in to or reach a browser exploit, and
 the sandbox has no need of the browser to fetch ordinary pages. The popup is
 what stands between sandboxed code and that session, so read the host.
+
+## SSH agent: every signature asks, but git's with its key
+
+Inside, `SSH_AUTH_SOCK` is ssh-agent-guard's socket (`internal/sshagent`),
+never the agent's own. The guard passes on listing the keys and, after a
+popup, signing; adding, removing and locking keys and every extension are
+refused, unforwarded.
+
+- **A signature is whatever its key is trusted for.** The guard sees the
+  data to sign, not who will check it: a login's names the user but not the
+  server, so an approved login may be to any host that takes the key. The
+  popup says which kind it is - a login and its user name, an
+  `ssh-keygen -Y sign` signature and its namespace, or neither - and the
+  key's fingerprint.
+- **Commit and tag signatures don't ask**, with the key git inside signs
+  with: `git.signingKey` (or its command's output), and the `user.signingKey`
+  of your global git config on the host, which the launcher reads at start
+  (`git config --global`, run from `/`). Sandboxed code can therefore sign
+  any commit or tag as you with that key, and push it where it can push.
+  With any other key in the agent - one meant for logging in somewhere - a
+  git signature asks like the rest.
+- **The agent's own restrictions on where a key may be used**
+  (`ssh-add -h`) don't hold through the guard: it refuses the
+  `session-bind` extension they rest on, so the agent sees local use.
 
 ## Secret Service: the host's keyring, one project's items
 
@@ -359,8 +398,10 @@ bound for it.
 
 ## Popup answers
 
-Every popup takes `y` (this request), `A` (always in this sandbox) or `N`, the
-default, followed by Enter. No terminal, or a popup that fails, means no.
+Every popup takes `y` (this request), `A` (always in this sandbox), `N`, the
+default, or `D` (never in this sandbox: no, to this and every later request
+of that guard, unasked - what stops a sandbox that keeps asking), followed by
+Enter. No terminal, or a popup that fails, means no.
 
 The launcher draws the popups itself (`internal/popuprelay`). It runs the
 sandbox on a pty of its own and is the only process holding the real
@@ -369,7 +410,8 @@ key goes to the popup: sandboxed code can't type an answer, draw over the
 popup or read what's typed. Keys typed in the first half second of a popup
 are dropped, as they were meant for whatever was on screen before it - a
 request timed to catch a `y` typed into the sandbox's own prompt gets
-nothing. The text is drawn with anything non-printable replaced, and
+nothing. Nor is what the terminal itself sends in answer to a query the
+sandbox made before the popup (its title, its colors) taken for keys. The text is drawn with anything non-printable replaced, and
 wrapped rather than cut, with the line count shown when it needs scrolling.
 Guards reach the launcher over a socket in a private directory of its own in
 `$XDG_RUNTIME_DIR`, which is never bound in and which no project can be in.
@@ -429,7 +471,7 @@ So `A` takes the user out of the loop for anything sandboxed code does next:
   guard sees neither the destination nor what the session is for, so this isn't
   limited to `git push`.
 - **gh** / **fj**: any write the token allows, in any repo it reaches.
-- **URLs**: any URL `validate_url` passes, loaded unseen in the logged-in
+- **URLs**: any URL `openurl.Validate` passes, loaded unseen in the logged-in
   browser - the risk described above, with no host left to read.
 
 ## Host userland: none

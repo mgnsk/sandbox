@@ -92,9 +92,10 @@ func serve(t *testing.T, path string, handle func(net.Conn)) {
 	t.Cleanup(cancel)
 }
 
-// guard starts an ssh-agent-guard in front of the agent; a client of it.
-func (w *world) guard(t *testing.T) func() agent.ExtendedAgent {
-	g := &Guard{Upstream: filepath.Join(w.dir, "agent.sock"), Ask: w.popups.Ask}
+// guard starts an ssh-agent-guard in front of the agent, with signing as
+// git's signing keys; a client of it.
+func (w *world) guard(t *testing.T, signing ...ssh.PublicKey) func() agent.ExtendedAgent {
+	g := &Guard{Upstream: filepath.Join(w.dir, "agent.sock"), Ask: w.popups.Ask, SigningKeys: signing}
 	path := filepath.Join(t.TempDir(), "guard.sock")
 	serve(t, path, g.Handle)
 	return func() agent.ExtendedAgent {
@@ -166,11 +167,12 @@ func TestSignatures(t *testing.T) {
 	}
 }
 
-// Commit and tag signatures, in git's namespace, go through without asking;
-// other or malformed SSHSIG blobs ask like any other signature.
+// Commit and tag signatures, in git's namespace and with git's signing key,
+// go through without asking; other or malformed SSHSIG blobs ask like any
+// other signature.
 func TestCommitSignaturesSkipThePopup(t *testing.T) {
 	w := newWorld(t, "me@laptop")
-	client := w.guard(t)
+	client := w.guard(t, w.key)
 	if _, err := client().Sign(w.key, sshsig("git")); err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +217,51 @@ func TestEverythingElseIsRefused(t *testing.T) {
 	}
 }
 
+// Only with git's signing key: any other key the agent holds - one meant
+// for logging in somewhere - would otherwise sign commits as the user,
+// unasked.
+func TestCommitSignaturesWithAnotherKeyAsk(t *testing.T) {
+	w := newWorld(t, "login key")
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	signing, _ := ssh.NewSignerFromKey(other)
+	for name, client := range map[string]func() agent.ExtendedAgent{
+		"no signing key":      w.guard(t),
+		"another signing key": w.guard(t, signing.PublicKey()),
+	} {
+		if _, err := client().Sign(w.key, sshsig("git")); err == nil {
+			t.Errorf("%s: signed without asking", name)
+		}
+	}
+	asked := w.popups.Asked()
+	if len(asked) != 2 || !strings.Contains(asked[0].Text, "  signing:  a git commit or tag, with a key that isn't your signing key\n") {
+		t.Errorf("asked %+v", asked)
+	}
+}
+
+// The popup says what kind of thing is signed, by the form its verifier
+// takes it in.
+func TestSigned(t *testing.T) {
+	login := ssh.Marshal(struct {
+		Session               []byte
+		Type                  byte
+		User, Service, Method string
+		HasSig                bool
+		Algo                  string
+		Key                   []byte
+	}{[]byte("session id"), msgUserauthRequest, "git", "ssh-connection", "publickey", true, "ssh-ed25519", []byte("key")})
+	for want, data := range map[string][]byte{
+		`an ssh login as "git", to a server the guard can't know`:     login,
+		`a signature for "file" (ssh-keygen -Y sign)`:                 sshsig("file"),
+		`a git commit or tag, with a key that isn't your signing key`: sshsig("git"),
+		"data of no known kind (7 bytes)":                             []byte("session"),
+		"data of no known kind (6 bytes)":                             []byte("SSHSIG"),
+	} {
+		if got := signed(data); got != want {
+			t.Errorf("%q, want %q", got, want)
+		}
+	}
+}
+
 func second[T any](_ T, err error) error { return err }
 
 func TestPopupText(t *testing.T) {
@@ -235,6 +282,8 @@ func TestPopupText(t *testing.T) {
 	text := asked[1].Text
 	for _, want := range []string{
 		"Allow SSH agent to sign?\n\n",
+		"  signing:  data of no known kind (7 bytes)\n",
+		"  key:      " + ssh.FingerprintSHA256(w.key) + "\n",
 		"  cwd:      " + wd + "\n",
 		"  command:  " + os.Args[0],
 		"  comment:  ?[31mred" + strings.Repeat("a", 192) + "…\n",

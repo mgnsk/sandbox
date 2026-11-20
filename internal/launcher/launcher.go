@@ -54,6 +54,8 @@ type launcher struct {
 	stateDir, volumeDir    string
 	// The Wayland guard's allowlist of globals; nil without the guard.
 	wayland []string
+	// The keys git inside signs with, for the ssh agent guard.
+	signingKeys []string
 }
 
 // signalError is a signal that stopped the start.
@@ -218,18 +220,27 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 
 	inside := insideEnv(l.cfg, prof, l.vars)
 	env = withProjectSigning(env, m)
+	// The host's git identity: for git.fromHost, and its signing key for
+	// the ssh agent guard either way - git inside may be on the user's own
+	// git config, which home-manager links in.
+	var host hostGit
+	if !l.opts.Eval && (gitFromHost(env, m) || l.cfg.Guards.SSHAgent.Enable) {
+		host = readHostGit(ctx, l.home)
+	}
 	if gitFromHost(env, m) {
 		if env == nil {
 			env = &localConfig{}
 		}
-		readHostGit(ctx, l.home).fill(env)
+		host.fill(env)
 	}
 	if env != nil {
 		if err := env.resolveSigningKey(ctx, l); err != nil {
 			return nil, nil, err
 		}
 		env.setGit(inside)
+		l.signingKeys = append(l.signingKeys, env.GitSigningKey)
 	}
+	l.signingKeys = append(l.signingKeys, host.SigningKey)
 	a := baseArgs(l.cfg, inside)
 	a.add("--hostname", hostName(l.project))
 	// Must precede every mount under $HOME - bwrap layers mounts in argv
@@ -379,7 +390,7 @@ func (l *launcher) homeVolume() string {
 func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, prof profile) error {
 	gc := l.cfg.Guards
 	if gc.SSHAgent.Enable {
-		if err := g.sshAgent(ctx, a, l.vars); err != nil {
+		if err := g.sshAgent(ctx, a, l.vars, l.signingKeys); err != nil {
 			return err
 		}
 		// The hosts the host already trusts, where ssh reads system-wide

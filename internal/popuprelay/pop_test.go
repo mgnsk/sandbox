@@ -55,7 +55,23 @@ func TestFeed(t *testing.T) {
 		{"x\by\r", popup.Once},
 		{"a\x15\r", popup.No},
 		{"\x1b[Ay\r", popup.Once}, // Scrolling never types.
+		{"d\r", popup.Never},
+		{"D\r", popup.Never},
+		// What a terminal answers a query of the sandbox's with - its
+		// title, a color, a setting - is no key, however it ends.
+		{"\x1b]ly\x1b\\\r", popup.No},
+		{"\x1b]11;rgb:0000/0000/0000\ay\r", popup.Once},
+		{"\x1bP1$ry\x1b\\a\r", popup.Always},
+		{"\x1b_Gi=1;y\x1b\\\r", popup.No},
+		{"n\x1b]0;y", ""}, // Unterminated: all of it.
 	} {
+		if tc.want == "" {
+			p := newPop("g", "text", 24, 80, now)
+			if _, ok := p.feed([]byte(tc.keys), now); ok || p.typed != "n" {
+				t.Errorf("%q: typed %q", tc.keys, p.typed)
+			}
+			continue
+		}
 		p := newPop("g", "text", 24, 80, now)
 		if got, ok := p.feed([]byte(tc.keys), now); !ok || got != tc.want {
 			t.Errorf("%q: %q, %v", tc.keys, got, ok)

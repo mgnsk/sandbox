@@ -1,12 +1,13 @@
 // Package sshagent is ssh-agent-guard: an SSH agent proxy that gates every
 // signature behind a popup.
 //
-//	sandbox-bin ssh-agent-guard UPSTREAM_SOCKET
+//	sandbox-bin ssh-agent-guard UPSTREAM_SOCKET SIGNING_KEYS
 //
 // It sits between a sandboxed client and the real SSH agent socket. Identity
 // listing is forwarded untouched; sign requests reach the real agent after
 // the user approves a popup, except commit/tag signatures (see
-// gitSignature), which are forwarded without a prompt. Everything else is
+// gitSignature) with one of SIGNING_KEYS (public keys, a line each), which
+// are forwarded without a prompt. Everything else is
 // refused here and never forwarded: the rest of the protocol mutates the
 // agent, and this proxy's whole job is to keep the sandbox from reaching
 // past it. Notably that blocks lock, which would let a sandboxed process lock
@@ -22,7 +23,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -40,6 +43,12 @@ var errRefused = errors.New("refused by ssh-agent-guard")
 // Guard proxies clients to the agent at Upstream.
 type Guard struct {
 	Upstream string
+	// SigningKeys are the keys git inside signs commits and tags with:
+	// only with these does such a signature need no approval. With any
+	// key the agent holds, unasked signatures would let sandboxed code
+	// sign commits as the user with a key that was only ever meant to log
+	// in somewhere.
+	SigningKeys []ssh.PublicKey
 	// Ask asks the user to approve a signature; popup.Ask if nil.
 	Ask func(name, text string) popup.Answer
 
@@ -84,9 +93,10 @@ func (g *Guard) comment(key ssh.PublicKey) string {
 }
 
 // allow says whether a signature may be asked of the agent: commit
-// signatures without asking, anything else as the popup decides.
+// signatures with a signing key without asking, anything else as the popup
+// decides.
 func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer) bool {
-	if gitSignature(data) {
+	if gitSignature(data) && g.signingKey(key) {
 		return true
 	}
 	ask := g.Ask
@@ -95,10 +105,56 @@ func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer) bool {
 	}
 	return g.approvals.Approve(func() popup.Answer {
 		return ask("ssh-agent-guard", "Allow SSH agent to sign?\n\n"+
+			"  signing:  "+popup.CleanLimit(signed(data), displayLimit)+"\n"+
+			"  key:      "+ssh.FingerprintSHA256(key)+"\n"+
+			"  comment:  "+popup.CleanLimit(g.comment(key), displayLimit)+"\n"+
 			"  cwd:      "+popup.CleanLimit(who.Cwd, displayLimit)+"\n"+
-			"  command:  "+popup.CleanLimit(who.Cmdline, displayLimit)+"\n"+
-			"  comment:  "+popup.CleanLimit(g.comment(key), displayLimit)+"\n")
+			"  command:  "+popup.CleanLimit(who.Cmdline, displayLimit)+"\n")
 	})
+}
+
+func (g *Guard) signingKey(key ssh.PublicKey) bool {
+	blob := key.Marshal()
+	for _, k := range g.SigningKeys {
+		if bytes.Equal(k.Marshal(), blob) {
+			return true
+		}
+	}
+	return false
+}
+
+// SSH_MSG_USERAUTH_REQUEST.
+const msgUserauthRequest = 50
+
+// signed says what kind of thing data, about to be signed, is: the
+// requester chose its content, but not the form a verifier takes it in. A
+// login's data begins with its session and names the user, never the
+// server; an SSHSIG signature names the namespace its verifier checks.
+func signed(data []byte) string {
+	if rest, ok := bytes.CutPrefix(data, []byte("SSHSIG")); ok {
+		var blob struct {
+			Namespace string
+			Rest      []byte `ssh:"rest"`
+		}
+		if ssh.Unmarshal(rest, &blob) == nil {
+			if blob.Namespace == "git" {
+				return "a git commit or tag, with a key that isn't your signing key"
+			}
+			return fmt.Sprintf("a signature for %q (ssh-keygen -Y sign)", blob.Namespace)
+		}
+	}
+	var auth struct {
+		Session []byte
+		Type    byte
+		User    string
+		Service string
+		Method  string
+		Rest    []byte `ssh:"rest"`
+	}
+	if ssh.Unmarshal(data, &auth) == nil && auth.Type == msgUserauthRequest && strings.HasPrefix(auth.Method, "publickey") {
+		return fmt.Sprintf("an ssh login as %q, to a server the guard can't know", auth.User)
+	}
+	return fmt.Sprintf("data of no known kind (%d bytes)", len(data))
 }
 
 // gitSignature says whether data is what `ssh-keygen -Y sign -n git` (git
@@ -156,13 +212,19 @@ func (a *gated) Extension(string, []byte) ([]byte, error) {
 	return nil, agent.ErrExtensionUnsupported
 }
 
-// Run serves on the launcher's socket until stopped.
-func Run(ctx context.Context, upstream string) error {
+// Run serves on the launcher's socket until stopped; signingKeys are public
+// keys, a line each.
+func Run(ctx context.Context, upstream, signingKeys string) error {
 	ln, err := guard.Listener()
 	if err != nil {
 		return err
 	}
 	g := &Guard{Upstream: upstream}
+	for line := range strings.Lines(signingKeys) {
+		if key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line)); err == nil {
+			g.SigningKeys = append(g.SigningKeys, key)
+		}
+	}
 	if err := guard.Ready(struct{}{}); err != nil {
 		return err
 	}

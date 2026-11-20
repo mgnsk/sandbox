@@ -43,6 +43,7 @@ type Host struct {
 	conn    *dbus.Conn
 	project string
 	prompts sync.Mutex // One host prompt at a time.
+	unlock  sync.Mutex // One unlocking at a time.
 }
 
 // ConnectHost connects to the host's session bus at address, as project's
@@ -120,6 +121,15 @@ func (h *Host) collection(unlock bool) (dbus.ObjectPath, error) {
 	if !unlock {
 		return "", nil
 	}
+	// One at a time: requests that come in meanwhile find it unlocked,
+	// rather than each bringing up a prompt of its own.
+	h.unlock.Lock()
+	defer h.unlock.Unlock()
+	if locked, err := h.object(path).GetProperty(collectionIface + ".Locked"); err == nil {
+		if l, _ := locked.Value().(bool); !l {
+			return path, nil
+		}
+	}
 	var unlocked []dbus.ObjectPath
 	var prompt dbus.ObjectPath
 	if err := h.call(servicePath, serviceIface+".Unlock", []dbus.ObjectPath{path}).Store(&unlocked, &prompt); err != nil {
@@ -159,7 +169,11 @@ func (h *Host) prompt(path dbus.ObjectPath) (dbus.Variant, error) {
 	defer cancel()
 	for {
 		select {
-		case s := <-signals:
+		case s, ok := <-signals:
+			if !ok {
+				// Closed with the connection.
+				return dbus.Variant{}, errors.New("the host's session bus is gone")
+			}
 			if s.Path != path || s.Name != promptIface+".Completed" || len(s.Body) != 2 {
 				continue
 			}
