@@ -227,13 +227,14 @@ func TestAManifestCannotBringAHostDirectoryIn(t *testing.T) {
 	os.Mkdir(secret, 0o755)
 	os.WriteFile(filepath.Join(secret, "managed-settings.json"), []byte(`{"host": "TOPSECRET"}`), 0o644)
 	// Planted from inside, before the project has a sandbox.nix.
-	planted := strings.TrimSpace(p.run(t, `ln -s "$SECRET" "$HOME/dir"
+	// (The environment doesn't reach the inside: the path is in the script.)
+	planted := strings.TrimSpace(p.run(t, `ln -s '`+secret+`' "$HOME/dir"
 dir=$(nix-store --add "$HOME/dir")
 printf '{"claudeDir": "%s", "binds": [], "hostPorts": [], "command": null}' "$dir" > "$HOME/manifest.json"
 manifest=$(nix-store --add "$HOME/manifest.json")
 echo "if grep -qzx build /proc/\$\$/cmdline; then echo $manifest; exit 0; fi" > "$HOME/.bash_profile"
 echo "$dir"
-`, map[string]string{"SECRET": secret}).ok(t).stdout)
+`, nil).ok(t).stdout)
 	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte("{ ... }: { }\n"), 0o644)
 	r := p.run(t, "readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; ls /etc/claude-code/\n", nil)
 	// The planted path was taken - and leads nowhere inside.
