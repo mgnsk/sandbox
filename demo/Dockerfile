@@ -1,5 +1,6 @@
 # A plain Debian with a multi-user nix install and a user without any
-# dotfiles, to try the sandbox the way a new user meets it. See `make demo`.
+# dotfiles, to try the sandbox the way a new user meets it: entrypoint.sh
+# sets up one of the demos. See `make demo-flake` and `make demo-home-manager`.
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -15,10 +16,8 @@ RUN curl -fsSL https://nixos.org/nix/install | sh -s -- --daemon --yes
 RUN printf '%s\n' 'experimental-features = nix-command flakes' 'sandbox = false' >> /etc/nix/nix.conf \
 	&& git config --system --add safe.directory '*'
 
-RUN useradd --create-home --shell /bin/bash tester \
-	&& mkdir /home/tester/project \
-	&& chown tester:tester /home/tester/project
+RUN useradd --create-home --shell /bin/bash tester
 
 COPY entrypoint.sh /entrypoint.sh
-WORKDIR /home/tester/project
+WORKDIR /home/tester
 ENTRYPOINT ["/entrypoint.sh"]

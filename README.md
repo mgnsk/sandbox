@@ -944,7 +944,12 @@ make test              # everything: all tests against a fresh build, and lint
 make test RUN=HostPort # only the tests matching a go test -run filter, no lint
 make coverage          # line coverage of the Go code by the tests
 make fmt               # format Go and nix files
+make demo-flake        # a fresh user in a container: a project with flake.nix and sandbox.nix
+make demo-home-manager # the same with the sandbox from a home-manager config
 ```
+
+The demos ([demo/](demo)) run on the host, in Docker, and take the sandbox
+from `github:mgnsk/sandbox` like `nix run` does, not from the checkout.
 
 The launcher, init and the guards are subcommands of one Go binary,
 `sandbox-bin` (`cmd/sandbox-bin`, `internal/`); `sandbox-bin --help` lists
