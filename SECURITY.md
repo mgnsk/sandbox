@@ -41,6 +41,15 @@ The only host-backed paths writable from inside are:
   `<state dir>/<volume>/`, outside the mount, out of the sandbox's reach.
   Tokens and keys are never written there, or anywhere.
 
+The project is bound read-write whole, so the launcher refuses to start
+where that would cover host state: a project that is or contains `$HOME`,
+the state dir, `/tmp`, `$TMPDIR`, `$XDG_RUNTIME_DIR` or a system directory
+(`/run`, `/etc`, `/nix`, ...), or one in `$XDG_RUNTIME_DIR` or a dot
+directory of `$HOME`. Over the sandbox's own `/tmp` or runtime dir, the
+host's would bring its sockets in: tmux, the session bus, an ssh agent. A
+`.git` only makes its directory the project when that directory is the
+user's own - not one another user left in `/tmp`.
+
 Everything else the sandbox needs (`/nix`, configured reference binds, home-manager-generated
 config) is mounted **read-only**. Home-manager files, when enabled, reach the
 volume as symlinks `sandbox-bin init` creates from inside the sandbox, into the
@@ -74,8 +83,10 @@ when `sandbox` starts, or in `hostPorts` (the user's config, or an approved
   `prohibit` routes in the namespace before bwrap drops capabilities.
 
 The address list is a snapshot: an address the host gains after the sandbox
-started stays reachable until the next start. Other machines on the LAN or
-tailnet are not restricted.
+started stays reachable until the next start. A cloud host's metadata
+service (`169.254.169.254`), which hands out the instance's credentials, is
+prohibited the same way. Other machines on the LAN or tailnet are not
+restricted.
 
 The GitHub and Forgejo guards' proxies are mapped the same way, on ports
 picked at start; they take only requests carrying their per-launch secret.
@@ -116,7 +127,8 @@ loopback, which pasta's `-T` maps into the sandbox, and only takes a `CONNECT`
 carrying a random per-launch secret (`SANDBOX_GH_PROXY`, handed to the
 router and left out of the command's environment, sent as Basic
 `Proxy-Authorization`), since anything on the host's loopback can reach the
-port.
+port. The secret is on no command line, which other users of the host could
+read: bwrap takes its arguments from a file only the user can read.
 
 For the two API hosts (`TOKEN_HOSTS`), it answers the TLS handshake itself,
 with a certificate from a CA it generated at startup. The CA's key exists only
@@ -358,8 +370,8 @@ are dropped, as they were meant for whatever was on screen before it - a
 request timed to catch a `y` typed into the sandbox's own prompt gets
 nothing. The text is drawn with anything non-printable replaced, and
 wrapped rather than cut, with the line count shown when it needs scrolling.
-Guards reach the launcher over a socket in its private temp dir, never bound
-in.
+Guards reach the launcher over a socket in a private directory of its own in
+`$XDG_RUNTIME_DIR`, which is never bound in and which no project can be in.
 
 ### As desktop notifications too
 
@@ -455,10 +467,17 @@ treated as untrusted input:
 
 - It's evaluated by nix inside a nested sandbox of the project, never on the
   host: host evaluation could read any host file into the world-readable
-  store. The host only reads the resulting manifest, a JSON file in the
-  store, and checks every field (store paths, string maps, bind shapes)
-  before use. sandbox.nix itself is read on the host only for the cache key,
-  and never through a symlink.
+  store. That sandbox gets no guards, tokens or host ports. The host only
+  reads the resulting manifest, a JSON file in the store, and checks every
+  field (store paths, string maps, bind shapes) before use. sandbox.nix
+  itself is read on the host only for the cache key, and never through a
+  symlink.
+- The manifest is whatever the code in that sandbox printed, and a store
+  path can be a link to anywhere. So the manifest is read only as a regular
+  file that is a store path itself, and the Claude config it names is never
+  resolved on the host: it reaches the sandbox as a link at
+  `/etc/claude-code`, followed inside, where it can only lead to what the
+  sandbox has anyway.
 - It can't change anything that runs on the host: the launcher, bwrap, pasta,
   seccomp, the guards and their settings come from the configuration
   the sandbox was started with. What it sets otherwise (command, Claude config) runs
@@ -470,6 +489,13 @@ treated as untrusted input:
   evaluation cache live in the project's volume dir, outside the home volume,
   where the sandbox can't write; without a terminal the sandbox doesn't
   start.
+- What's approved is what's shown. A command, bind or port with a control
+  character - an escape sequence or carriage return that would show
+  something else than what then runs - is refused, and what was typed
+  before the question doesn't answer it. A bind is approved for where it
+  leads: its source must be an absolute path outside the project and the
+  state dir, which the sandbox writes, and one that resolves elsewhere than
+  it did when approved is asked about again.
 
 ## Per-user project settings (.sandbox.yml)
 
@@ -488,7 +514,17 @@ host, for a fixed set of keys, from `/` - never in the project, whose `.git`
 the sandbox can write - and reads a signing key's `.pub` file without
 following a link at its last component. The values only set git's
 environment inside. All host commands (token and signing key commands) run
-from `/` too, so nothing the sandbox wrote in the project reaches them.
+from `/` too, as the guards and what they start do (the host's `xdg-open`,
+the browser), so nothing the sandbox wrote in the project reaches them.
+
+## Profiles
+
+A profile of the user's config applies by where the sandbox starts (`paths`)
+or by a file in the project's root (`projectFiles`). The sandbox writes the
+project, so it can make the second kind apply at its next start: such a
+profile can only set Claude config, which stays inside. Binds and token
+commands need a profile picked by `paths` alone; the configuration fails to
+build otherwise.
 
 ## Where the configuration comes from
 

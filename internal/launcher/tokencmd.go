@@ -28,7 +28,7 @@ func forgejoHosts(from string, commands map[string]string) (map[string]string, e
 	for name, c := range commands {
 		host, ok := hostname.Normalize(name)
 		if !ok {
-			return nil, fmt.Errorf("%s: not a Forgejo host: %s", from, name)
+			return nil, fmt.Errorf("%s: not a Forgejo host: %q", from, name)
 		}
 		out[host] = c
 	}

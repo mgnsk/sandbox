@@ -52,6 +52,34 @@ assert fails [ { packages = [ pkgs.hello ]; } ];
 assert fails [ { basePackages = [ ]; } ];
 assert fails [ { claude.package = pkgs.hello; } ];
 assert fails [ { env.EDITOR = "nvim"; } ];
+# A file in the project, which the sandbox writes, picks no profile with
+# more of the host; one with claude.* alone is fine.
+assert fails [
+  {
+    profiles.x = {
+      projectFiles = [ "flake.nix" ];
+      binds = [ { src = "~/data"; } ];
+    };
+  }
+];
+assert fails [
+  {
+    profiles.x = {
+      projectFiles = [ "flake.nix" ];
+      paths = [ "~/work" ];
+      guards.github.tokenCommand = "true";
+    };
+  }
+];
+assert
+  !fails [
+    {
+      profiles.x = {
+        projectFiles = [ "flake.nix" ];
+        claude.memory = "nix";
+      };
+    }
+  ];
 # The API guards have no switch.
 assert fails [ { guards.github.enable = false; } ];
 assert fails [ { guards.forgejo.enable = true; } ];

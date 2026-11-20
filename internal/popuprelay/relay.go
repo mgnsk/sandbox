@@ -144,7 +144,9 @@ func run(in, out *os.File, cmd *exec.Cmd, ln net.Listener, signals <-chan os.Sig
 	_ = unix.IoctlSetTermios(int(slave.Fd()), unix.TCSETS, attrs)
 	_ = pty.InheritSize(in, master)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	// With the launcher killed there's no one to relay the terminal or
+	// answer the guards: the sandbox goes too.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Pdeathsig: syscall.SIGTERM}
 	err = cmd.Start()
 	slave.Close()
 	if err != nil {

@@ -135,7 +135,9 @@ func launch() *cli.Command {
 			&cli.BoolFlag{Name: "reload", Destination: &opts.Reload,
 				Usage: "evaluate sandbox.nix again, even if unchanged"},
 			&cli.BoolFlag{Name: "no-project-config", Destination: &opts.NoProjectConfig,
-				Usage: "ignore sandbox.nix"},
+				Usage: "ignore sandbox.nix and .sandbox.yml"},
+			&cli.BoolFlag{Name: "eval", Destination: &opts.Eval, Hidden: true,
+				Usage: "the sandbox sandbox.nix is evaluated in: no project config, guards or host ports"},
 		},
 		OnUsageError: usageError("sandbox", " (put -- before a command starting with -)", 1),
 		Action: func(_ context.Context, cmd *cli.Command) error {

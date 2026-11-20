@@ -62,8 +62,10 @@ func TestPastaInner(t *testing.T) {
 	os.WriteFile(ip, []byte("#!/bin/sh\necho \"ip $*\" >> "+log+"\n"), 0o755)
 	seccomp := filepath.Join(dir, "seccomp.bpf")
 	os.WriteFile(seccomp, make([]byte, 8), 0o644)
-	cmd := exec.Command(bash, "-c", pastaInner, "bash", ip, seccomp, "2", "10.0.0.1", "100.1.2.3",
-		"sh", "-c", `echo "run $*" >> `+log+`; test -e /proc/self/fd/10`, "sh", "a")
+	args := filepath.Join(dir, "args")
+	os.WriteFile(args, []byte("--x\x00"), 0o600)
+	cmd := exec.Command(bash, "-c", pastaInner, "bash", ip, seccomp, args, "2", "10.0.0.1", "100.1.2.3",
+		"sh", "-c", `echo "run $*" >> `+log+`; test -e /proc/self/fd/10 && [ "$(tr '\0' . <&11)" = --x. ]`, "sh", "a")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
@@ -76,7 +78,7 @@ func TestPastaInner(t *testing.T) {
 func TestPastaArgv(t *testing.T) {
 	cfg := &config{Seccomp: "/s.bpf"}
 	cfg.Tools.Pasta, cfg.Tools.Bash, cfg.Tools.IP, cfg.Tools.Bwrap = "pasta", "bash", "ip", "bwrap"
-	argv := pastaArgv(cfg, nil, nil, []string{"10.0.0.1"}, []string{"--x"}, "")
+	argv := pastaArgv(cfg, nil, nil, []string{"10.0.0.1"}, "/args", []string{"init", "x"}, "")
 	opt := func(argv []string, flag string) string { return argv[slices.Index(argv, flag)+1] }
 	for flag, want := range map[string]string{
 		"-T": "none", "-U": "none", "--map-host-loopback": "none", "--map-guest-addr": "none", "-t": "127.0.0.1/1-65535,auto",
@@ -89,10 +91,10 @@ func TestPastaArgv(t *testing.T) {
 		t.Errorf("%q", argv)
 	}
 	inner := argv[slices.Index(argv, "--")+1:]
-	if !slices.Equal(inner[3:], []string{"bash", "ip", "/s.bpf", "1", "10.0.0.1", "bwrap", "--seccomp", "10", "--x"}) {
+	if !slices.Equal(inner[3:], []string{"bash", "ip", "/s.bpf", "/args", "1", "10.0.0.1", "bwrap", "--seccomp", "10", "--args", "11", "init", "x"}) {
 		t.Errorf("%q", inner)
 	}
-	argv = pastaArgv(cfg, []string{"5037", "1"}, []string{"53"}, nil, nil, "127.0.0.53")
+	argv = pastaArgv(cfg, []string{"5037", "1"}, []string{"53"}, nil, "/args", nil, "127.0.0.53")
 	if opt(argv, "-T") != "5037,1" || opt(argv, "-U") != "53" || opt(argv, "--dns-forward") != dnsForwardAddr || opt(argv, "--dns-host") != "127.0.0.53" {
 		t.Errorf("%q", argv)
 	}
@@ -155,6 +157,27 @@ func TestChecks(t *testing.T) {
 	if err := checkOutside("/data/statex", "/data/state"); err != nil {
 		t.Error(err)
 	}
+	// What a read-write bind would lay the host's sockets over.
+	t.Setenv("TMPDIR", "/var/scratch")
+	for cwd, want := range map[string]string{
+		"/":                 "it contains",
+		"/tmp":              "it contains /tmp",
+		"/var":              "it contains /var/",
+		"/var/scratch":      "it contains /var/scratch",
+		"/run":              "it contains /run",
+		"/run/user/7":       "host state in $XDG_RUNTIME_DIR",
+		"/run/user/7/gnupg": "host state in $XDG_RUNTIME_DIR",
+		"/nix":              "it contains /nix",
+	} {
+		if err := checkSystem(cwd, "/run/user/7"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", cwd, err)
+		}
+	}
+	for _, cwd := range []string{"/tmp/p", "/var/scratch/p", "/run/media/u/disk/p", "/srv/p", "/etc/nixos"} {
+		if err := checkSystem(cwd, "/run/user/7"); err != nil {
+			t.Errorf("%s: %v", cwd, err)
+		}
+	}
 }
 
 func TestProjectRoot(t *testing.T) {
@@ -175,6 +198,11 @@ func TestProjectRoot(t *testing.T) {
 		if got := projectRoot(cwd); got != want {
 			t.Errorf("projectRoot(%s) = %s", cwd, got)
 		}
+	}
+	// Only a directory of the user's own is a work tree: not one someone
+	// else could have put a .git in, like /tmp.
+	if !ownDir(repo) || os.Getuid() != 0 && ownDir("/proc") {
+		t.Error("ownDir")
 	}
 }
 
@@ -385,10 +413,14 @@ func TestApplyProject(t *testing.T) {
 
 func TestHostAccessString(t *testing.T) {
 	access := hostAccess{
-		Binds:     []bind{{Src: "~/d", Mode: "rw"}, {Src: "/srv/x", Dst: "/x", Mode: "ro", Optional: true}},
-		HostPorts: []string{"5432"},
+		Binds: []approvedBind{{bind: bind{Src: "~/d", Mode: "rw"}, Resolved: "/mnt/d"},
+			{bind: bind{Src: "/srv/x", Dst: "/x", Mode: "ro", Optional: true}}},
+		HostPorts:          []string{"5432"},
+		GitHubTokenCommand: "one\ntwo",
 	}
-	want := "  bind ~/d (read-write)\n  bind /srv/x at /x (read-only, optional)\n  host port 5432"
+	// A command's further lines stay under it.
+	want := "  bind ~/d -> /mnt/d (read-write)\n  bind /srv/x at /x (read-only, optional)\n  host port 5432\n" +
+		"  run on this host at each start, for the GitHub token:\n    one\n    two"
 	if got := access.String(); got != want {
 		t.Errorf("%q", got)
 	}

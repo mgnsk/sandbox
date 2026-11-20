@@ -2,6 +2,7 @@
 # sandbox by the launcher as
 #   nix build --file project.nix --argstr nixpkgs ... --argstr system ...
 #     --argstr file .../sandbox.nix --argstr base <profile's claude dir or "">
+#     [--argstr claudeApiKey 1]
 # (or called with paths, as the flake's check does). Evaluated in there,
 # never on the host: sandbox.nix is the project's, which
 # the sandbox can write, and evaluating it on the host would let it read host
@@ -11,6 +12,9 @@
   system,
   file,
   base ? "",
+  # Claude Code inside runs on an API key whose command isn't sandbox.nix's
+  # own (a user's .sandbox.yml sets it): "" for no.
+  claudeApiKey ? "",
 }:
 let
   pkgs = import nixpkgs { inherit system; };
@@ -129,7 +133,7 @@ let
         {
           enabledPlugins = lib.mapAttrs' (n: _: lib.nameValuePair "${n}@sandbox" false) cfg.claude.lspServers;
         }
-        // lib.optionalAttrs (cfg.guards.claudeApiKey.tokenCommand != null) {
+        // lib.optionalAttrs (cfg.guards.claudeApiKey.tokenCommand != null || claudeApiKey != "") {
           # As for a key from the user's config (module.nix): Claude Code
           # neither logs in nor asks about the key claude-api-proxy swaps in.
           apiKeyHelper = "echo sandbox-placeholder";
