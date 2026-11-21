@@ -190,6 +190,25 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	if err := l.gitEnv(ctx, project.git, inside); err != nil {
 		return nil, nil, err
 	}
+	a, resolver, err := l.sandboxArgs(ctx, g, prof, inside)
+	if err != nil {
+		return nil, nil, err
+	}
+	args, err := g.argsFile(a)
+	if err != nil {
+		return nil, nil, err
+	}
+	addrs, err := hostAddresses()
+	if err != nil {
+		return nil, nil, err
+	}
+	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, args, l.initCommand(), resolver), g.popups, nil
+}
+
+// sandboxArgs are bwrap's arguments - the mounts, and inside as the
+// environment - and the resolver DNS is forwarded to, if any (see
+// resolvConf). The guards start here, each adding what brings it in.
+func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, inside map[string]string) (bwrapArgs, string, error) {
 	a := baseArgs(l.cfg, inside)
 	a.add("--hostname", hostName(l.project))
 	// Must precede every mount under $HOME - bwrap layers mounts in argv
@@ -201,38 +220,29 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 		// Before the guards start, so they get its path.
 		if popuprelay.Usable() {
 			if err := g.listenPopups(); err != nil {
-				return nil, nil, err
+				return a, "", err
 			}
 		}
 		if err := l.startGuards(ctx, g, &a, prof); err != nil {
-			return nil, nil, err
+			return a, "", err
 		}
 	}
 
 	if err := claudeConfig(g, &a, prof); err != nil {
-		return nil, nil, err
+		return a, "", err
 	}
 	resolver, err := l.resolvConf(g, &a)
 	if err != nil {
-		return nil, nil, err
+		return a, "", err
 	}
 	exchange, err := exchangeArgs(l.volumeDir)
 	if err != nil {
-		return nil, nil, err
+		return a, "", err
 	}
 	a.add(exchange...)
 	a.add(bindArgs(prof.Binds, l.vars, l.project)...)
 	a.add("--chdir", l.cwd)
-	args, err := g.argsFile(a)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	addrs, err := hostAddresses()
-	if err != nil {
-		return nil, nil, err
-	}
-	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, args, l.initCommand(), resolver), g.popups, nil
+	return a, resolver, nil
 }
 
 // claudeConfig puts Claude Code's managed settings, memory and MCP servers

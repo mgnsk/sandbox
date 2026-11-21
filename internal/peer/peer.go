@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode"
+
+	"github.com/mgnsk/sandbox/internal/popup"
 )
 
 // Peer is who connected: their working directory and command line, each
@@ -19,6 +21,12 @@ type Peer struct {
 	// Its session, when it has a controlling terminal; 0 without one, or
 	// when it can't be read. See popup.Request.
 	Session int
+}
+
+// Lines are a popup's lines saying who p is, each cut to limit characters.
+func (p Peer) Lines(limit int) string {
+	return "  cwd:      " + popup.CleanLimit(p.Cwd, limit) + "\n" +
+		"  command:  " + popup.CleanLimit(p.Cmdline, limit) + "\n"
 }
 
 // Describe gives the process on the other end of conn.

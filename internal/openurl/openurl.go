@@ -100,7 +100,7 @@ type Guard struct {
 	// Open hands a URL to the host; xdg-open in its own session if nil.
 	Open func(rawURL string) error
 	// Ask asks the user; popup.Ask if nil.
-	Ask func(name, text string) popup.Answer
+	Ask func(popup.Request) popup.Answer
 
 	approvals popup.Approvals
 }
@@ -155,13 +155,12 @@ func (g *Guard) confirm(rawURL string, who peer.Peer) popup.Answer {
 	u, _ := url.Parse(rawURL)
 	ask := g.Ask
 	if ask == nil {
-		ask = func(name, text string) popup.Answer { return popup.AskFrom(name, text, who.Session) }
+		ask = popup.Ask
 	}
-	return ask("open-url-guard", "Open in the host's browser?\n\n"+
-		"  host:     "+popup.Clean(u.Hostname())+"\n"+
-		"  cwd:      "+popup.CleanLimit(who.Cwd, displayLimit)+"\n"+
-		"  command:  "+popup.CleanLimit(who.Cmdline, displayLimit)+"\n\n"+
-		rawURL+"\n\n")
+	return ask(popup.Request{Name: "open-url-guard", Session: who.Session, Text: "Open in the host's browser?\n\n" +
+		"  host:     " + popup.Clean(u.Hostname()) + "\n" +
+		who.Lines(displayLimit) + "\n" +
+		rawURL + "\n\n"})
 }
 
 // xdgOpen hands a validated URL to the host's xdg-open, from PATH (which the

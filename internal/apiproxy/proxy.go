@@ -115,7 +115,7 @@ type Proxy struct {
 	// Dial reaches tunneled hosts; a net.Dialer if nil.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// Ask asks the user to approve a write; popup.Ask if nil.
-	Ask func(name, text string) popup.Answer
+	Ask func(popup.Request) popup.Answer
 
 	approvals popup.Approvals
 	once      sync.Once
@@ -255,7 +255,7 @@ func (p *Proxy) approve(description string) bool {
 		ask = popup.Ask
 	}
 	return p.approvals.Approve(func() popup.Answer {
-		return ask(p.Name, p.Title+"\n\n"+popup.CleanText(description)+"\n")
+		return ask(popup.Request{Name: p.Name, Text: p.Title + "\n\n" + popup.CleanText(description) + "\n"})
 	})
 }
 
