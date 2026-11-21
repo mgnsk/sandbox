@@ -233,23 +233,25 @@ func (g *guards) program(name string, args ...string) []string {
 }
 
 // unixGuard starts the guard name, with secret if any (see process), on a
-// socket named sock in a private dir of its own; the socket's path. The
-// socket file stays when the launcher closes its end, for the guard that
-// serves on it.
-func (g *guards) unixGuard(ctx context.Context, name, sock string, secret []byte, args ...string) (string, error) {
+// socket in a private dir of its own, bound in at inside. The socket file
+// stays when the launcher closes its end, for the guard that serves on it.
+func (g *guards) unixGuard(ctx context.Context, a *bwrapArgs, name, inside string, secret []byte, args ...string) error {
 	dir, err := g.tempdir()
 	if err != nil {
-		return "", err
+		return err
 	}
-	path := filepath.Join(dir, sock)
+	path := filepath.Join(dir, filepath.Base(inside))
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
-		return "", err
+		return err
 	}
 	ln.SetUnlinkOnClose(false)
 	defer ln.Close()
-	_, err = g.start(ctx, process{name: name, argv: g.program(name, args...), listener: ln, secret: secret})
-	return path, err
+	if _, err := g.start(ctx, process{name: name, argv: g.program(name, args...), listener: ln, secret: secret}); err != nil {
+		return err
+	}
+	a.bind(path, inside)
+	return nil
 }
 
 // close stops the guards, the last started first: a guard may need one
@@ -285,14 +287,9 @@ func (g *guards) sshAgent(ctx context.Context, a *bwrapArgs, vars map[string]str
 		fmt.Fprintln(os.Stderr, "sandbox: no ssh agent ($SSH_AUTH_SOCK unset), none inside")
 		return nil
 	}
-	sock, err := g.unixGuard(ctx, "ssh-agent-guard", "agent.sock", nil, upstream, strings.Join(signingKeys, "\n"))
-	if err != nil {
-		return err
-	}
 	inside := expand(cfg.Path, vars)
-	a.bind(sock, inside)
 	a.setenv("SSH_AUTH_SOCK", inside)
-	return nil
+	return g.unixGuard(ctx, a, "ssh-agent-guard", inside, nil, upstream, strings.Join(signingKeys, "\n"))
 }
 
 const busConf = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -438,32 +435,22 @@ func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 // socket to claude-api-proxy, which adds key - from the key command, held
 // only in its memory; the managed apiKeyHelper gives it a placeholder key.
 func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, key, runtimeDir string) error {
-	sock, err := g.unixGuard(ctx, "claude-api-proxy", "claude-api.sock", []byte(key))
-	if err != nil {
-		return err
-	}
 	inside := runtimeDir + "/claude-api.sock"
-	a.bind(sock, inside)
 	a.setenv("ANTHROPIC_UNIX_SOCKET", inside)
 	// http: plain requests on the socket, which the proxy can read.
 	a.setenv("ANTHROPIC_BASE_URL", "http://api.anthropic.com")
-	return nil
+	return g.unixGuard(ctx, a, "claude-api-proxy", inside, []byte(key))
 }
 
 // openURL: no display in here, so xdg-open (/usr/bin/xdg-open, the shim)
 // hands http(s) URLs to open-url-guard, which opens them in the host's
 // browser behind a popup.
 func (g *guards) openURL(ctx context.Context, a *bwrapArgs, runtimeDir string) error {
-	sock, err := g.unixGuard(ctx, "open-url-guard", "open-url.sock", nil)
-	if err != nil {
-		return err
-	}
-	a.bind(sock, runtimeDir+"/open-url.sock")
 	// BROWSER because Python's webbrowser doesn't try xdg-open without a
 	// display variable, and npm's open honors it when it can't detect a
 	// desktop.
 	a.setenv("BROWSER", "/usr/bin/xdg-open")
-	return nil
+	return g.unixGuard(ctx, a, "open-url-guard", runtimeDir+"/open-url.sock", nil)
 }
 
 // wayland: windows on the host's display, through wl-veil: a proxy that

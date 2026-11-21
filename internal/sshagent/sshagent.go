@@ -50,7 +50,7 @@ type Guard struct {
 	// in somewhere.
 	SigningKeys []ssh.PublicKey
 	// Ask asks the user to approve a signature; popup.Ask if nil.
-	Ask func(name, text string) popup.Answer
+	Ask func(popup.Request) popup.Answer
 
 	approvals popup.Approvals
 
@@ -101,15 +101,14 @@ func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer) bool {
 	}
 	ask := g.Ask
 	if ask == nil {
-		ask = func(name, text string) popup.Answer { return popup.AskFrom(name, text, who.Session) }
+		ask = popup.Ask
 	}
 	return g.approvals.Approve(func() popup.Answer {
-		return ask("ssh-agent-guard", "Allow SSH agent to sign?\n\n"+
-			"  signing:  "+popup.CleanLimit(signed(data), displayLimit)+"\n"+
-			"  key:      "+ssh.FingerprintSHA256(key)+"\n"+
-			"  comment:  "+popup.CleanLimit(g.comment(key), displayLimit)+"\n"+
-			"  cwd:      "+popup.CleanLimit(who.Cwd, displayLimit)+"\n"+
-			"  command:  "+popup.CleanLimit(who.Cmdline, displayLimit)+"\n")
+		return ask(popup.Request{Name: "ssh-agent-guard", Session: who.Session, Text: "Allow SSH agent to sign?\n\n" +
+			"  signing:  " + popup.CleanLimit(signed(data), displayLimit) + "\n" +
+			"  key:      " + ssh.FingerprintSHA256(key) + "\n" +
+			"  comment:  " + popup.CleanLimit(g.comment(key), displayLimit) + "\n" +
+			who.Lines(displayLimit)})
 	})
 }
 

@@ -60,11 +60,11 @@ func TestAskAt(t *testing.T) {
 
 func TestAskWithoutALauncher(t *testing.T) {
 	t.Setenv(Env, "")
-	if got := Ask("g", "text"); got != No {
+	if got := Ask(Request{Name: "g", Text: "text"}); got != No {
 		t.Errorf("no socket: %q", got)
 	}
 	t.Setenv(Env, filepath.Join(t.TempDir(), "gone.sock"))
-	if got := Ask("g", "text"); got != No {
+	if got := Ask(Request{Name: "g", Text: "text"}); got != No {
 		t.Errorf("socket gone: %q", got)
 	}
 }

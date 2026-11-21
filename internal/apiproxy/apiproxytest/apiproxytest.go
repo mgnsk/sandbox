@@ -114,10 +114,10 @@ type Popups struct {
 }
 
 // Ask is a guard's popup.Ask.
-func (p *Popups) Ask(name, text string) popup.Answer {
+func (p *Popups) Ask(req popup.Request) popup.Answer {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.asked = append(p.asked, popup.Request{Name: name, Text: text})
+	p.asked = append(p.asked, popup.Request{Name: req.Name, Text: req.Text})
 	if p.Answer == "" {
 		return popup.No
 	}

@@ -58,21 +58,15 @@ func ParseAnswer(s string) Answer {
 	return No
 }
 
-// Ask shows text in a popup at the socket in $SANDBOX_POPUP_SOCKET and
+// Ask shows req in a popup at the socket in $SANDBOX_POPUP_SOCKET and
 // blocks for the answer: No also when there's no terminal to ask on, or on
 // any failure.
-func Ask(name, text string) Answer {
-	return AskFrom(name, text, 0)
-}
-
-// AskFrom is Ask for a request from a process of the session session (see
-// Request).
-func AskFrom(name, text string, session int) Answer {
+func Ask(req Request) Answer {
 	path := os.Getenv(Env)
 	if path == "" {
 		return No
 	}
-	return AskAt(path, Request{Name: name, Text: text, Session: session})
+	return AskAt(path, req)
 }
 
 // AskAt asks at the popup socket at path.
