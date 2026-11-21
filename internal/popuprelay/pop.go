@@ -11,7 +11,7 @@ import (
 	"github.com/mgnsk/sandbox/internal/popup"
 )
 
-const prompt = "y = once, A = always in this sandbox, N = no, D = never: "
+const prompt = "y = once, A = always in this sandbox, N = no: "
 
 // sanitize turns anything non-printable (escape sequences, bidi overrides,
 // line separators) into "?": popup text is drawn on the terminal as is.
@@ -151,8 +151,6 @@ func (p *pop) feed(data []byte, now time.Time) (answer popup.Answer, ok bool) {
 				return popup.Once, true
 			case "a":
 				return popup.Always, true
-			case "d":
-				return popup.Never, true
 			}
 			return popup.No, true
 		case "\x03", "\x04": // Ctrl-C, Ctrl-D.

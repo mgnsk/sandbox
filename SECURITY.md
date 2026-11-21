@@ -433,10 +433,8 @@ bound for it.
 
 ## Popup answers
 
-Every popup takes `y` (this request), `A` (always in this sandbox), `N`, the
-default, or `D` (never in this sandbox: no, to this and every later request
-of that guard, unasked - what stops a sandbox that keeps asking), followed by
-Enter. No terminal, or a popup that fails, means no.
+Every popup takes `y` (this request), `A` (always in this sandbox) or `N`, the
+default, followed by Enter. No terminal, or a popup that fails, means no.
 
 The launcher draws the popups itself (`internal/popuprelay`). It runs the
 sandbox on a pty of its own and is the only process holding the real
@@ -453,9 +451,9 @@ Guards reach the launcher over a socket in a private directory of its own in
 
 ### What `A` covers
 
-`A` (and `D`) lasts as long as the guard that was asked: it is only held in
-that guard's memory, and each `sandbox` run starts its own guards and kills
-them on exit. The next sandbox asks again, and so does another one running
+`A` lasts as long as the guard that was asked: it is only held in that
+guard's memory, and each `sandbox` run starts its own guards and kills them
+on exit. The next sandbox asks again, and so does another one running
 on the same project. It covers one guard only, so `A` on a gh popup doesn't
 cover ssh or URLs, and it covers everything in the sandbox, not the process
 that asked.

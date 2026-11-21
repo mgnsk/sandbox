@@ -132,7 +132,7 @@ func TestPopupsAsNotifications(t *testing.T) {
 	env := map[string]string{"WAYLAND_DISPLAY": h.compositor(), "DBUS_SESSION_BUS_ADDRESS": address}
 
 	p := h.pty(env, h.tool("detached"), testbin.Path(t), "xdg-open", "https://example.org/x")
-	p.expect("D = never:") // On the terminal all the same.
+	p.expect("N = no:") // On the terminal all the same.
 	if r := p.wait(); r.code != 0 {
 		t.Fatalf("%d %q", r.code, r.stdout)
 	}
@@ -152,7 +152,7 @@ func TestPopupsAsNotifications(t *testing.T) {
 	// From the terminal itself: asked there alone.
 	d.answer = ""
 	p = h.pty(env, testbin.Path(t), "xdg-open", "https://example.org/y")
-	p.expect("D = never:")
+	p.expect("N = no:")
 	time.Sleep(600 * time.Millisecond)
 	p.send("n\r")
 	if r := p.wait(); r.code != 4 {
@@ -164,7 +164,7 @@ func TestPopupsAsNotifications(t *testing.T) {
 
 	// Answered on the terminal: the notification is taken away.
 	p = h.pty(env, h.tool("detached"), testbin.Path(t), "xdg-open", "https://example.org/z")
-	p.expect("D = never:")
+	p.expect("N = no:")
 	time.Sleep(600 * time.Millisecond)
 	p.send("n\r")
 	if r := p.wait(); r.code != 4 {
@@ -177,14 +177,14 @@ func TestPopupsAsNotifications(t *testing.T) {
 	// Turned off, or without a display inside: the terminal alone.
 	h.cfg.Guards.Notifications = false
 	p = h.pty(env, h.tool("detached"), testbin.Path(t), "xdg-open", "https://example.org/a")
-	p.expect("D = never:")
+	p.expect("N = no:")
 	time.Sleep(600 * time.Millisecond)
 	p.send("n\r")
 	p.wait()
 	h.cfg.Guards.Notifications = true
 	h.cfg.Guards.Wayland.Enable = nil
 	p = h.pty(env, h.tool("detached"), testbin.Path(t), "xdg-open", "https://example.org/b")
-	p.expect("D = never:")
+	p.expect("N = no:")
 	time.Sleep(600 * time.Millisecond)
 	p.send("n\r")
 	p.wait()
@@ -196,7 +196,7 @@ func TestPopupsAsNotifications(t *testing.T) {
 	h.waylandOn("wl_compositor")
 	env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + filepath.Join(h.tmp, "nowhere.sock")
 	p = h.pty(env, h.tool("detached"), testbin.Path(t), "xdg-open", "https://example.org/c")
-	if shown := p.expect("D = never:"); !strings.Contains(shown, "no desktop notifications") {
+	if shown := p.expect("N = no:"); !strings.Contains(shown, "no desktop notifications") {
 		t.Errorf("%q", shown)
 	}
 	time.Sleep(600 * time.Millisecond)
