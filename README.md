@@ -241,8 +241,8 @@ What to know:
 
 **Approved** means: binds, host ports, the Wayland guard and commands run on
 the host are shown on the terminal and apply only after your yes. It's asked
-the first time, and again only if they change. Everything else a project
-sets only affects the inside and applies without asking.
+the first time, and again only for something new or changed. Everything else
+a project sets only affects the inside and applies without asking.
 
 ### The project's sandbox.nix
 

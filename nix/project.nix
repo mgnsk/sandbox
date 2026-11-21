@@ -22,7 +22,7 @@ let
   layer = import ./layer.nix { inherit lib pkgs; };
 
   # What a project asks of the host is the user's to allow.
-  approved = "Takes the user's yes on the terminal, asked once and again whenever it changes; their own config's wins.";
+  approved = "Takes the user's yes on the terminal, asked once and again for anything new; their own config's wins.";
 
   cfg =
     (lib.evalModules {
@@ -73,7 +73,7 @@ let
                   Windows on the host's Wayland display, for GUI programs
                   inside, through a proxy that passes on only an allowlist of
                   the compositor's globals. Takes the user's yes on the
-                  terminal (asked once, and again whenever it changes); their
+                  terminal (asked once, and again for anything new); their
                   own config can turn it on or off for every project.
                 '';
               };

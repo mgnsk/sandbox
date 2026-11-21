@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -196,20 +197,63 @@ func (l *launcher) projectManifest(ctx context.Context, base string, claudeKey b
 	return m, writeJSON(cache, cached{Key: key, Result: result})
 }
 
-// hostAccess is what sandbox.nix asks for beyond the inside of the sandbox,
-// as approved and stored.
+// hostAccess is what a project's files ask for beyond the inside of the
+// sandbox.
 type hostAccess struct {
-	Binds     []approvedBind `json:"binds"`
-	HostPorts []string       `json:"hostPorts"`
-	// Left out when empty, so approvals from before these existed still
-	// match.
+	Binds     []approvedBind `json:"binds,omitempty"`
+	HostPorts []string       `json:"hostPorts,omitempty"`
 	tokenCommands
 	GitSigningKeyCommand string         `json:"gitSigningKeyCommand,omitempty"`
 	Wayland              *waylandAccess `json:"wayland,omitempty"`
 }
 
-func (h hostAccess) empty() bool {
-	return len(h.Binds) == 0 && len(h.HostPorts) == 0 && !h.commands() && h.Wayland == nil
+// items are the things h asks for, each as a hostAccess of its own: what
+// the user approves, and what's stored, is each of them. So a start that
+// uses only some of them - the user's own config has a token command, or
+// turns a guard off - has nothing new to ask.
+//
+// The binds are one thing together: one may be there to cover part of
+// another (read-only, in a read-write one), so having approved a list isn't
+// having approved a part of it. A global a project takes off the Wayland
+// allowlist is no item: that asks for less.
+func (h hostAccess) items() []hostAccess {
+	var items []hostAccess
+	if len(h.Binds) > 0 {
+		items = append(items, hostAccess{Binds: h.Binds})
+	}
+	for _, p := range h.HostPorts {
+		items = append(items, hostAccess{HostPorts: []string{p}})
+	}
+	if c := h.GitHubTokenCommand; c != "" {
+		items = append(items, hostAccess{tokenCommands: tokenCommands{GitHubTokenCommand: c}})
+	}
+	for _, host := range slices.Sorted(maps.Keys(h.ForgejoTokenCommands)) {
+		one := map[string]string{host: h.ForgejoTokenCommands[host]}
+		items = append(items, hostAccess{tokenCommands: tokenCommands{ForgejoTokenCommands: one}})
+	}
+	if c := h.ClaudeAPIKeyCommand; c != "" {
+		items = append(items, hostAccess{tokenCommands: tokenCommands{ClaudeAPIKeyCommand: c}})
+	}
+	if c := h.GitSigningKeyCommand; c != "" {
+		items = append(items, hostAccess{GitSigningKeyCommand: c})
+	}
+	if w := h.Wayland; w != nil {
+		if w.Enable {
+			items = append(items, hostAccess{Wayland: &waylandAccess{Enable: true}})
+		}
+		for _, name := range slices.Sorted(maps.Keys(w.Globals)) {
+			if w.Globals[name] {
+				items = append(items, hostAccess{Wayland: &waylandAccess{Globals: map[string]bool{name: true}}})
+			}
+		}
+	}
+	return items
+}
+
+// key is what an item is stored and looked up as.
+func (h hostAccess) key() string {
+	data, _ := json.Marshal(h, json.Deterministic(true))
+	return string(data)
 }
 
 // commands says whether h has anything run on the host.
@@ -310,26 +354,32 @@ func (l *launcher) applyProject(ctx context.Context, prof profile) (profile, pro
 		}
 	}
 	git := local.Git.over(m.git())
-	commands := local.tokenCommands.over(m.tokenCommands).without(prof.tokenCommands)
-	// Without Claude Code in the sandbox (no managed config), no key.
-	if prof.ClaudeDir == "" {
-		commands.ClaudeAPIKeyCommand = ""
-	}
 	binds, err := l.approvedBinds(m.Binds)
 	if err != nil {
 		return prof, projectSettings{}, err
 	}
-	access := hostAccess{Binds: binds, HostPorts: m.HostPorts, tokenCommands: commands, GitSigningKeyCommand: git.SigningKeyCommand}
-	// Not when the user's own config turns the guard off, nor for a
-	// project that only takes globals away.
-	if enable := l.cfg.Guards.Wayland.Enable; m.Wayland.widens() && (enable == nil || *enable) {
-		access.Wayland = &m.Wayland
+	// What the project asks for, whatever the user's config says...
+	asked := hostAccess{Binds: binds, HostPorts: m.HostPorts, tokenCommands: local.tokenCommands.over(m.tokenCommands),
+		GitSigningKeyCommand: git.SigningKeyCommand}
+	// Not a project that only takes globals away.
+	if m.Wayland.widens() {
+		asked.Wayland = &m.Wayland
 	}
-	if err := l.approve(access); err != nil {
+	// ...and what of it this start uses.
+	used := asked
+	used.tokenCommands = asked.tokenCommands.without(prof.tokenCommands)
+	// Without Claude Code in the sandbox (no managed config), no key.
+	if prof.ClaudeDir == "" {
+		used.ClaudeAPIKeyCommand = ""
+	}
+	if enable := l.cfg.Guards.Wayland.Enable; enable != nil && !*enable {
+		used.Wayland = nil
+	}
+	if err := l.approve(asked, used); err != nil {
 		return prof, projectSettings{}, err
 	}
 	prof = withManifest(prof, m)
-	prof.tokenCommands = prof.tokenCommands.over(commands)
+	prof.tokenCommands = prof.tokenCommands.over(used.tokenCommands)
 	if len(l.command) == 0 {
 		l.command = m.Command
 	}
@@ -337,22 +387,53 @@ func (l *launcher) applyProject(ctx context.Context, prof profile) (profile, pro
 }
 
 // approve asks for a yes on the terminal to what a project's files ask of
-// the host - binds, host ports, commands run there - again whenever it
-// changes: the sandbox can edit those files, so their say-so alone must
-// never widen the next sandbox, nor run anything on the host. The approval
-// is stored in the volume dir, out of the sandbox's reach.
-func (l *launcher) approve(access hostAccess) error {
-	if access.empty() {
+// the host - binds, host ports, commands run there - unless all that this
+// start uses of it is approved already: the sandbox can edit those files,
+// so their say-so alone must never widen the next sandbox, nor run anything
+// on the host.
+//
+// The approvals are stored item by item (see hostAccess.items) in the
+// volume dir, out of the sandbox's reach - those of what the project still
+// asks for: one for something it has dropped is forgotten, so that it's
+// asked about again should it come back.
+func (l *launcher) approve(asked, used hostAccess) error {
+	path := filepath.Join(l.volumeDir, "project-approved.json")
+	have, _ := os.ReadFile(path)
+	var stored []hostAccess
+	_ = json.Unmarshal(have, &stored) // Unreadable: nothing is approved.
+	approved := map[string]bool{}
+	for _, item := range stored {
+		approved[item.key()] = true
+	}
+	if slices.ContainsFunc(used.items(), func(item hostAccess) bool { return !approved[item.key()] }) {
+		if err := l.confirmAccess(used); err != nil {
+			return err
+		}
+		for _, item := range used.items() {
+			approved[item.key()] = true
+		}
+	}
+	var keep []hostAccess
+	for _, item := range asked.items() {
+		if approved[item.key()] {
+			keep = append(keep, item)
+		}
+	}
+	if len(keep) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 		return nil
 	}
-	approved := filepath.Join(l.volumeDir, "project-approved.json")
-	want, err := json.Marshal(access, json.Deterministic(true))
-	if err != nil {
-		return err
-	}
-	if have, err := os.ReadFile(approved); err == nil && bytes.Equal(bytes.TrimSpace(have), want) {
+	if want, err := json.Marshal(keep, json.Deterministic(true)); err == nil && bytes.Equal(bytes.TrimSpace(have), want) {
 		return nil
 	}
+	return writeJSON(path, keep)
+}
+
+// confirmAccess has the user say yes on the terminal to access, shown
+// whole.
+func (l *launcher) confirmAccess(access hostAccess) error {
 	from := filepath.Join(l.project, projectFileName)
 	if access.commands() {
 		from = fmt.Sprintf("%s (or %s)", from, localConfigFileName)
@@ -366,10 +447,10 @@ func (l *launcher) approve(access hostAccess) error {
 	// all that stands between the project and the host.
 	if !t.confirm(popup.CleanText(strings.ReplaceAll(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
 		"Read it before allowing: the commands run on this host as you, outside the sandbox.\n"+
-		"This is asked once, and again only if it changes. Allow? [y/N] ", from, access), "\t", "    "))) {
+		"This is asked once, and again only for something new. Allow? [y/N] ", from, access), "\t", "    "))) {
 		return errors.New("host access not approved, not starting")
 	}
-	return writeJSON(approved, access)
+	return nil
 }
 
 // approvedBinds are a project's binds as approved. A source the sandbox
