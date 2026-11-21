@@ -337,15 +337,29 @@ what stands between sandboxed code and that session, so read the host.
 
 Inside, `SSH_AUTH_SOCK` is ssh-agent-guard's socket (`internal/sshagent`),
 never the agent's own. The guard passes on listing the keys and, after a
-popup, signing; adding, removing and locking keys and every extension are
-refused, unforwarded.
+popup, signing; adding, removing and locking keys and every extension but
+`session-bind` are refused, unforwarded.
 
 - **A signature is whatever its key is trusted for.** The guard sees the
-  data to sign, not who will check it: a login's names the user but not the
-  server, so an approved login may be to any host that takes the key. The
-  popup says which kind it is - a login and its user name, an
-  `ssh-keygen -Y sign` signature and its namespace, or neither - and the
-  key's fingerprint.
+  data to sign, not who will check it. The popup says which kind it is - a
+  login and its user name, an `ssh-keygen -Y sign` signature and its
+  namespace, or neither - and the key's fingerprint.
+- **A login names its server when ssh binds its session.** OpenSSH's ssh
+  (8.9 and later) sends the agent `session-bind@openssh.com` before a
+  login: the server's host key and its signature over the session's
+  identifier, which the login's data begins with. The guard checks that
+  signature and names the server by that host key from your `known_hosts`
+  on the host - never the sandbox's, which sandboxed code can write - so an
+  approved login only works with the holder of that key. A hashed entry
+  names the host the client's command line claims, only when that entry
+  holds the key; a revoked key says so. A login whose session no verified
+  bind on its connection names - from other clients, or a bind refused -
+  may be to any host that takes the key, and the popup says so. The guard
+  keeps binds to itself, so the agent never sees them.
+- **"Always" for a named server covers that server alone**: later logins to
+  the same host key by the same route (directly, or through an agent
+  forwarded to the same host). "Always" for anything else - an unbound
+  login or other data - covers all of that, but no named server's logins.
 - **Commit and tag signatures don't ask**, with the key git inside signs
   with: `git.signingKey` (or its command's output), and the `user.signingKey`
   of your global git config on the host, which the launcher reads at start
@@ -354,7 +368,7 @@ refused, unforwarded.
   With any other key in the agent - one meant for logging in somewhere - a
   git signature asks like the rest.
 - **The agent's own restrictions on where a key may be used**
-  (`ssh-add -h`) don't hold through the guard: it refuses the
+  (`ssh-add -h`) don't hold through the guard: it doesn't pass on the
   `session-bind` extension they rest on, so the agent sees local use.
 
 ## Secret Service: the host's keyring, one project's items

@@ -32,6 +32,9 @@ func TestDescribe(t *testing.T) {
 	if p.Cwd != wd {
 		t.Errorf("cwd %q, want %q", p.Cwd, wd)
 	}
+	if len(p.Args) == 0 || p.Args[0] != os.Args[0] {
+		t.Errorf("args %q", p.Args)
+	}
 	if !strings.HasPrefix(p.Cmdline, os.Args[0]) {
 		t.Errorf("cmdline %q", p.Cmdline)
 	}
@@ -41,7 +44,7 @@ func TestDescribeUnknown(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
 	defer b.Close()
-	if p := Describe(a); p != (Peer{Cwd: "unknown", Cmdline: "unknown"}) {
+	if p := Describe(a); p.Cwd != "unknown" || p.Cmdline != "unknown" || p.Args != nil || p.Session != 0 {
 		t.Errorf("Describe = %+v", p)
 	}
 }

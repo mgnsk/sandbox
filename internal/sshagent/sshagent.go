@@ -7,16 +7,18 @@
 // listing is forwarded untouched; sign requests reach the real agent after
 // the user approves a popup, except commit/tag signatures (see
 // gitSignature) with one of SIGNING_KEYS (public keys, a line each), which
-// are forwarded without a prompt. Everything else is
+// are forwarded without a prompt. The session-bind@openssh.com extension is
+// taken here, never forwarded: a login's popup names the server whose host
+// key signed its session (see sessionbind.go). Everything else is
 // refused here and never forwarded: the rest of the protocol mutates the
 // agent, and this proxy's whole job is to keep the sandbox from reaching
 // past it. Notably that blocks lock, which would let a sandboxed process lock
 // the user's real agent with a password of its choosing, key removal and
 // addition, and the open-ended extension channel.
 //
-// Safe against normal use: ssh(1) treats a refused session-bind@openssh.com
-// extension as non-fatal, and `ssh-add -l` / `ssh-keygen -Y sign` (git's ssh
-// commit signing) only list and sign.
+// Safe against normal use: ssh(1) treats a refused session-bind as
+// non-fatal, and `ssh-add -l` / `ssh-keygen -Y sign` (git's ssh commit
+// signing) only list and sign.
 package sshagent
 
 import (
@@ -25,6 +27,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -49,10 +53,17 @@ type Guard struct {
 	// sign commits as the user with a key that was only ever meant to log
 	// in somewhere.
 	SigningKeys []ssh.PublicKey
+	// KnownHosts is the user's known_hosts on the host, naming the servers
+	// that logins are to.
+	KnownHosts string
 	// Ask asks the user to approve a signature; popup.Ask if nil.
 	Ask func(popup.Request) popup.Answer
 
-	approvals popup.Approvals
+	// Scope -> approvals: a login in a session the client bound has its
+	// server's scope (see serverLines), every other signature the "" one.
+	// So "always" for one server covers no other, nor anything unbound.
+	approvalsMu sync.Mutex
+	approvals   map[string]*popup.Approvals
 
 	// Fingerprint -> comment, from the identities the agent listed: shown
 	// in the popup, not part of the security boundary.
@@ -94,8 +105,9 @@ func (g *Guard) comment(key ssh.PublicKey) string {
 
 // allow says whether a signature may be asked of the agent: commit
 // signatures with a signing key without asking, anything else as the popup
-// decides.
-func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer) bool {
+// decides, showing what: the popup's lines on what is signed. An "always"
+// answer covers scope alone.
+func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer, what, scope string) bool {
 	if gitSignature(data) && g.signingKey(key) {
 		return true
 	}
@@ -103,13 +115,28 @@ func (g *Guard) allow(key ssh.PublicKey, data []byte, who peer.Peer) bool {
 	if ask == nil {
 		ask = popup.Ask
 	}
-	return g.approvals.Approve(func() popup.Answer {
+	return g.scoped(scope).Approve(func() popup.Answer {
 		return ask(popup.Request{Name: "ssh-agent-guard", Session: who.Session, Text: "Allow SSH agent to sign?\n\n" +
-			"  signing:  " + popup.CleanLimit(signed(data), displayLimit) + "\n" +
+			what +
 			"  key:      " + ssh.FingerprintSHA256(key) + "\n" +
 			"  comment:  " + popup.CleanLimit(g.comment(key), displayLimit) + "\n" +
 			who.Lines(displayLimit)})
 	})
+}
+
+// scoped are the approvals of scope.
+func (g *Guard) scoped(scope string) *popup.Approvals {
+	g.approvalsMu.Lock()
+	defer g.approvalsMu.Unlock()
+	if g.approvals == nil {
+		g.approvals = map[string]*popup.Approvals{}
+	}
+	a := g.approvals[scope]
+	if a == nil {
+		a = &popup.Approvals{}
+		g.approvals[scope] = a
+	}
+	return a
 }
 
 func (g *Guard) signingKey(key ssh.PublicKey) bool {
@@ -142,6 +169,15 @@ func signed(data []byte) string {
 			return fmt.Sprintf("a signature for %q (ssh-keygen -Y sign)", blob.Namespace)
 		}
 	}
+	if user, _, ok := login(data); ok {
+		return fmt.Sprintf("an ssh login as %q, to a server the guard can't know", user)
+	}
+	return fmt.Sprintf("data of no known kind (%d bytes)", len(data))
+}
+
+// login reads data as an ssh login's: the user it names and the session
+// it is for.
+func login(data []byte) (user string, session []byte, ok bool) {
 	var auth struct {
 		Session []byte
 		Type    byte
@@ -151,9 +187,22 @@ func signed(data []byte) string {
 		Rest    []byte `ssh:"rest"`
 	}
 	if ssh.Unmarshal(data, &auth) == nil && auth.Type == msgUserauthRequest && strings.HasPrefix(auth.Method, "publickey") {
-		return fmt.Sprintf("an ssh login as %q, to a server the guard can't know", auth.User)
+		return auth.User, auth.Session, true
 	}
-	return fmt.Sprintf("data of no known kind (%d bytes)", len(data))
+	return "", nil, false
+}
+
+// describe is the popup's lines on what data is: for a login in a session
+// the client bound, the server it is to, else as signed says; and the scope
+// of its approvals.
+func (a *gated) describe(data []byte) (what, scope string) {
+	if user, session, ok := login(data); ok {
+		if lines, scope, ok := a.serverLines(session, a.peer.Args); ok {
+			return "  signing:  " + popup.CleanLimit(fmt.Sprintf("an ssh login as %q", user), displayLimit) + "\n" + lines +
+				"  always:   covers logins to this server alone\n", scope
+		}
+	}
+	return "  signing:  " + popup.CleanLimit(signed(data), displayLimit) + "\n", ""
 }
 
 // gitSignature says whether data is what `ssh-keygen -Y sign -n git` (git
@@ -180,6 +229,9 @@ type gated struct {
 	guard    *Guard
 	upstream agent.ExtendedAgent
 	peer     peer.Peer
+	// The sessions the client bound, in order: ServeAgent handles one
+	// request of a connection at a time.
+	binds []bind
 }
 
 func (a *gated) List() ([]*agent.Key, error) {
@@ -195,7 +247,8 @@ func (a *gated) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 }
 
 func (a *gated) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
-	if !a.guard.allow(key, data, a.peer) {
+	what, scope := a.describe(data)
+	if !a.guard.allow(key, data, a.peer, what, scope) {
 		return nil, errRefused
 	}
 	return a.upstream.SignWithFlags(key, data, flags)
@@ -207,9 +260,22 @@ func (a *gated) RemoveAll() error               { return errRefused }
 func (a *gated) Lock([]byte) error              { return errRefused }
 func (a *gated) Unlock([]byte) error            { return errRefused }
 func (a *gated) Signers() ([]ssh.Signer, error) { return nil, errRefused }
-func (a *gated) Extension(string, []byte) ([]byte, error) {
-	return nil, agent.ErrExtensionUnsupported
+
+// Extension handles session-bind here, for the popup, never passing it on:
+// the agent's own key restrictions would then apply, refusing logins that
+// work now. Every other extension is refused.
+func (a *gated) Extension(kind string, contents []byte) ([]byte, error) {
+	if kind != sessionBind {
+		return nil, agent.ErrExtensionUnsupported
+	}
+	if err := a.addBind(contents); err != nil {
+		return nil, err
+	}
+	return []byte{agentSuccess}, nil
 }
+
+// SSH_AGENT_SUCCESS.
+const agentSuccess = 6
 
 // Run serves on the launcher's socket until stopped; signingKeys are public
 // keys, a line each.
@@ -219,6 +285,9 @@ func Run(ctx context.Context, upstream, signingKeys string) error {
 		return err
 	}
 	g := &Guard{Upstream: upstream}
+	if home, err := os.UserHomeDir(); err == nil {
+		g.KnownHosts = filepath.Join(home, ".ssh", "known_hosts")
+	}
 	for line := range strings.Lines(signingKeys) {
 		if key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line)); err == nil {
 			g.SigningKeys = append(g.SigningKeys, key)

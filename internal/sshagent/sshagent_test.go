@@ -1,6 +1,7 @@
 package sshagent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -14,6 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/mgnsk/sandbox/internal/apiproxy/apiproxytest"
 	"github.com/mgnsk/sandbox/internal/guard"
@@ -203,7 +205,8 @@ func TestEverythingElseIsRefused(t *testing.T) {
 		"remove-all": c.RemoveAll(),
 		"lock":       c.Lock([]byte("pw")),
 		"unlock":     c.Unlock([]byte("pw")),
-		"extension":  second(c.Extension("session-bind@openssh.com", nil)),
+		"extension":  second(c.Extension("other@example.com", nil)),
+		"bad bind":   second(c.Extension(sessionBind, nil)),
 	} {
 		if err == nil {
 			t.Errorf("%s went through", name)
@@ -308,5 +311,253 @@ func TestUnreachableAgentClosesTheClient(t *testing.T) {
 	defer conn.Close()
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
 		t.Error("not closed")
+	}
+}
+
+// hostKey is a server's host key.
+func hostKey(t *testing.T) ssh.Signer {
+	t.Helper()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
+// bindMsg is a session-bind's contents as ssh sends them: host's key and
+// its signature over session.
+func bindMsg(t *testing.T, host ssh.Signer, session []byte, forwarding bool) []byte {
+	t.Helper()
+	sig, err := host.Sign(rand.Reader, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ssh.Marshal(struct {
+		HostKey, Session, Signature []byte
+		Forwarding                  bool
+	}{host.PublicKey().Marshal(), session, ssh.Marshal(sig), forwarding})
+}
+
+// loginData is what ssh asks the agent to sign to log in as user in
+// session.
+func loginData(session []byte, user string) []byte {
+	return ssh.Marshal(struct {
+		Session               []byte
+		Type                  byte
+		User, Service, Method string
+		HasSig                bool
+		Algo                  string
+		Key                   []byte
+	}{session, msgUserauthRequest, user, "ssh-connection", "publickey", true, "ssh-ed25519", []byte("key")})
+}
+
+// knownHosts writes lines as a known_hosts file.
+func knownHosts(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func authorized(key ssh.PublicKey) string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+}
+
+// A login in a session the client bound names its server, by the host key
+// that signed the session; any other login asks as before.
+func TestSessionBindNamesTheServer(t *testing.T) {
+	w := newWorld(t, "me@laptop")
+	github, unknown := hostKey(t), hostKey(t)
+	g := &Guard{
+		Upstream:   filepath.Join(w.dir, "agent.sock"),
+		Ask:        w.popups.Ask,
+		KnownHosts: knownHosts(t, "# a comment", "github.com,140.82.121.4 "+authorized(github.PublicKey())),
+	}
+	path := filepath.Join(t.TempDir(), "guard.sock")
+	serve(t, path, g.Handle)
+	client := func() agent.ExtendedAgent {
+		conn, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		return agent.NewClient(conn)
+	}
+
+	c := client()
+	if _, err := c.Extension(sessionBind, bindMsg(t, github, []byte("gh session"), false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Extension(sessionBind, bindMsg(t, unknown, []byte("other session"), false)); err != nil {
+		t.Fatal(err)
+	}
+	// Rebinding a session, or with a signature not over it, is refused.
+	if _, err := c.Extension(sessionBind, bindMsg(t, unknown, []byte("gh session"), false)); err == nil {
+		t.Error("rebound a session")
+	}
+	forged := bindMsg(t, github, []byte("real"), false)
+	forged = bytes.Replace(forged, []byte("real"), []byte("fake"), 1)
+	if _, err := c.Extension(sessionBind, forged); err == nil {
+		t.Error("bound with a signature over another session")
+	}
+	c.Sign(w.key, loginData([]byte("gh session"), "git"))
+	c.Sign(w.key, loginData([]byte("other session"), "me"))
+	c.Sign(w.key, loginData([]byte("fake"), "git"))
+	// Binds are the connection's own.
+	client().Sign(w.key, loginData([]byte("gh session"), "git"))
+
+	asked := w.popups.Asked()
+	want := []string{
+		"  signing:  an ssh login as \"git\"\n  server:   github.com, 140.82.121.4, by its host key in your known_hosts\n  always:   covers logins to this server alone\n  key:      ",
+		"  signing:  an ssh login as \"me\"\n  server:   a host whose key isn't in your known_hosts (" + ssh.FingerprintSHA256(unknown.PublicKey()) + ")\n  always:   covers logins to this server alone\n  key:      ",
+		"  signing:  an ssh login as \"git\", to a server the guard can't know\n  key:      ",
+		"  signing:  an ssh login as \"git\", to a server the guard can't know\n  key:      ",
+	}
+	if len(asked) != len(want) {
+		t.Fatalf("asked %d times", len(asked))
+	}
+	for i, w := range want {
+		if !strings.Contains(asked[i].Text, w) {
+			t.Errorf("%d: %q not in %q", i, w, asked[i].Text)
+		}
+	}
+	if calls := w.upstream.Calls(); slices.Contains(calls, "extension") {
+		t.Errorf("session-bind reached the agent: %v", calls)
+	}
+}
+
+// A login through a forwarded agent says where the agent was forwarded.
+func TestSessionBindForwarded(t *testing.T) {
+	jump, dest := hostKey(t), hostKey(t)
+	g := &Guard{KnownHosts: knownHosts(t, "jump "+authorized(jump.PublicKey()), "dest "+authorized(dest.PublicKey()))}
+	a := &gated{guard: g}
+	for _, b := range [][]byte{bindMsg(t, jump, []byte("1"), true), bindMsg(t, dest, []byte("2"), false)} {
+		if err := a.addBind(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := a.describe(loginData([]byte("2"), "git"))
+	want := "  signing:  an ssh login as \"git\"\n" +
+		"  server:   dest, by its host key in your known_hosts\n" +
+		"  through:  your agent, forwarded to jump, by its host key in your known_hosts\n" +
+		"  always:   covers logins to this server alone\n"
+	if got != want {
+		t.Errorf("%q\nwant %q", got, want)
+	}
+}
+
+func TestServerName(t *testing.T) {
+	gh, revoked, hashedOnly := hostKey(t), hostKey(t), hostKey(t)
+	fp := ssh.FingerprintSHA256
+	g := &Guard{KnownHosts: knownHosts(t,
+		knownhosts.HashHostname("github.com")+" "+authorized(gh.PublicKey()),
+		knownhosts.HashHostname("[git.example]:2222")+",!evil.com "+authorized(hashedOnly.PublicKey()),
+		"@revoked * "+authorized(revoked.PublicKey()),
+		"old.example "+authorized(revoked.PublicKey()),
+		"garbage line that isn't one",
+	)}
+	for _, c := range []struct {
+		key     ssh.Signer
+		claimed string
+		want    string
+	}{
+		{gh, "github.com", "github.com, by its host key in your known_hosts"},
+		// Only a name whose entry holds the key.
+		{gh, "evil.com", "a host with a hashed entry in your known_hosts (" + fp(gh.PublicKey()) + ")"},
+		{gh, "", "a host with a hashed entry in your known_hosts (" + fp(gh.PublicKey()) + ")"},
+		{hashedOnly, "[git.example]:2222", "[git.example]:2222, by its host key in your known_hosts"},
+		{hashedOnly, "git.example", "a host with a hashed entry in your known_hosts (" + fp(hashedOnly.PublicKey()) + ")"},
+		{revoked, "old.example", "a host whose key your known_hosts REVOKES (" + fp(revoked.PublicKey()) + ")"},
+	} {
+		if got := g.server(c.key.PublicKey(), c.claimed); got != c.want {
+			t.Errorf("%s claimed %q: %q, want %q", fp(c.key.PublicKey()), c.claimed, got, c.want)
+		}
+	}
+	if got, want := (&Guard{KnownHosts: filepath.Join(t.TempDir(), "none")}).server(gh.PublicKey(), "github.com"),
+		"a host whose key isn't in your known_hosts ("+fp(gh.PublicKey())+")"; got != want {
+		t.Errorf("no file: %q", got)
+	}
+}
+
+func TestSSHDestination(t *testing.T) {
+	for want, args := range map[string][]string{
+		"github.com":         {"ssh", "-o", "SendEnv=GIT_PROTOCOL", "git@github.com", "git-receive-pack 'o/r.git'"},
+		"[git.example]:2222": {"/nix/store/x/bin/ssh", "-x", "-p", "2222", "git@git.example", "git-upload-pack"},
+		"[a.example]:2200":   {"ssh", "-oPort=2200", "-v4", "a.example"},
+		"[b.example]:7999":   {"ssh", "ssh://git@b.example:7999/o/r.git"},
+		"c.example":          {"ssh", "-i", "key", "--", "c.example"},
+		"d.example":          {"ssh", "-p22", "-Avl", "me", "d.example"},
+		"":                   {"git", "push", "github.com"},
+		" ":                  nil,
+	} {
+		if want == " " {
+			want = ""
+		}
+		if got := sshDestination(args); got != want {
+			t.Errorf("%q: %q, want %q", args, got, want)
+		}
+	}
+}
+
+// "Always" for a login to one server covers later logins to it alone:
+// neither another server's, nor one through a forwarded agent, nor any
+// signature without a bind - and "always" for those covers no server's.
+func TestAlwaysIsScopedToTheServer(t *testing.T) {
+	w := newWorld(t, "me@laptop")
+	github, other := hostKey(t), hostKey(t)
+	client := w.guard(t)
+	login := func(host ssh.Signer, session string, forwardedFrom ssh.Signer) error {
+		c := client()
+		if forwardedFrom != nil {
+			if _, err := c.Extension(sessionBind, bindMsg(t, forwardedFrom, []byte("fwd "+session), true)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if host != nil {
+			if _, err := c.Extension(sessionBind, bindMsg(t, host, []byte(session), false)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := c.Sign(w.key, loginData([]byte(session), "git"))
+		return err
+	}
+
+	w.popups.Answer = popup.Always
+	if err := login(github, "1", nil); err != nil {
+		t.Fatal(err)
+	}
+	w.popups.Answer = popup.No
+	if err := login(github, "2", nil); err != nil {
+		t.Errorf("always didn't cover the same server: %v", err)
+	}
+	if n := len(w.popups.Asked()); n != 1 {
+		t.Errorf("asked %d times", n)
+	}
+	for name, err := range map[string]error{
+		"another server":       login(other, "3", nil),
+		"through a forward":    login(github, "4", other),
+		"an unbound login":     login(nil, "5", nil),
+		"another kind of data": second(client().Sign(w.key, []byte("data"))),
+	} {
+		if err == nil {
+			t.Errorf("%s went through", name)
+		}
+	}
+
+	// Always for unbound signatures covers no server.
+	w.popups.Answer = popup.Always
+	login(nil, "6", nil)
+	w.popups.Answer = popup.No
+	if _, err := client().Sign(w.key, []byte("data")); err != nil {
+		t.Errorf("always didn't cover unbound signatures: %v", err)
+	}
+	if err := login(other, "7", nil); err == nil {
+		t.Error("unbound always covered a server")
+	}
+	if n := len(w.popups.Asked()); n != 7 {
+		t.Errorf("asked %d times", n)
 	}
 }
