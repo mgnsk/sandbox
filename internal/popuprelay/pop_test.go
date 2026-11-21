@@ -55,8 +55,6 @@ func TestFeed(t *testing.T) {
 		{"x\by\r", popup.Once},
 		{"a\x15\r", popup.No},
 		{"\x1b[Ay\r", popup.Once}, // Scrolling never types.
-		{"d\r", popup.Never},
-		{"D\r", popup.Never},
 		// What a terminal answers a query of the sandbox's with - its
 		// title, a color, a setting - is no key, however it ends.
 		{"\x1b]ly\x1b\\\r", popup.No},

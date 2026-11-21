@@ -46,8 +46,8 @@ What you get, per project:
   | [Wayland](#wayland) (opt-in) | windows on your display, through a filtering proxy | never |
   | Secret Service | libsecret for tools inside, kept apart per project in your keyring | never |
 
-  A popup takes `y` (once), `A` (always, in this sandbox), `N` (no, the
-  default) or `D` (never, in this sandbox).
+  A popup takes `y` (once), `A` (always, in this sandbox) or `N` (no, the
+  default).
 - **An exchange dir** (`$SANDBOX_EXCHANGE`), read-only inside, for output of
   commands you run on the host.
 - **Claude Code** with managed settings and a `CLAUDE.md` that tells it about
