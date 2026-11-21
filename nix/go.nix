@@ -17,7 +17,7 @@ buildGoModule {
     ];
   };
   # After a go.mod or go.sum change: make vendor-hash.
-  vendorHash = "sha256-myS4R/54DZ+zgExt6mP5M5V/16tpm2u7mVNbgcUBAXw=";
+  vendorHash = "sha256-lfYMMsKohShLgzo6tImA8nO3+lerf+fJo2r45NLlHII=";
   subPackages = [ "cmd/sandbox-bin" ];
   # The tests are a check of their own, see tests.nix.
   doCheck = false;
