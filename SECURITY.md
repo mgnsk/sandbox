@@ -13,6 +13,36 @@ matters: nothing the sandboxed process does may result in **code execution on
 the host, or in another project's sandbox**, outside the project directory it
 was invoked in.
 
+## What it doesn't protect
+
+The rest of this file says how each of these comes about; in short, a
+sandbox is not a boundary for:
+
+- **What you approve.** A yes to a popup, or to what a project's
+  `sandbox.nix` asks of the host, is yours: the sandbox only makes sure you
+  were asked, and shown what for. `A` in a popup approves everything that
+  guard is asked for the rest of that sandbox.
+- **What's inside it.** Everything in a sandbox can read everything else
+  there: a Claude Code login in the project's `$HOME`, a token pasted in,
+  the project's own secrets. It has the network, so it can send them
+  anywhere.
+- **What the guards give without asking**: every read the GitHub and
+  Forgejo tokens allow; requests on the Claude API key; commit and tag
+  signatures with your signing key; the names in your `known_hosts`; with
+  `git.fromHost`, your git name, email and signing key.
+- **Other machines.** The LAN, a tailnet, and whatever the host can reach
+  that isn't the host itself are as reachable as from the host.
+- **Ports on the host's loopback.** A port bound inside shows up on the
+  host's `127.0.0.1`: sandboxed code can take a port a host service isn't
+  holding at the moment, and be talked to in its place.
+- **Your terminal.** What a sandbox prints goes to your terminal as it is,
+  escape sequences included: it can set the window's title, and with a
+  terminal that allows it, your clipboard (OSC 52). Only the popups are
+  drawn out of its reach.
+- **The nix daemon, if it trusts you** (see "Nix daemon").
+- **A project the host runs** - your dotfiles, this sandbox's own
+  configuration (see "Projects the host runs").
+
 ## Isolation
 
 The primitives (all in `internal/launcher`): a fresh user namespace with the invoking
@@ -187,6 +217,11 @@ that guard takes), or dialed by itself, from inside, over the sandbox's own
 network. The guards still see only their own hosts, so routing every client
 through it adds no way out to the host: what it dials, the client could have
 dialed itself.
+
+`NO_PROXY` keeps loopback direct, for dev servers; a host `HTTPS_PROXY`
+passed in with `passEnv` is replaced, and the router dials out directly.
+Clients that ignore `HTTPS_PROXY` bypass it, and reach the APIs without a
+token.
 
 It runs as the sandbox's user, so code inside can kill or replace it; that
 breaks the GitHub and Forgejo APIs for proxy-aware clients until the next
@@ -416,6 +451,24 @@ wrapped rather than cut, with the line count shown when it needs scrolling.
 Guards reach the launcher over a socket in a private directory of its own in
 `$XDG_RUNTIME_DIR`, which is never bound in and which no project can be in.
 
+### What `A` covers
+
+`A` (and `D`) lasts as long as the guard that was asked: it is only held in
+that guard's memory, and each `sandbox` run starts its own guards and kills
+them on exit. The next sandbox asks again, and so does another one running
+on the same project. It covers one guard only, so `A` on a gh popup doesn't
+cover ssh or URLs, and it covers everything in the sandbox, not the process
+that asked.
+
+So `A` takes the user out of the loop for anything sandboxed code does next:
+
+- **ssh**: any authentication with any key the agent holds, to any host - the
+  guard sees neither the destination nor what the session is for, so this isn't
+  limited to `git push`.
+- **gh** / **fj**: any write the token allows, in any repo it reaches.
+- **URLs**: any URL `openurl.Validate` passes, loaded unseen in the logged-in
+  browser - the risk described above, with no host left to read.
+
 ### As desktop notifications too
 
 In a sandbox with a Wayland display (and `guards.notifications.enable`, on by
@@ -459,40 +512,33 @@ counts.
 - The launcher connects to the bus named by `DBUS_SESSION_BUS_ADDRESS`, or
   the one at `$XDG_RUNTIME_DIR/bus`, and never starts one.
 
-`A` lasts as long as the guard that was asked: it is only held in that guard's
-memory, and each `sandbox` run starts its own guards and kills them on exit.
-The next sandbox asks again, and so does another one running on the same
-project. It covers one guard only, so `A` on a gh popup doesn't cover ssh or
-URLs, and it covers everything in the sandbox, not the process that asked.
-
-So `A` takes the user out of the loop for anything sandboxed code does next:
-
-- **ssh**: any authentication with any key the agent holds, to any host - the
-  guard sees neither the destination nor what the session is for, so this isn't
-  limited to `git push`.
-- **gh** / **fj**: any write the token allows, in any repo it reaches.
-- **URLs**: any URL `openurl.Validate` passes, loaded unseen in the logged-in
-  browser - the risk described above, with no host left to read.
-
 ## Host userland: none
 
 Nothing of the host's `/usr`, `/bin` or `/lib` is bound in. Every program
 inside comes from the nix store: a fixed minimal set on `PATH` (bash, nix,
-git, ssh, terminfo and stdenv's basics - no configuration adds to it; other tools come
-from the project's dev shell or the user's profile),
+git with its pager and editor, ssh, terminfo, stdenv's basics and a few
+tools every session reaches for: jq, curl, rg, which, ps, zip - no
+configuration adds to it; other tools come from the project's dev shell or
+the user's profile),
 `/bin/sh`, `/bin/env`, `/usr/bin/env` and `/usr/bin/xdg-open` from a small
 store directory, a managed read-only `/etc/bashrc` and `/etc/profile` (loading
 bash-completion) from the store, and nix-ld at the dynamic loader's path for prebuilt
 binaries. From the host's `/etc` only identity and name resolution are bound
 (`passwd`, `group`, `hosts`, `resolv.conf`, `nsswitch.conf`, `localtime`);
-CA certificates come from the store too.
+CA certificates come from the store too. With the ssh agent guard, the
+user's `~/.ssh/known_hosts` is bound read-only as the system-wide one: every
+project sees which hosts the user connects to, unless the file is hashed.
 
-The launcher itself runs nothing from the host's `PATH` either: bwrap, pasta,
-dbus-daemon and ip are store paths in its generated config, and the guards
-are its own binary. The guards get xdg-utils from the store first on `PATH`,
-the host's after - xdg-open hands approved URLs to the host's browser. The
-project root is found by looking for `.git`, not by running git, which would
-read a sandbox-writable repo config on the host.
+What the launcher runs is from the store too: bwrap, pasta, dbus-daemon and
+ip are store paths in its generated config, and the guards are its own
+binary. From the host's `PATH` it runs only what is the user's own: their
+token commands, and their `git`, for `git config --global` (the identity
+`git.fromHost` asks for, and the signing key the ssh agent guard doesn't
+ask about) - from `/`, never in a project. The guards get xdg-utils from
+the store first on `PATH`, the host's after - xdg-open hands approved URLs
+to the host's browser. The project root is found by looking for `.git`, not
+by running git, which would read a sandbox-writable repo config on the
+host.
 
 ## Nix daemon
 
@@ -572,29 +618,18 @@ build otherwise.
 ## Where the configuration comes from
 
 The configuration the launcher runs with is built on the host, so it must
-stay out of reach of every sandbox. There are three supported places:
+stay out of reach of every sandbox. There are two supported places:
 
 - **This repo's default package, run from its remote** (`nix run
   github:mgnsk/sandbox`, optionally pinned to `/<rev>` and `?narHash=...`):
   the default settings, reading no user config. The trusted input is this
   repo's default branch, or the commit pinned. A local clone of it is a
   checkout like any other: don't run the sandbox from one you work on in a
-  sandbox.
-
+  sandbox. Without `narHash`, a pinned `github:` ref still trusts GitHub to
+  serve that commit's contents; with it, nix checks them.
 - **Your home-manager config**, trusted like the rest of it. Don't work on
   the repo it lives in (e.g. dotfiles) in a sandbox while sandboxes run
   elsewhere: see the next section.
-- **A project's flake, run from the project's remote**, following its
-  default branch (`nix run github:owner/project#sandbox`) or pinned to a
-  commit (`github:owner/project/<rev>`, optionally `?narHash=...`). The
-  trusted input is then that branch - protected by branch protection and
-  review, not the sandbox: anything merged there runs on the host of
-  everyone following it - or the pinned commit, which the user reviewed.
-  Without `narHash`, a pinned `github:` ref still trusts GitHub to serve
-  that commit's contents; with it, nix checks them.
-  Running it from a checkout (`nix run .#sandbox`) is never safe - the
-  sandbox writes the checkout, `.git` included - and the launcher can't tell
-  the two apart, so this rests on the user.
 
 ## Projects the host runs
 
