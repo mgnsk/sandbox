@@ -30,7 +30,7 @@ in
       type = lib.types.deferredModule;
       default = { };
       description = ''
-        Sandbox configuration (the options in nix/module.nix). Merged across
+        Sandbox configuration (the options in OPTIONS.md). Merged across
         modules like any other option, so e.g. one module can add a profile
         while another sets the guards.
       '';
