@@ -3,24 +3,44 @@ package launcher
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
 
-// fakeGit puts a git on PATH answering `config --global --get KEY` from
-// values (exit 1 for a missing one) and noting the directory it ran in.
+// fakeGit puts a git on PATH answering `config --global --list -z` with
+// values, as git prints them, and noting the directory it ran in.
 func fakeGit(t *testing.T, values map[string]string) (cwdLog string) {
 	t.Helper()
 	bin := t.TempDir()
 	cwdLog = filepath.Join(bin, "cwd")
-	script := "#!/bin/sh\npwd >> " + cwdLog + "\n[ \"$1 $2 $3\" = \"config --global --get\" ] || exit 2\ncase \"$4\" in\n"
+	script := "#!/bin/sh\npwd >> " + cwdLog + "\n[ \"$*\" = \"config --global --list -z\" ] || exit 2\n"
 	for k, v := range values {
-		script += "  " + k + ") echo '" + v + "' ;;\n"
+		script += "printf '%s\\n%s\\0' '" + k + "' '" + v + "'\n"
 	}
-	script += "  *) exit 1 ;;\nesac\n"
 	os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755)
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	return cwdLog
+}
+
+// The real git's output, where there is one: keys in lower case however
+// they're written, the last value of a key, one without a value.
+func TestReadHostGitWithGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if got := readHostGit(context.Background(), home); got != (hostGit{}) {
+		t.Errorf("no config: %+v", got)
+	}
+	os.WriteFile(filepath.Join(home, "k.pub"), []byte(signingKey+"\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[User]\n\tName = Some One \n\temail = old@example.com\n\temail = a@example.com\n"+
+		"\tSigningKey = ~/k\n[core]\n\tbare\n[gpg]\n\tformat = ssh\n[alias]\n\tx = \"!f() {\\n echo user.name; }; f\"\n"), 0o644)
+	if got := readHostGit(context.Background(), home); got != (hostGit{Name: "Some One", Email: "a@example.com", SigningKey: signingKey}) {
+		t.Errorf("got %+v", got)
+	}
 }
 
 func TestReadHostGit(t *testing.T) {
@@ -29,19 +49,19 @@ func TestReadHostGit(t *testing.T) {
 	os.WriteFile(filepath.Join(home, ".ssh/id_ed25519.pub"), []byte(signingKey+"\n"), 0o644)
 	cwdLog := fakeGit(t, map[string]string{
 		"user.name": "Some One", "user.email": "a@example.com",
-		"gpg.format": "ssh", "user.signingKey": "~/.ssh/id_ed25519",
+		"gpg.format": "ssh", "user.signingkey": "~/.ssh/id_ed25519",
 	})
 	t.Chdir(home)
 	got := readHostGit(context.Background(), home)
 	if got != (hostGit{Name: "Some One", Email: "a@example.com", SigningKey: signingKey}) {
 		t.Errorf("got %+v", got)
 	}
-	if log, _ := os.ReadFile(cwdLog); string(log) != "/\n/\n/\n/\n" {
+	if log, _ := os.ReadFile(cwdLog); string(log) != "/\n" {
 		t.Errorf("ran in %q", log)
 	}
 
 	// Not ssh signing: no key. Nothing set: nothing.
-	fakeGit(t, map[string]string{"user.name": "N", "user.signingKey": "ABCDEF12"})
+	fakeGit(t, map[string]string{"user.name": "N", "user.signingkey": "ABCDEF12"})
 	if got := readHostGit(context.Background(), home); got != (hostGit{Name: "N"}) {
 		t.Errorf("gpg: %+v", got)
 	}

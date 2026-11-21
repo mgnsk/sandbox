@@ -9,10 +9,10 @@ import (
 )
 
 // hostGit is the git identity from the user's global git config on the
-// host (git.fromHost, in sandbox.nix or .sandbox.yml): name, email, and the ssh public key
-// it signs with. Only `git config --global --get` runs, from /, never in
-// the project, whose .git the sandbox can write; a value that isn't set,
-// or no git on the host, leaves it empty.
+// host (git.fromHost, in sandbox.nix or .sandbox.yml): name, email, and the
+// ssh public key it signs with. Only `git config --global --list` runs,
+// once, from /, never in the project, whose .git the sandbox can write; a
+// value that isn't set, or no git on the host, leaves it empty.
 type hostGit struct {
 	Name, Email, SigningKey string
 }
@@ -22,18 +22,22 @@ func readHostGit(ctx context.Context, home string) hostGit {
 	if err != nil {
 		return hostGit{}
 	}
-	get := func(key string) string {
-		cmd := exec.CommandContext(ctx, git, "config", "--global", "--get", key)
-		cmd.Dir = "/"
-		out, err := cmd.Output()
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(out))
+	cmd := exec.CommandContext(ctx, git, "config", "--global", "--list", "-z")
+	cmd.Dir = "/"
+	out, err := cmd.Output()
+	if err != nil {
+		return hostGit{}
 	}
-	h := hostGit{Name: get("user.name"), Email: get("user.email")}
-	if get("gpg.format") == "ssh" {
-		h.SigningKey = sshSigningKey(get("user.signingKey"), home)
+	// An entry per NUL: the key, in lower case, then a newline and the
+	// value. A key's last one counts, as it does for git.
+	values := map[string]string{}
+	for entry := range strings.SplitSeq(string(out), "\x00") {
+		key, value, _ := strings.Cut(entry, "\n")
+		values[key] = strings.TrimSpace(value)
+	}
+	h := hostGit{Name: values["user.name"], Email: values["user.email"]}
+	if values["gpg.format"] == "ssh" {
+		h.SigningKey = sshSigningKey(values["user.signingkey"], home)
 	}
 	return h
 }
