@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,7 +18,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/mgnsk/sandbox/internal/apiproxy/apiproxytest"
 	"github.com/mgnsk/sandbox/internal/guard"
@@ -453,8 +455,8 @@ func TestServerName(t *testing.T) {
 	gh, revoked, hashedOnly := hostKey(t), hostKey(t), hostKey(t)
 	fp := ssh.FingerprintSHA256
 	g := &Guard{KnownHosts: knownHosts(t,
-		knownhosts.HashHostname("github.com")+" "+authorized(gh.PublicKey()),
-		knownhosts.HashHostname("[git.example]:2222")+",!evil.com "+authorized(hashedOnly.PublicKey()),
+		hashHostname(t, "github.com")+" "+authorized(gh.PublicKey()),
+		hashHostname(t, "[git.example]:2222")+",!evil.com "+authorized(hashedOnly.PublicKey()),
 		"@revoked * "+authorized(revoked.PublicKey()),
 		"old.example "+authorized(revoked.PublicKey()),
 		"garbage line that isn't one",
@@ -560,4 +562,16 @@ func TestAlwaysIsScopedToTheServer(t *testing.T) {
 	if n := len(w.popups.Asked()); n != 7 {
 		t.Errorf("asked %d times", n)
 	}
+}
+
+// hashHostname is host as a hashed known_hosts entry (|1|salt|hash).
+func hashHostname(t *testing.T, host string) string {
+	t.Helper()
+	salt := make([]byte, sha1.Size)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha1.New, salt)
+	mac.Write([]byte(host))
+	return "|1|" + base64.StdEncoding.EncodeToString(salt) + "|" + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }

@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/mgnsk/sandbox/internal/popup"
 )
@@ -231,7 +230,10 @@ func sshDestination(args []string) string {
 	if port == "" {
 		port = "22"
 	}
-	return knownhosts.Normalize(net.JoinHostPort(dest, port))
+	if port == "22" {
+		return dest
+	}
+	return "[" + dest + "]:" + port
 }
 
 // serverLines are the popup's lines on the server a login with session is
