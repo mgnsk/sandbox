@@ -102,7 +102,11 @@ func newSessionWith(t *testing.T, notifier Notifier) *session {
 	cmd.Env = append(os.Environ(), insideEnv+"=1")
 	s.cmd = cmd
 	signals := make(chan os.Signal)
-	go func() { s.done <- run(tty, tty, cmd, ln, signals, testGrace, notifier) }()
+	finished := make(chan struct{})
+	go func() {
+		s.done <- run(tty, tty, cmd, ln, signals, testGrace, notifier)
+		close(finished)
+	}()
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -116,11 +120,22 @@ func newSessionWith(t *testing.T, notifier Notifier) *session {
 		}
 	}()
 	t.Cleanup(func() {
+		// Through the relay, which ends when cmd does: only then is it
+		// done with the terminal.
+		timeout := time.After(10 * time.Second)
+		select {
+		case signals <- syscall.SIGKILL:
+			select {
+			case <-finished:
+			case <-timeout:
+				t.Error("the relay is still running")
+			}
+		case <-finished:
+		case <-timeout:
+			t.Error("the relay is still running")
+		}
 		term.Close()
 		tty.Close()
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
 	})
 	s.expect("ready")
 	return s

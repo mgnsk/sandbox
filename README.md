@@ -641,6 +641,7 @@ sandbox's own terminal.
 ```sh
 make test              # everything: nix checks, all tests against a fresh build, and lint
 make test RUN=HostPort # only the tests matching a go test -run filter, no lint
+make race              # the tests under Go's race detector (minutes)
 make coverage          # line coverage of the Go code by the tests
 make fmt               # format Go and nix files
 make vuln              # known vulnerabilities the Go code reaches

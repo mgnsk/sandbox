@@ -79,6 +79,21 @@ type daemon struct {
 
 func (d *daemon) GetCapabilities() ([]string, *dbus.Error) { return d.capabilities, nil }
 
+// notes are the notifications the daemon was asked to show so far, and
+// closes the ones it was asked to close: its methods run on the bus's
+// goroutines, not the test's.
+func (d *daemon) notes() []shown {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.shown)
+}
+
+func (d *daemon) closes() []uint32 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.closed)
+}
+
 func (d *daemon) Notify(app string, replaces uint32, icon, summary, body string, actions []string,
 	hints map[string]dbus.Variant, timeout int32) (uint32, *dbus.Error) {
 	d.mu.Lock()
@@ -156,7 +171,7 @@ func TestShowAndEvents(t *testing.T) {
 	if err != nil || id != 1 {
 		t.Fatal(id, err)
 	}
-	got := d.shown[0]
+	got := d.notes()[0]
 	want := shown{App: "sandbox", Summary: "sandbox tools: ssh-agent-guard",
 		// Markup made literal, escapes replaced.
 		Body:    "Allow SSH agent to sign?\n\n  command:  ssh &lt;host&gt; &amp; more?[0m",
@@ -191,8 +206,8 @@ func TestShowAndEvents(t *testing.T) {
 	if e := next(t, n); e != (Event{ID: 9, Kind: Gone}) {
 		t.Errorf("%+v", e)
 	}
-	if !slices.Equal(d.closed, []uint32{1}) {
-		t.Errorf("closed %v", d.closed)
+	if closed := d.closes(); !slices.Equal(closed, []uint32{1}) {
+		t.Errorf("closed %v", closed)
 	}
 }
 
@@ -210,7 +225,7 @@ func TestLongTextIsCutAndSaysSo(t *testing.T) {
 	if _, err := n.Show(popup.Request{Name: "open-url-guard", Text: head + url + "\n"}); err != nil {
 		t.Fatal(err)
 	}
-	got := d.shown[0]
+	got := d.notes()[0]
 	// Still answered here, on the start of it: the host comes first.
 	if !slices.Equal(got.Actions, []string{"no", "Deny", "once", "Allow once", "always", "Always in this sandbox"}) {
 		t.Errorf("actions %v", got.Actions)
@@ -238,7 +253,7 @@ func TestLongTextIsCutAndSaysSo(t *testing.T) {
 		}
 	}
 	// Without body-markup, as it is.
-	if _, err := n.Show(popup.Request{Name: "g", Text: "a <b> & c"}); err != nil || d.shown[1].Body != "a <b> & c" {
-		t.Errorf("%q %v", d.shown[1].Body, err)
+	if _, err := n.Show(popup.Request{Name: "g", Text: "a <b> & c"}); err != nil || d.notes()[1].Body != "a <b> & c" {
+		t.Errorf("%q %v", d.notes()[1].Body, err)
 	}
 }
