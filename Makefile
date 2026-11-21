@@ -11,7 +11,7 @@ NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix demo/*/*.nix
 
 BIN := .build/go/bin
 
-.PHONY: list test coverage build lint vuln vendor-hash options fmt demo-flake demo-home-manager demo-clean
+.PHONY: list test race coverage build lint vuln vendor-hash options fmt demo-flake demo-home-manager demo-clean
 
 .DEFAULT_GOAL := list
 
@@ -30,6 +30,11 @@ test: ## Nix checks, all Go tests (RUN=filter) and lint
 	nix build --no-link .#checks.$(SYSTEM).project .#checks.$(SYSTEM).config .#checks.$(SYSTEM).options
 	SANDBOX_BIN=$(SANDBOX_BIN) $(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
 	$(if $(RUN),,$(MAKE) lint)
+
+# The Go tests under the race detector. Not part of `make test`: the
+# launcher's tests take minutes that way.
+race: ## All Go tests under the race detector (RUN=filter)
+	SANDBOX_BIN=$(SANDBOX_BIN) $(DEV) go test -race $(if $(RUN),-run '$(RUN)') ./...
 
 # Line coverage of the Go code by its tests, the real-sandbox ones included
 # where they run.
