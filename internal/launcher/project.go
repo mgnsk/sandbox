@@ -445,9 +445,9 @@ func (l *launcher) confirmAccess(access hostAccess) error {
 	defer t.Close()
 	// Checked when read, and cleaned here all the same: this prompt is
 	// all that stands between the project and the host.
-	if !t.confirm(popup.CleanText(strings.ReplaceAll(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
+	if !t.confirm(popup.CleanText(fmt.Sprintf("sandbox: %s asks for host access:\n%s\n"+
 		"Read it before allowing: the commands run on this host as you, outside the sandbox.\n"+
-		"This is asked once, and again only for something new. Allow? [y/N] ", from, access), "\t", "    "))) {
+		"This is asked once, and again only for something new. Allow? [y/N] ", from, access))) {
 		return errors.New("host access not approved, not starting")
 	}
 	return nil

@@ -127,6 +127,9 @@ func TestClean(t *testing.T) {
 	if got := CleanText("a\x1b\nb"); got != "a?\nb" {
 		t.Errorf("CleanText = %q", got)
 	}
+	if got := CleanText("{\n\tid\n}"); got != "{\n    id\n}" {
+		t.Errorf("CleanText = %q", got)
+	}
 	if got := CleanLimit("\x1b[31mred"+strings.Repeat("a", 300), 200); got != "?[31mred"+strings.Repeat("a", 192)+"…" {
 		t.Errorf("CleanLimit = %q", got)
 	}
