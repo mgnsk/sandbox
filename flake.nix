@@ -45,9 +45,12 @@
         default = pkgs.mkShell {
           packages = [
             pkgs.go
-            # make lint and make vuln.
+            # make lint and make vuln. actionlint runs shellcheck on the
+            # workflows' scripts.
             pkgs.go-tools
             pkgs.govulncheck
+            pkgs.actionlint
+            pkgs.shellcheck
             # gh and fj, which the proxy tests run, and the bus and
             # secret-tool (libsecret's client) the secret-service tests
             # start.
