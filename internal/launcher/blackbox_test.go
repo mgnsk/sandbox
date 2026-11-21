@@ -199,6 +199,10 @@ func TestProjectAndVolume(t *testing.T) {
 	if inv.chdir != sub || mounts[len(mounts)-1] != "--bind "+h.project+" "+h.project {
 		t.Errorf("chdir %s, last mount %s", inv.chdir, mounts[len(mounts)-1])
 	}
+	// The root is made read-only once everything is mounted on it.
+	if last := inv.mountArgs[len(inv.mountArgs)-2:]; !slices.Equal(last, []string{"--remount-ro", "/"}) {
+		t.Errorf("after the mounts: %q", last)
+	}
 	// $HOME is nested at its own path in the volume dir, bound before
 	// every mount under $HOME, which bwrap layers on top of it.
 	volume := h.volume()

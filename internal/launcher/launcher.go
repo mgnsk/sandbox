@@ -241,6 +241,12 @@ func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, ins
 	}
 	a.add(exchange...)
 	a.add(bindArgs(prof.Binds, l.vars, l.project)...)
+	// After the last mount: they're made on a tmpfs of the user's, where
+	// what's no mount of its own - /etc, above the managed Claude config
+	// and what bash and the resolver read - could otherwise be moved aside
+	// and made anew by the sandbox. Only this mount: /tmp, the volume and
+	// the project stay writable.
+	a.add("--remount-ro", "/")
 	a.add("--chdir", l.cwd)
 	return a, resolver, nil
 }
