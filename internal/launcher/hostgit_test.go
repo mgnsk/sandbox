@@ -94,7 +94,7 @@ func TestSSHSigningKey(t *testing.T) {
 	}
 }
 
-// Git's settings: a user's .sandbox.yml over sandbox.nix's, and the host's
+// Git's settings: a user's .sandbox.yml over the flake's, and the host's
 // identity under both, where they ask for it.
 func TestGitSettings(t *testing.T) {
 	h := hostGit{Name: "Host", Email: "host@example.com", SigningKey: "ssh-ed25519 AAAAhost"}
@@ -128,7 +128,7 @@ func TestGitSettings(t *testing.T) {
 	}
 
 	// Either a key or a command of one's own replaces both of
-	// sandbox.nix's.
+	// the flake's.
 	theirs := (&manifest{GitSigningKey: "ssh-ed25519 AAAAteam"}).git()
 	theirCommand := (&manifest{GitSigningKeyCommand: "team"}).git()
 	for _, tc := range []struct {

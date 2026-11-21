@@ -91,32 +91,3 @@ func TestReadLocalConfigRefusesALink(t *testing.T) {
 		t.Errorf("link: %v", err)
 	}
 }
-
-func TestClaudeKeySettings(t *testing.T) {
-	g := &guards{}
-	defer func() {
-		for _, d := range g.dirs {
-			os.RemoveAll(d)
-		}
-	}()
-	claudeDir := t.TempDir()
-	os.WriteFile(filepath.Join(claudeDir, "managed-settings.json"), []byte(`{"env": {"A": "1"}}`), 0o644)
-	var a bwrapArgs
-	if err := claudeKeySettings(g, &a, claudeDir); err != nil {
-		t.Fatal(err)
-	}
-	args := strings.Join(a, " ")
-	if !strings.Contains(args, "/etc/claude-code/managed-settings.json") || len(g.dirs) != 1 {
-		t.Fatalf("%q", args)
-	}
-	data, _ := os.ReadFile(filepath.Join(g.dirs[0], "managed-settings.json"))
-	if got := string(data); got != `{"apiKeyHelper":"echo sandbox-placeholder","env":{"A":"1"}}` {
-		t.Errorf("%s", got)
-	}
-	// Already there (the user's config's key, or sandbox.nix's): left alone.
-	os.WriteFile(filepath.Join(claudeDir, "managed-settings.json"), []byte(`{"apiKeyHelper": "x"}`), 0o644)
-	a = bwrapArgs{}
-	if err := claudeKeySettings(g, &a, claudeDir); err != nil || len(a) != 0 {
-		t.Errorf("%v %q", err, a)
-	}
-}

@@ -8,7 +8,7 @@
 // a placeholder token. This proxy
 // holds the real token, which never enters the sandbox: the one the token
 // command printed at start (guards.github.tokenCommand, from the user's
-// config or an approved sandbox.nix), which the launcher pipes in and this
+// config or an approved project flake), which the launcher pipes in and this
 // keeps in memory only. The host's gh, and any login it has, is never used. It
 // decides per request (the mechanics are apiproxy's):
 //

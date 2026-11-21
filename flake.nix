@@ -25,10 +25,15 @@
       # programs.sandbox for home-manager.
       homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
 
+      # For a project's flake.nix: mkShell, a dev shell with the sandbox's
+      # configuration on it, and mkClaude, Claude Code configured by the
+      # project (see nix/shell.nix, nix/claude.nix).
+      lib = import ./nix/lib.nix { inherit lib; };
+
       # The sandbox with default settings, run from this flake's remote:
       #   nix run github:mgnsk/sandbox[/REV] -- COMMAND...
       # It reads no user config; settings of your own come from home-manager
-      # (homeManagerModules), a project's from its sandbox.nix.
+      # (homeManagerModules), a project's from its flake (lib.mkShell).
       packages = forAllSystems (pkgs: {
         default = mkSandbox { inherit pkgs; };
       });

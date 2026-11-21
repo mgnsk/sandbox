@@ -19,17 +19,25 @@ import (
 	"github.com/mgnsk/sandbox/internal/waylandguard"
 )
 
-const projectFileName = "sandbox.nix"
+// The project's flake, whose default dev shell carries the sandbox's
+// configuration (sandbox.lib.mkShell), and its lock.
+const (
+	projectFileName = "flake.nix"
+	lockFileName    = "flake.lock"
+)
 
-// The largest sandbox.nix, .sandbox.yml and manifest read.
+// TODO: drop once projects have moved their sandbox.nix to the flake: the
+// file the configuration was in before, which is now only warned about.
+const oldProjectFileName = "sandbox.nix"
+
+// The largest flake.nix, flake.lock, .sandbox.yml and manifest read.
 const (
 	maxProjectFile = 16 << 20
 	maxManifest    = 1 << 20
 )
 
-// manifest is what project.nix makes of sandbox.nix.
+// manifest is what project.nix makes of the flake's sandbox module.
 type manifest struct {
-	ClaudeDir string   `json:"claudeDir"`
 	Binds     []bind   `json:"binds"`
 	HostPorts []string `json:"hostPorts"`
 	Command   []string `json:"command"`
@@ -62,22 +70,19 @@ func (w waylandAccess) widens() bool {
 func readManifest(path string) (*manifest, error) {
 	data, err := readRegularFile(path, maxManifest)
 	if err != nil {
-		return nil, fmt.Errorf("can't read the %s result: %w", projectFileName, err)
+		return nil, fmt.Errorf("can't read the %s evaluation: %w", projectFileName, err)
 	}
 	m := &manifest{}
 	if err := json.Unmarshal(data, m, json.RejectUnknownMembers(true)); err != nil {
-		return nil, fmt.Errorf("bad %s result %s: %w", projectFileName, path, err)
+		return nil, fmt.Errorf("bad %s evaluation %s: %w", projectFileName, path, err)
 	}
 	if err := m.check(); err != nil {
-		return nil, fmt.Errorf("bad %s result %s: %w", projectFileName, path, err)
+		return nil, fmt.Errorf("bad %s evaluation %s: %w", projectFileName, path, err)
 	}
 	return m, nil
 }
 
 func (m *manifest) check() error {
-	if m.ClaudeDir != "" && !isStoreObject(m.ClaudeDir) {
-		return errors.New("claudeDir is not a store path")
-	}
 	for _, b := range m.Binds {
 		if b.Src == "" || b.Mode != "ro" && b.Mode != "rw" || !plainLine(b.Src) || !plainLine(b.Dst) {
 			return fmt.Errorf("bad bind %q", fmt.Sprintf("%+v", b))
@@ -116,11 +121,19 @@ func plainLine(s string) bool {
 	return plainText(s) && !strings.ContainsAny(s, "\n\t")
 }
 
-// readProjectFile reads sandbox.nix's bytes, for the cache key. Not through
-// a symlink, which would have the launcher read a host file of the
+// readProjectFile reads a project file's bytes, for the cache key. Not
+// through a symlink, which would have the launcher read a host file of the
 // sandbox's choosing.
 func readProjectFile(path string) ([]byte, error) {
 	return readRegularFile(path, maxProjectFile)
+}
+
+// readLockFile is flake.lock's bytes, or nil without one.
+func readLockFile(path string) ([]byte, error) {
+	if !lexists(path) {
+		return nil, nil
+	}
+	return readProjectFile(path)
 }
 
 // cached is a cache file's content: the key of what a result was made from.
@@ -139,49 +152,41 @@ func readCache(path, key string) string {
 	return c.Result
 }
 
-// projectManifest is sandbox.nix's manifest, from the cache while
-// sandbox.nix, the sandbox's own config and the profile's Claude config are
-// unchanged. Files sandbox.nix imports aren't tracked; --reload picks them
+// projectManifest is the manifest of the flake's sandbox module, from the
+// cache while flake.nix, flake.lock and the sandbox's own config are
+// unchanged. Files flake.nix imports aren't tracked; --reload picks them
 // up.
-//
-// claudeKey says Claude Code inside runs on an API key from .sandbox.yml,
-// which the managed settings sandbox.nix's evaluation builds must know: the
-// launcher never edits what comes out of it.
-func (l *launcher) projectManifest(ctx context.Context, base string, claudeKey bool) (*manifest, error) {
+func (l *launcher) projectManifest(ctx context.Context) (*manifest, error) {
 	projectFile := filepath.Join(l.project, projectFileName)
 	content, err := readProjectFile(projectFile)
 	if err != nil {
 		return nil, err
 	}
-	key := cacheKey(realpath(l.configPath), base, content, claudeKey)
+	lock, err := readLockFile(filepath.Join(l.project, lockFileName))
+	if err != nil {
+		return nil, err
+	}
+	key := cacheKey(realpath(l.configPath), content, lock)
 	cache := filepath.Join(l.volumeDir, "project.json")
 	if !l.opts.Reload {
 		if out := readCache(cache, key); out != "" {
-			// Evaluated again when its Claude config is gone from the
-			// store: linked in, a missing one would go unnoticed.
-			if m, err := readManifest(out); err != nil || m.ClaudeDir == "" || lexists(m.ClaudeDir) {
-				return m, err
-			}
+			return readManifest(out)
 		}
 	}
 	// Evaluated with nix inside a sandbox of the project, without its
-	// sandbox.nix - and without guards, tokens or host ports: what
-	// evaluates there is the project's code, and needs none.
+	// config - and without guards, tokens or host ports: what evaluates
+	// there is the project's code, and needs none.
 	fmt.Fprintf(os.Stderr, "sandbox: evaluating %s\n", projectFile)
-	argv := []string{
+	out, err := l.runCapturing(ctx,
 		l.self, "launch", "--config", l.configPath, "--eval", "--",
 		"nix", "build", "--no-link", "--print-out-paths", "--file", l.cfg.Project.Eval,
 		"--argstr", "nixpkgs", l.cfg.Project.Nixpkgs,
 		"--argstr", "system", l.cfg.Project.System,
-		"--argstr", "file", projectFile,
-		"--argstr", "base", base,
-	}
-	if claudeKey {
-		argv = append(argv, "--argstr", "claudeApiKey", "1")
-	}
-	out, err := l.runCapturing(ctx, argv...)
+		"--argstr", "flake", l.project,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("evaluating %s: %w", projectFile, err)
+		return nil, fmt.Errorf("evaluating %s: %w (flakes see only what git tracks: `git add` a new file; "+
+			"--no-project-config starts without the flake)", projectFile, err)
 	}
 	// The login shell's startup files may print too; the build's output is
 	// the last line. Whatever ran in there chose it: only a store object
@@ -331,12 +336,13 @@ type projectSettings struct {
 	wayland   waylandAccess
 }
 
-// applyProject reads the project's settings - sandbox.nix (committed) and
-// .sandbox.yml (each user's, over it) - has the user approve what of them
-// reaches the host, and returns the profile with them applied.
+// applyProject reads the project's settings - its flake's sandbox module
+// (committed) and .sandbox.yml (each user's, over it) - has the user
+// approve what of them reaches the host, and returns the profile with them
+// applied.
 //
 // For a token command, the user's own config's word counts first, then
-// .sandbox.yml's, then sandbox.nix's; one that wouldn't run is not asked
+// .sandbox.yml's, then the flake's; one that wouldn't run is not asked
 // about.
 func (l *launcher) applyProject(ctx context.Context, prof profile) (profile, projectSettings, error) {
 	if l.opts.NoProjectConfig || l.opts.Eval {
@@ -346,10 +352,13 @@ func (l *launcher) applyProject(ctx context.Context, prof profile) (profile, pro
 	if err != nil {
 		return prof, projectSettings{}, err
 	}
+	if lexists(filepath.Join(l.project, oldProjectFileName)) {
+		fmt.Fprintf(os.Stderr, "sandbox: %s is no longer read: its settings go in the flake, "+
+			"as sandbox.lib.mkShell's `sandbox`\n", filepath.Join(l.project, oldProjectFileName))
+	}
 	m := &manifest{}
 	if lexists(filepath.Join(l.project, projectFileName)) {
-		claudeKey := local.ClaudeAPIKeyCommand != "" && prof.ClaudeAPIKeyCommand == ""
-		if m, err = l.projectManifest(ctx, prof.ClaudeDir, claudeKey); err != nil {
+		if m, err = l.projectManifest(ctx); err != nil {
 			return prof, projectSettings{}, err
 		}
 	}
@@ -368,17 +377,13 @@ func (l *launcher) applyProject(ctx context.Context, prof profile) (profile, pro
 	// ...and what of it this start uses.
 	used := asked
 	used.tokenCommands = asked.tokenCommands.without(prof.tokenCommands)
-	// Without Claude Code in the sandbox (no managed config), no key.
-	if prof.ClaudeDir == "" {
-		used.ClaudeAPIKeyCommand = ""
-	}
 	if enable := l.cfg.Guards.Wayland.Enable; enable != nil && !*enable {
 		used.Wayland = nil
 	}
 	if err := l.approve(asked, used); err != nil {
 		return prof, projectSettings{}, err
 	}
-	prof = withManifest(prof, m)
+	prof.Binds = slices.Concat(prof.Binds, m.Binds)
 	prof.tokenCommands = prof.tokenCommands.over(used.tokenCommands)
 	if len(l.command) == 0 {
 		l.command = m.Command
@@ -477,17 +482,6 @@ func (l *launcher) approvedBinds(binds []bind) ([]approvedBind, error) {
 		out = append(out, a)
 	}
 	return out, nil
-}
-
-// withManifest is the profile with sandbox.nix's additions: its binds on
-// top, and its Claude config (already merged with the profile's by
-// project.nix) in place of the profile's - none without one in the profile.
-func withManifest(p profile, m *manifest) profile {
-	p.Binds = slices.Concat(p.Binds, m.Binds)
-	if p.ClaudeDir != "" && m.ClaudeDir != "" {
-		p.ClaudeDir, p.claudeFromProject = m.ClaudeDir, true
-	}
-	return p
 }
 
 // runCapturing runs argv with no stdin, its stdout captured and its stderr

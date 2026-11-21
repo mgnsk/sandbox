@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// gitSettings are git's identity and signing inside: sandbox.nix's
+// gitSettings are git's identity and signing inside: the flake's
 // (git.fromHost and the signing key, for everyone on the project), a user's
 // .sandbox.yml's over them, and what the host's own git config fills in.
 // They only set git's environment inside; a signing key command runs on

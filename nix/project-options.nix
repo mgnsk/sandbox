@@ -1,5 +1,6 @@
-# The options of a project's sandbox.nix: for project.nix, which evaluates
-# one, and the options reference (options-doc.nix).
+# The options of a project's sandbox module (sandbox.lib.mkShell's
+# `sandbox`): for manifest.nix, which evaluates one, and the options
+# reference (options-doc.nix).
 { lib, layer }:
 let
   inherit (lib) mkOption types;

@@ -1,5 +1,5 @@
-# A project's sandbox.nix, for nix/project-check.nix.
-{ pkgs, ... }:
+# A project's sandbox module, for nix/project-check.nix.
+{ ... }:
 {
   hostPorts = [ "5432" ];
   binds = [
@@ -20,8 +20,4 @@
   guards.wayland.enable = true;
   guards.wayland.globals.wl_data_device_manager = true;
   guards.wayland.globals.wl_drm = false;
-  claude.lspServers.gopls = {
-    package = pkgs.gopls;
-    extensionToLanguage.".go" = "go";
-  };
 }

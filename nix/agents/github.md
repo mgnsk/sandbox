@@ -16,11 +16,12 @@ Whether `gh` is authenticated depends on how the sandbox was started:
 
 - `$GH_TOKEN` is `sandbox-placeholder`: a token command is set, so a host
   proxy adds the real token to API requests and gates writes behind a
-  popup. A hook rejects HTTP clients against GitHub.
+  popup. A hook may reject HTTP clients against GitHub.
 - `$GH_TOKEN` is unset: no token command, so no proxy and no token. `gh`
   only reaches what is public, and writes fail. Say so, and that the fix is
-  `guards.github.tokenCommand` in the project's `sandbox.nix` or
-  `.sandbox.yml` (or the user's sandbox config) and a restart.
+  `guards.github.tokenCommand` in the project's flake (the `sandbox` of
+  `sandbox.lib.mkShell`) or `.sandbox.yml` (or the user's sandbox
+  config) and a restart.
 
 Prefer the dedicated subcommands (`gh pr view`, `gh issue list`,
 `gh release download`, `gh run view --log`, ...) and fall back to

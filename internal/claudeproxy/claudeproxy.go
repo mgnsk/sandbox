@@ -19,7 +19,7 @@
 //
 // The key is the one its token command printed at start
 // (guards.claudeApiKey.tokenCommand, from the user's config or an approved
-// sandbox.nix), piped in by the launcher and kept in memory only.
+// project flake), piped in by the launcher and kept in memory only.
 //
 // Only API keys go through here, never a Claude subscription login:
 // Anthropic doesn't allow tools to store or intermediate claude.ai

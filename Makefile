@@ -23,7 +23,7 @@ list: ## List the commands
 # The sandbox built from this checkout, for the real-sandbox tests (e2e).
 SANDBOX_BIN = $$(nix build --no-link --print-out-paths .\#checks.$(SYSTEM).default)/bin/sandbox
 
-# Everything: the checks of the configuration and of sandbox.nix's
+# Everything: the checks of the configuration and of a project flake's
 # evaluation, the Go tests - the real-sandbox ones (e2e) against a fresh
 # build of the sandbox - and lint. The real-sandbox tests need a host with
 # unprivileged user namespaces; inside a sandbox they skip.
@@ -79,7 +79,7 @@ fmt: ## Format the Go and nix files
 # demo set up by demo/entrypoint.sh - the sandbox as a new user meets it,
 # from the remote (github:mgnsk/sandbox), not this checkout:
 #   demo-flake          `nix run github:mgnsk/sandbox`, in a project whose
-#                       flake.nix and sandbox.nix bring and shape everything
+#                       flake.nix brings and shapes everything
 #   demo-home-manager   programs.sandbox in the user's home-manager config
 # Run on the host (no docker inside a sandbox). The nix store is kept in a
 # volume between runs, the home isn't; make demo-clean drops the store, e.g.
@@ -105,7 +105,7 @@ define demo
 		$(DEMO_IMAGE) $(ARGS)
 endef
 
-demo-flake: ## Demo: a project with flake.nix and sandbox.nix (ARGS='cmd')
+demo-flake: ## Demo: a project whose flake.nix configures the sandbox (ARGS='cmd')
 	$(call demo,flake)
 
 demo-home-manager: ## Demo: the sandbox from home-manager (ARGS='cmd')

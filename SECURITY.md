@@ -19,7 +19,7 @@ The rest of this file says how each of these comes about; in short, a
 sandbox is not a boundary for:
 
 - **What you approve.** A yes to a popup, or to what a project's
-  `sandbox.nix` asks of the host, is yours: the sandbox only makes sure you
+  flake asks of the host, is yours: the sandbox only makes sure you
   were asked, and shown what for. `A` in a popup approves everything that
   guard is asked for the rest of that sandbox.
 - **What's inside it.** Everything in a sandbox can read everything else
@@ -67,7 +67,7 @@ The only host-backed paths writable from inside are:
   a hash. It looks like the host home but is never the real one — a file the
   sandbox writes there never reaches the host path it shadows, and a file the
   host has there is not visible inside. The project's
-  `sandbox.nix` approvals and evaluation cache sit next to it in
+  approvals and flake evaluation cache sit next to it in
   `<state dir>/<volume>/`, outside the mount, out of the sandbox's reach.
   Tokens and keys are never written there, or anywhere.
 
@@ -103,7 +103,7 @@ direction is closed. Host services - on its loopback or on any of its own
 addresses - are reachable only for ports listed in `SANDBOX_HOST_PORTS`
 (`5037 8080/udp 9000-9010`, tcp by default), read from the host's environment
 when `sandbox` starts, or in `hostPorts` (the user's config, or an approved
-`sandbox.nix`), and then only at `127.0.0.1:<port>` inside:
+project flake), and then only at `127.0.0.1:<port>` inside:
 
 - pasta's `-T`/`-U` mirror just those host loopback ports, instead of its
   default of every listener the host has;
@@ -260,8 +260,10 @@ it, so the sandbox makes the usual ways fail and reports the rest:
   while it is (clearing it gets past that);
 - forgejo-api-proxy refuses the OAuth token exchange of `fj auth login`, for
   instances with a token command;
-- a Claude Code hook (`nix/claude/deny-cli-login.sh`) denies `gh auth
-  login|refresh|token` and `fj auth login|add-token|add-key`, guard or not;
+- in the Claude Code of `sandbox.lib.mkClaude`, a hook
+  (`nix/claude/deny-cli-login.sh`) denies `gh auth login|refresh|token` and
+  `fj auth login|add-token|add-key`, guard or not. It's in the project's
+  flake, which sandboxed code can edit: a check against a slip, no more;
 - at each start, init warns of a login stored in the volume - hosts in gh's
   `hosts.yml` or fj's `keys.json` - and secret-service-guard of gh tokens
   among the project's items in the host keyring (when it's unlocked), with
@@ -279,7 +281,7 @@ it comes from is the boundary:
 - **The user's config** (home-manager, a profile in it):
   trusted like the rest of it, run without asking. It wins over the
   project's for the same guard or host.
-- **The project's `sandbox.nix`** (or `.sandbox.yml`, below): sandboxed code can edit it, so its
+- **The project's flake** (or `.sandbox.yml`, below): sandboxed code can edit it, so its
   commands are shown on the terminal and run only after a yes, stored with
   the project's other approvals and asked again when one changes; without a
   terminal the sandbox doesn't start. A command the user's config overrides,
@@ -289,7 +291,9 @@ it comes from is the boundary:
 ## Claude Code: a login inside, or an API key outside
 
 By default Claude Code is logged in inside, per project, and keeps its
-credentials in `~/.claude/.credentials.json` in the project's volume.
+credentials in its config dir in the project's volume
+(`~/.claude-project/.credentials.json` for `sandbox.lib.mkClaude`'s,
+`~/.claude/` for another).
 Anything running in that sandbox can read the file and use the login
 elsewhere until it's revoked on claude.ai. Other projects' logins and the
 host's are out of its reach. There is no way around this for a Claude
@@ -299,7 +303,8 @@ claude.ai credentials, so the login can't be held outside.
 A Claude API key command (`guards.claudeApiKey.tokenCommand`, see "Token
 commands") keeps an API key outside instead: printed on the host at each
 start and held in claude-api-proxy's memory, never on disk. Claude Code inside
-gets a placeholder from the managed `apiKeyHelper`, and `ANTHROPIC_UNIX_SOCKET`
+gets a placeholder from an `apiKeyHelper` (`sandbox.lib.mkClaude` sets it
+when the guard runs), and `ANTHROPIC_UNIX_SOCKET`
 plus an `http://` `ANTHROPIC_BASE_URL` make it send plain HTTP over a socket
 to claude-api-proxy (`internal/claudeproxy`) on the host, which per request:
 
@@ -312,6 +317,15 @@ There are no popups: Claude Code makes a request per turn. Anything in the
 sandbox can therefore use the key through the socket while the sandbox runs,
 but can't take it away. A key per project, in a Console workspace with a spend
 limit, bounds what that costs.
+
+Claude Code's configuration - settings, hooks, MCP servers, memory - is the
+project's (`sandbox.lib.mkClaude` in its flake) or the user's own profile's
+(`~/.claude`, linked into the volume from home-manager). Either is inside
+the sandbox's reach: the project's in the project, the links in the home
+volume, which the sandbox can replace until the next start. The sandbox puts
+none of its own in place that sandboxed code couldn't change; what it says
+about itself is `/etc/sandbox/AGENTS.md`, read-only, and its guards don't
+depend on any of it.
 
 ## Opening URLs: http(s) only, behind a popup
 
@@ -401,7 +415,7 @@ than keep credentials anywhere else.
 ## Wayland: a proxy with an allowlist, never the socket
 
 Off unless `guards.wayland.enable` is set: by the user's own config, or by a
-project's sandbox.nix once approved (see "Project config").
+project's flake once approved (see "Project config").
 
 A Wayland compositor gives a client whatever it offers any client. On
 wlroots compositors that includes the screen's contents
@@ -439,7 +453,7 @@ bound for it.
   It gets no popup socket, no token and nothing but the compositor's socket.
 - It listens in a temp dir of its own, which only the launcher knows, and
   goes with the sandbox.
-- A project's sandbox.nix may add to the allowlist and remove from it; the
+- A project's flake may add to the allowlist and remove from it; the
   user's own changes are applied last. Turning the guard on and adding a
   global need the user's yes; names are checked (`[a-z][a-z0-9_]*`) before
   they reach wl-veil's command line.
@@ -542,8 +556,8 @@ project sees which hosts the user connects to, unless the file is hashed.
 
 All of it is mounted on a tmpfs root, which is made read-only once the
 mounts are in place. Left writable, it would let sandboxed code move `/etc`
-aside and make its own - its own managed Claude config, startup files and
-`hosts` - for the rest of that sandbox. What can be written inside is
+aside and make its own - its own `AGENTS.md`, startup files and `hosts` -
+for the rest of that sandbox. What can be written inside is
 `/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR`, the home volume, the project and
 read-write binds.
 
@@ -567,27 +581,29 @@ paths, its own substituters and build settings). Keep the user untrusted;
 extra binary caches belong in the daemon's own configuration
 (`extra-substituters`, `extra-trusted-public-keys`).
 
-## Project config (sandbox.nix)
+## Project config (the flake)
 
-A project's `sandbox.nix` is in the sandbox-writable project, so it is
-treated as untrusted input:
+A project's `flake.nix` is in the sandbox-writable project, so its sandbox
+configuration (the default dev shell's `sandbox`, which
+`sandbox.lib.mkShell` sets) is treated as untrusted input:
 
 - It's evaluated by nix inside a nested sandbox of the project, never on the
   host: host evaluation could read any host file into the world-readable
   store. That sandbox gets no guards, tokens or host ports. The host only
   reads the resulting manifest, a JSON file in the store, and checks every
-  field (store paths, string maps, bind shapes) before use. sandbox.nix
-  itself is read on the host only for the cache key, and never through a
-  symlink.
+  field (string maps, bind shapes) before use. `flake.nix` and `flake.lock`
+  themselves are read on the host only for the cache key, and never through
+  a symlink.
+- The configuration is a module, evaluated with the options of the sandbox
+  that runs it, not of the version the flake pins: the project picks
+  values, never what they mean.
 - The manifest is whatever the code in that sandbox printed, and a store
   path can be a link to anywhere. So the manifest is read only as a regular
-  file that is a store path itself, and the Claude config it names is never
-  resolved on the host: it reaches the sandbox as a link at
-  `/etc/claude-code`, followed inside, where it can only lead to what the
-  sandbox has anyway.
+  file that is a store path itself; nothing in it names a path the host
+  would resolve.
 - It can't change anything that runs on the host: the launcher, bwrap, pasta,
   seccomp, the guards and their settings come from the configuration
-  the sandbox was started with. What it sets otherwise (command, Claude config) runs
+  the sandbox was started with. What it sets otherwise (the command) runs
   inside.
 - What reaches beyond the inside - `binds`, `hostPorts`, token commands,
   which run on the host, and the Wayland guard (turning it on, or adding a
@@ -613,10 +629,10 @@ treated as untrusted input:
 
 ## Per-user project settings (.sandbox.yml)
 
-`.sandbox.yml` is in the project too, so it's untrusted like `sandbox.nix`:
+`.sandbox.yml` is in the project too, so it's untrusted like the flake:
 read on the host without following a symlink, decoded strictly (an unknown
 field is an error). Its token commands and signing key command go through
-the same approval as `sandbox.nix`'s (whose own signing key command is
+the same approval as the flake's (whose own signing key command is
 approved too); a signing key command's output must be an ssh public key.
 Its git identity and signing key only set git's environment inside. Being
 gitignored keeps it out of commits, not out of the sandbox's reach - and the
@@ -633,12 +649,9 @@ the browser), so nothing the sandbox wrote in the project reaches them.
 
 ## Profiles
 
-A profile of the user's config applies by where the sandbox starts (`paths`)
-or by a file in the project's root (`projectFiles`). The sandbox writes the
-project, so it can make the second kind apply at its next start: such a
-profile can only set Claude config, which stays inside. Binds and token
-commands need a profile picked by `paths` alone; the configuration fails to
-build otherwise.
+A profile of the user's config applies by where the sandbox starts
+(`paths`), never by a file in the project, which the sandbox writes and
+could otherwise use to pick a profile with more of the host.
 
 ## Where the configuration comes from
 
@@ -668,3 +681,8 @@ get host code execution at the next switch, shell or host-side git command.
 Only run trusted code in such a project. Untrusted agents and builds belong in
 other projects, where those binds are read-only and per-project volumes
 isolate the rest.
+
+The same goes for a sandboxed project's own flake: `nix develop` (or `nix
+run`, direnv's `use flake`) on the host runs what the sandbox may have put
+there, outside it. `sandbox.lib.mkShell`'s shell refuses to start outside a
+sandbox, but that check is in the flake too: run them inside.

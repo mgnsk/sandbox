@@ -51,8 +51,9 @@ What you get, per project:
   server alone.
 - **An exchange dir** (`$SANDBOX_EXCHANGE`), read-only inside, for output of
   commands you run on the host.
-- **Claude Code** with managed settings and a `CLAUDE.md` that tells it about
-  all of the above.
+- **Claude Code for your project's dev shell** (`sandbox.lib.mkClaude`),
+  configured by the project, and an `/etc/sandbox/AGENTS.md` that tells it
+  about all of the above.
 
 See [SECURITY.md](SECURITY.md) for the threat model, and for what the
 sandbox doesn't protect against.
@@ -69,7 +70,7 @@ Pick one of two ways to get a `sandbox` command:
   ```
 
   It reads no config of yours; the repo you work on adjusts what applies
-  inside through its [sandbox.nix](#the-projects-sandboxnix), and you through
+  inside through its [flake.nix](#the-projects-flake), and you through
   your [.sandbox.yml](#per-user-project-settings-sandboxyml) there.
 - **Your home-manager config**, with settings of your own for every
   project (see [Your sandbox config](#your-sandbox-config)). The only way to
@@ -95,13 +96,19 @@ put there.
 
 ## Using it in a project
 
-Say a project has just a `flake.nix` with a dev shell:
+A project brings its tools in a dev shell, and configures the sandbox around
+it in the same place: `sandbox.lib.mkShell` is `pkgs.mkShell` with the
+sandbox's settings (`sandbox`) and Claude Code (`claude`) added.
 
 ```nix
 {
-  inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    sandbox.url = "github:mgnsk/sandbox";
+    sandbox.inputs.nixpkgs.follows = "nixpkgs";
+  };
 
-  outputs = { nixpkgs, ... }:
+  outputs = { nixpkgs, sandbox, ... }:
     let
       pkgs = import nixpkgs {
         system = "x86_64-linux";
@@ -109,30 +116,36 @@ Say a project has just a `flake.nix` with a dev shell:
         config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "claude-code";
       };
     in {
-      devShells.x86_64-linux.default = pkgs.mkShell {
-        packages = [
-          pkgs.claude-code pkgs.gh   # the sandbox ships neither
-          pkgs.go pkgs.gopls pkgs.golangci-lint
-        ];
+      devShells.x86_64-linux.default = sandbox.lib.mkShell {
+        inherit pkgs;
+        packages = [ pkgs.gh pkgs.go pkgs.gopls pkgs.golangci-lint ];  # the sandbox ships no gh
         CGO_ENABLED = "0";           # the project's variables go here too
+        sandbox.git.fromHost = true; # see The project's flake
+        claude.settings.permissions.allow = [ "Bash(go test:*)" ];  # see Claude Code
       };
     };
 }
 ```
 
-Start the sandbox in the project and enter the dev shell inside it:
+Start the sandbox in the project; a bare `sandbox` enters the dev shell
+there:
 
 ```sh
 cd ~/src/myproject
-sandbox nix develop                    # interactive dev shell
+sandbox                                # the dev shell, inside the sandbox
 sandbox nix develop -c claude          # Claude Code with the project's tools on PATH
 sandbox nix develop -c go test ./...   # a one-off command
 ```
 
-`command = [ "nix" "develop" ];` in the project's
-[sandbox.nix](#the-projects-sandboxnix) makes the dev shell what a bare
-`sandbox` runs. With direnv, `use flake` in `.envrc` does the same whenever
-you `cd` in.
+The shell refuses to start outside the sandbox (`requireSandbox = false;`
+turns that off). It's only a guard against a slip: the sandbox can edit
+the flake, so `nix develop` on the host would run whatever it put in the
+shell hook. With direnv, `use flake` in `.envrc` inside the sandbox does
+the same whenever you `cd` in - but don't allow it on the host.
+
+The sandbox the flake pins is only where `mkShell` comes from: your
+`sandbox` command evaluates the `sandbox` settings with its own options,
+whichever version the project locked.
 
 ### Where tools come from
 
@@ -154,8 +167,9 @@ Everything else comes from:
 
 ### The project's `$HOME`
 
-`~/go/pkg`, `~/.cache`, Claude's `~/.claude`, ... persist between runs and
-aren't shared with other projects. From your real home it gets only what's
+`~/go/pkg`, `~/.cache`, Claude Code's `~/.claude-project` (`~/.claude` for
+a claude of your own), ... persist between runs and aren't shared with other
+projects. From your real home it gets only what's
 bound in (`binds`) and your own profile.
 
 - **Shell startup.** The sandbox has a managed, read-only `/etc/bashrc` and
@@ -168,21 +182,23 @@ bound in (`binds`) and your own profile.
   your own profile brings one, set `git.fromHost` (name, email and signing
   key from your host's global git config) or `git.userName`/`git.userEmail`
   in the project's [.sandbox.yml](#per-user-project-settings-sandboxyml);
-  `sandbox.nix` can set `git.fromHost` for everyone. `git config --global`
+  the project's flake can set `git.fromHost` for everyone. `git config --global`
   inside is saved in that project's `$HOME` only.
 
 ### Using devenv
 
 [devenv](https://devenv.sh) runs inside the sandbox like any other tool:
 `devenv.nix` and `devenv.yaml` stay as they are, and its shell, scripts,
-tasks, processes and services all run sandboxed. devenv itself comes from
-your own profile, or from the project:
+tasks, processes and services all run sandboxed. The sandbox's settings
+come from a flake next to them, whose dev shell brings devenv:
 
 ```nix
-# sandbox.nix, next to devenv.nix
-{
-  command = [ "devenv" "shell" ];   # a bare `sandbox` enters the devenv shell
-}
+# flake.nix, next to devenv.nix
+devShells.x86_64-linux.default = sandbox.lib.mkShell {
+  inherit pkgs;
+  packages = [ pkgs.devenv ];
+  sandbox.command = [ "devenv" "shell" ];   # a bare `sandbox` enters the devenv shell
+};
 ```
 
 ```sh
@@ -190,11 +206,6 @@ sandbox                                  # devenv shell
 sandbox devenv up                        # processes and services
 sandbox devenv shell -- claude           # Claude Code with devenv's tools on PATH
 ```
-
-A project can also bring its own devenv, pinned in its `flake.lock`
-(`packages.<system>.devenv = devenv.packages.<system>.devenv;` in its
-flake), with `command = [ "nix" "run" ".#devenv" "--" "shell" ];`.
-`sandbox nix run nixpkgs#devenv -- shell` works too, unpinned.
 
 What to know:
 
@@ -236,80 +247,75 @@ What to know:
 | Where | What it can set | Trust |
 | --- | --- | --- |
 | **Your sandbox config**: home-manager's `programs.sandbox.settings` | Every [option](#options), including `profiles` | Trusted: applies without asking, and wins over the project's settings |
-| **The project's [`sandbox.nix`](#the-projects-sandboxnix)**, committed | `command`, `claude.*`, `hostPorts`, `binds`, the guards' token commands, `guards.wayland`, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: what reaches the host is **approved** first |
-| **The project's [`.sandbox.yml`](#per-user-project-settings-sandboxyml)**, gitignored, each user's own | The guards' token commands and `git.*` | As `sandbox.nix`, which it overrides |
-| **The project's dev shell** | Tools and the project's environment variables | Runs inside |
+| **The project's [flake](#the-projects-flake)**, committed: `sandbox` of `sandbox.lib.mkShell` | `command`, `hostPorts`, `binds`, the guards' token commands, `guards.wayland`, `git.fromHost`, `git.signingKey`, `git.signingKeyCommand` | Sandboxed code can edit it: what reaches the host is **approved** first |
+| **The project's [`.sandbox.yml`](#per-user-project-settings-sandboxyml)**, gitignored, each user's own | The guards' token commands and `git.*` | As the flake's, which it overrides |
+| **The project's dev shell**, in the same flake | Tools, the project's environment variables, [Claude Code](#claude-code-in-the-project) | Runs inside |
 
 **Approved** means: binds, host ports, the Wayland guard and commands run on
 the host are shown on the terminal and apply only after your yes. It's asked
 the first time, and again only for something new or changed. Everything else
 a project sets only affects the inside and applies without asking.
 
-### The project's sandbox.nix
+### The project's flake
 
-A `sandbox.nix` in the project root configures the sandbox around the
-project, on top of your config - like `devenv.nix`, a module that gets
-`pkgs`:
+`sandbox` of `sandbox.lib.mkShell` configures the sandbox around the
+project, on top of your config - a module, like `devenv.nix`:
 
 ```nix
-{ pkgs, lib, ... }:
-{
-  # What a bare `sandbox` runs, in place of a login shell.
-  command = [ "nix" "develop" ];
+sandbox.lib.mkShell {
+  inherit pkgs;
+  sandbox = {
+    # What a bare `sandbox` runs, in place of a login shell. Default: this
+    # dev shell (`nix develop`).
+    command = [ "nix" "develop" ];
 
-  # Approved: host ports reachable at 127.0.0.1 inside (port, port/udp or a
-  # range), and host paths bound in - absolute, and outside the project.
-  hostPorts = [ "5432" "9000-9010" ];
-  binds = [
-    { src = "~/datasets"; }                                  # read-only, same path
-    { src = "~/src/shared-lib"; hideGit = true; }            # for reference, without its history
-    { src = "~/notes/myproject"; dst = "~/notes"; mode = "rw"; optional = true; }
-  ];
+    # Approved: host ports reachable at 127.0.0.1 inside (port, port/udp or
+    # a range), and host paths bound in - absolute, and outside the project.
+    hostPorts = [ "5432" "9000-9010" ];
+    binds = [
+      { src = "~/datasets"; }                                  # read-only, same path
+      { src = "~/src/shared-lib"; hideGit = true; }            # for reference, without its history
+      { src = "~/notes/myproject"; dst = "~/notes"; mode = "rw"; optional = true; }
+    ];
 
-  # Approved: commands printing the API tokens, and windows on the user's
-  # Wayland display. See Guards below.
-  guards.github.tokenCommand = "op read op://Employee/GitHub/token";
-  guards.wayland.enable = true;
+    # Approved: commands printing the API tokens, and windows on the
+    # user's Wayland display. See Guards below.
+    guards.github.tokenCommand = "op read op://Employee/GitHub/token";
+    guards.wayland.enable = true;
 
-  # Git inside: identity and signing key from each user's host git config.
-  git.fromHost = true;
-
-  claude = {
-    # Over your managed settings: objects merge, lists add up, the rest is replaced.
-    settings.permissions.allow = [ "Bash(go test:*)" ];
-    # Appended to the managed CLAUDE.md.
-    memory = ''
-      Run `go test ./...` before calling a change done.
-    '';
-    # Managed MCP servers: once any is set, the project's .mcp.json is ignored.
-    mcpServers.mcp-nixos = { type = "stdio"; command = lib.getExe pkgs.mcp-nixos; };
-    # See Plugins and language servers.
-    lspServers.gopls = { package = pkgs.gopls; extensionToLanguage.".go" = "go"; };
+    # Git inside: identity and signing key from each user's host git config.
+    git.fromHost = true;
   };
 }
 ```
 
-`pkgs` is the sandbox's own nixpkgs. For the project's pinned one, import it
-yourself: `(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system}`.
+The launcher reads it from the default dev shell of the flake in the
+project's root: `devShells.<system>.default.sandbox`, which `mkShell`
+sets. A flake without one gets the defaults.
 
-How it stays a sandbox, though the sandbox can edit the file:
+How it stays a sandbox, though the sandbox can edit the flake:
 
 - **It's evaluated in a sandbox** of its own, never on the host. The result
-  is cached until `sandbox.nix`, your sandbox config or the profile changes;
+  is cached until `flake.nix`, `flake.lock` or your sandbox config changes;
   `sandbox --reload` picks up changes in files it imports, and
-  `sandbox --no-project-config` ignores it (and `.sandbox.yml`).
+  `sandbox --no-project-config` ignores it (and `.sandbox.yml`). Flakes see
+  only what git tracks: a new file the flake needs takes a `git add`.
 - **The `sandbox` command and everything that runs on the host stay yours**:
   bwrap, pasta, seccomp, the guards and their settings come from your
   sandbox config, never from the project.
 - **What reaches the host is approved**, as above.
 
+A `sandbox.nix` from earlier versions isn't read any more; the launcher
+warns about one. Its settings, `claude.*` aside, go in `sandbox`; its
+`claude.*` go in [`claude`](#claude-code-in-the-project).
+
 ### Per-user project settings: .sandbox.yml
 
-`sandbox.nix` is the project's, committed. What differs per user - the
+The flake is the project's, committed. What differs per user - the
 token commands' secret-manager items, the git identity - goes in a
 `.sandbox.yml` next to it, which the project gitignores (ship a
-`.sandbox.example.yml` for reference). Its settings have `sandbox.nix`'s
-option names, every one is optional, and an unknown field stops the start:
+`.sandbox.example.yml` for reference). Its settings have the flake's
+`sandbox` option names, every one is optional, and an unknown field stops the start:
 
 ```yaml
 # .sandbox.yml - mine, not committed
@@ -329,18 +335,18 @@ git:
   # or signingKey: ssh-ed25519 AAAA...
 ```
 
-- **Token commands** go over `sandbox.nix`'s, and are approved like them:
+- **Token commands** go over the flake's, and are approved like them:
   sandboxed code can write this file too. Your own config's still win.
 - **`git.userName`, `git.userEmail`**: git's author and committer inside.
 - **`git.signingKey`**: an ssh public key in your agent; commits and tags
   inside are signed with it (`gpg.format = ssh`), through the ssh agent
   guard, which doesn't ask for those. **`git.signingKeyCommand`** prints
   that key on the host at each start instead, so it's approved. Either
-  replaces both of `sandbox.nix`'s.
+  replaces both of the flake's.
 - **`git.fromHost`**: fill in what isn't set from your global git config on
   the host - `user.name`, `user.email` and, with `gpg.format = ssh`,
   `user.signingKey` (the key, or a key file whose `.pub` is read). Here it
-  can also turn `sandbox.nix`'s `git.fromHost` off.
+  can also turn the flake's `git.fromHost` off.
 
 The git settings are git config from the environment, so they override
 `~/.gitconfig` inside.
@@ -382,60 +388,74 @@ removes those links, and your next start with your own links them again.
 
 ### Options
 
-[OPTIONS.md](OPTIONS.md) lists every option of your sandbox config and of a
-project's `sandbox.nix`, with its type, default and description. It's
-generated from the declarations in `nix/`, so it says what the code does.
+[OPTIONS.md](OPTIONS.md) lists every option of your sandbox config, of a
+project's `sandbox` and of its `claude`, with its type, default and
+description. It's generated from the declarations in `nix/`, so it says
+what the code does.
 
-A project's `sandbox.nix` can set `binds`, `hostPorts`, `claude.*` (except
-`enable`), the token commands and `guards.wayland` too, and `command` and
-`git.*`, which are only its own and `.sandbox.yml`'s.
+A project's `sandbox` can set `binds`, `hostPorts`, the token commands and
+`guards.wayland` too, and `command` and `git.*`, which are only its own and
+`.sandbox.yml`'s.
 
-### Plugins and language servers
+### Claude Code in the project
 
-Plugins come from marketplaces in the store, pinned like everything else,
-not from git checkouts that update themselves in each project's `$HOME`.
-In your sandbox config, a profile or a project's `sandbox.nix`:
+`claude` of `sandbox.lib.mkShell` puts Claude Code in the dev shell,
+configured by the project alone (`sandbox.lib.mkClaude` gives the same
+package, for a shell of another kind):
 
 ```nix
-claude.lspServers = {
-  gopls = { package = pkgs.gopls; extensionToLanguage.".go" = "go"; };
-  # A package whose main program isn't the server: name it in its bin/.
-  json = {
+claude = {
+  # Settings (--settings): over every settings file but managed ones.
+  settings.permissions.allow = [ "Bash(go test:*)" ];
+  # Appended to the system prompt, after the sandbox's AGENTS.md.
+  memory = ''
+    Run `go test ./...` before calling a change done.
+  '';
+  # MCP servers: once any is set, the project's .mcp.json is ignored.
+  mcpServers.mcp-nixos = { type = "stdio"; command = lib.getExe pkgs.mcp-nixos; };
+  # Language servers, each run from its package's bin/, never from PATH.
+  lspServers.gopls = { package = pkgs.gopls; extensionToLanguage.".go" = "go"; };
+  lspServers.json = {
     package = pkgs.vscode-langservers-extracted;
-    executable = "vscode-json-language-server";
+    executable = "vscode-json-language-server";   # its main program isn't the server
     args = [ "--stdio" ];
     extensionToLanguage.".json" = "json";
   };
+  # Plugin directories, pinned in the store like the rest.
+  plugins = [ ./claude-plugin ];
 };
-claude.marketplaces.mine = ./my-marketplace;   # .claude-plugin/marketplace.json
-claude.settings.enabledPlugins."some-plugin@mine" = true;
 ```
 
-A language server is always `package`'s `bin/<executable>` (default: its
-`meta.mainProgram`), never a command on `PATH`, and is an enabled plugin of
-a generated marketplace. Once any marketplace or language server is set,
-these are the only marketplaces Claude Code knows: the official one and
-`/plugin marketplace add` are refused.
+It's a wrapper around `pkgs.claude-code` (`package`) that:
+
+- **keeps a config dir of its own**, `~/.claude-project` (`configDir`):
+  login, history and user-level settings. A claude of your own - say
+  home-manager's `programs.claude-code`, whose `~/.claude` is linked into
+  every sandbox - doesn't apply in such a project;
+- passes the settings, MCP servers, language servers and plugins as
+  flags, and the sandbox's `/etc/sandbox/AGENTS.md` plus `memory` as an
+  appended system prompt;
+- adds hooks that keep it from logging gh or fj in inside, or reaching
+  GitHub around gh, and turns off the auto-updater (a store path can't
+  update itself);
+- takes the placeholder key when the sandbox runs the [Claude API
+  guard](#claude-code).
+
+In a project without one, the `claude` of your own profile runs, as you
+configured it. `@/etc/sandbox/AGENTS.md` in its `CLAUDE.md` tells it
+about the sandbox too.
 
 ### Profiles
 
 Profiles are only in your sandbox config. A profile applies when the sandbox
-starts under one of its `paths`, or in a project whose root has one of its
-`projectFiles`. Only one applies: the matching one with the highest
-`priority` (the first by name on a tie). It adds `binds` and `claude.*` on
-top of the top level, and can set its own token commands; everything else
-is top-level only.
-
-A profile with `projectFiles` can only set `claude.*`: sandboxed code can
-create the file, so binds and token commands go in a profile picked by
-`paths` alone.
+starts under one of its `paths`, never by what's in a project, which the
+sandbox writes. Only one applies: the matching one with the highest
+`priority` (the first by name on a tie). It adds `binds` on top of the top
+level, and can set its own token commands; everything else is top-level
+only.
 
 ```nix
-programs.sandbox.settings = { lib, pkgs, ... }: {
-  profiles.flake = {
-    projectFiles = [ "flake.nix" ];
-    claude.mcpServers.mcp-nixos = { type = "stdio"; command = lib.getExe pkgs.mcp-nixos; };
-  };
+programs.sandbox.settings = {
   profiles.audio = {
     paths = [ "~/src/audio" ];
     priority = 20;
@@ -469,7 +489,7 @@ guards.github.tokenCommand = "op read op://Employee/GitHub/token";
 guards.forgejo.tokenCommands."codeberg.org" = "op read op://Employee/Codeberg/token";
 ```
 
-- **Where**: the project's `sandbox.nix` (for everyone working on it) or
+- **Where**: the project's flake (for everyone working on it) or
   your `.sandbox.yml` there, both approved; or your own sandbox config,
   trusted, where a [profile](#profiles) can set them for the projects it
   matches. Yours win.
@@ -510,7 +530,10 @@ guards.claudeApiKey.tokenCommand = "op read op://Employee/Claude/credential";
 Create a key for the project at
 [platform.claude.com](https://platform.claude.com/settings/keys), ideally in
 a workspace with a spend limit, store it in your secret manager, set the
-command and run `claude` inside as usual - no login. Deleting the key in the
+command and run `claude` inside as usual - no login. The project's
+[Claude Code](#claude-code-in-the-project) takes the placeholder key the
+proxy swaps out by itself; a claude of your own needs
+`apiKeyHelper = "echo sandbox-placeholder"` in its settings. Deleting the key in the
 Console cuts off just that project. If the project was logged in inside
 before, run `/logout` there so that login doesn't stay in the volume.
 
@@ -548,7 +571,7 @@ on the host, in token commands.
 ### Wayland
 
 Off by default: without it there is no display inside, and no GUI programs.
-With `guards.wayland.enable` - in a `sandbox.nix` (approved) or your own
+With `guards.wayland.enable` - in a project's flake (approved) or your own
 config - programs inside open windows on your Wayland display:
 
 ```nix
@@ -636,8 +659,11 @@ sandbox's own terminal.
   calling `certifi.where()` itself doesn't read.
 - **Chromium and Electron programs** need `--no-sandbox` (their own sandbox
   wants user namespaces) and `--ozone-platform=wayland`.
-- **A `sandbox.nix` change in an imported file isn't picked up**:
+- **A change in a file the flake imports isn't picked up**:
   `sandbox --reload`.
+- **"evaluating .../flake.nix: exit status 1"**: the flake doesn't
+  evaluate - often a file it needs isn't tracked by git yet (`git add`). Fix it in a
+  sandbox started with `--no-project-config`.
 
 ## Development
 
@@ -650,7 +676,7 @@ make fmt               # format Go and nix files
 make vuln              # known vulnerabilities the Go code reaches
 make vendor-hash       # after a go.mod change: the modules' hash in nix/go.nix
 make options           # after a change to an option: OPTIONS.md
-make demo-flake        # a fresh user in a container: a project with flake.nix and sandbox.nix
+make demo-flake        # a fresh user in a container: a project whose flake.nix configures the sandbox
 make demo-home-manager # the same with the sandbox from a home-manager config
 ```
 

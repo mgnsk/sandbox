@@ -24,7 +24,7 @@ type config struct {
 		// with a Wayland display.
 		Notifications bool `json:"notifications"`
 		Wayland       struct {
-			// nil leaves it to the project's sandbox.nix.
+			// nil leaves it to the project.
 			Enable *bool `json:"enable"`
 			// The user's changes to the allowlist, over the defaults and
 			// the project's.
@@ -44,6 +44,7 @@ type config struct {
 		BashCompletion string `json:"bashCompletion"`
 		Bashrc         string `json:"bashrc"`
 		Profile        string `json:"profile"`
+		AgentsMd       string `json:"agentsMd"`
 		NixLd          string `json:"nixLd"`
 		LdPath         string `json:"ldPath"`
 		SSL            string `json:"ssl"`
@@ -76,17 +77,12 @@ type nixEvaluation struct {
 
 type profile struct {
 	// For a reader of the config; nothing goes by it.
-	Name      string            `json:"name"`
-	Env       map[string]string `json:"env"`
-	Binds     []bind            `json:"binds"`
-	ClaudeDir string            `json:"claudeDir"`
-	// ClaudeDir is sandbox.nix's (see applyProject): a path the sandbox
-	// chose, which nothing on the host may resolve.
-	claudeFromProject bool
+	Name  string            `json:"name"`
+	Env   map[string]string `json:"env"`
+	Binds []bind            `json:"binds"`
 	tokenCommands
-	Paths        []string `json:"paths"`
-	ProjectFiles []string `json:"projectFiles"`
-	Priority     int      `json:"priority"`
+	Paths    []string `json:"paths"`
+	Priority int      `json:"priority"`
 }
 
 type bind struct {

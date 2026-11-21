@@ -4,10 +4,8 @@
 //	sandbox-bin init NIX_PROFILE HM_GENERATION COMMAND...
 //
 // It links the host's nix profile and current home-manager generation into
-// the per-project home volume, and Claude Code's marketplace list to the
-// managed one, starts the router the API
-// guards are reached through (internal/router) when a guard is on, then
-// execs COMMAND.
+// the per-project home volume, starts the router the API guards are reached
+// through (internal/router) when a guard is on, then execs COMMAND.
 //
 // Each link points at the generation's store path, so a home-manager switch
 // on the host takes effect at the next start of a sandbox of the project.
@@ -37,9 +35,6 @@ import (
 
 	"github.com/mgnsk/sandbox/internal/router"
 )
-
-// Where the launcher mounts the profile's managed Claude Code config.
-const managedClaudeDir = "/etc/claude-code"
 
 // The home-manager generation whose files the last start finished linking,
 // in the volume.
@@ -219,28 +214,16 @@ func unlinkNixProfile(home string) error {
 	return os.Remove(link)
 }
 
-// linkKnownMarketplaces points Claude Code's marketplace list at the managed
-// one, or drops a link left from a configuration that had one.
-func linkKnownMarketplaces(home, managed string) error {
+// TODO: drop once volumes from before the managed Claude config was
+// dropped are gone. Removes the link of Claude Code's marketplace list to
+// the managed one, which sandbox-bin init made then.
+func unlinkKnownMarketplaces(home string) {
 	link := filepath.Join(home, ".claude/plugins/known_marketplaces.json")
-	target := filepath.Join(managed, "known_marketplaces.json")
-	if _, err := os.Stat(target); err != nil {
-		if linksTo(link, target) {
-			return os.Remove(link)
+	if linksTo(link, "/etc/claude-code/known_marketplaces.json") {
+		if err := os.Remove(link); err != nil {
+			warn("not removing %s: %v", link, err)
 		}
-		return nil
 	}
-	if linksTo(link, target) {
-		return nil
-	}
-	err := os.MkdirAll(filepath.Dir(link), 0o777)
-	if err == nil {
-		err = relink(link, target)
-	}
-	if err != nil {
-		warn("not linking %s: %v", link, err)
-	}
-	return nil
 }
 
 // writeGhConfig: `gh pr checkout` of a PR from a fork with no matching
@@ -291,10 +274,7 @@ func Run(nixProfile, generation string, command []string) int {
 		warn("%v", err)
 		return 1
 	}
-	if err := linkKnownMarketplaces(home, managedClaudeDir); err != nil {
-		warn("%v", err)
-		return 1
-	}
+	unlinkKnownMarketplaces(home)
 	writeGhConfig(home)
 	warnStoredLogins(home)
 	env, err := router.Start(os.Environ())

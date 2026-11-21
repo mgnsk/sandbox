@@ -6,7 +6,7 @@
 #
 #   flake         `sandbox` is `nix run github:mgnsk/sandbox --`, the default
 #                 settings; ~/project is a Go project whose flake.nix brings
-#                 the tools and whose sandbox.nix shapes the sandbox.
+#                 the tools and shapes the sandbox (sandbox.lib.mkShell).
 #   home-manager  `sandbox` comes from tester's home-manager config
 #                 (programs.sandbox); ~/project is a plain directory, and
 #                 ~/flake-project the flake demo's project.
@@ -57,7 +57,7 @@ system=$(nix eval --raw --impure --expr builtins.currentSystem)
 
 case $DEMO in
 flake)
-	# The host's git identity, which sandbox.nix takes in (git.fromHost).
+	# The host's git identity, which the flake takes in (git.fromHost).
 	git config --global user.name 'Demo Tester'
 	git config --global user.email tester@example.com
 	git config --global init.defaultBranch main

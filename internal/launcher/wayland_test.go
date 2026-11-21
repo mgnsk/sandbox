@@ -153,7 +153,7 @@ func TestWaylandGuard(t *testing.T) {
 	h.run("", map[string]string{"WAYLAND_DISPLAY": display}).refused(t, "wl-veil exited with status 1")
 }
 
-// A project's sandbox.nix can ask for the display and change the
+// A project's flake can ask for the display and change the
 // allowlist: widening takes a yes, and the user's own config has the last
 // word on both.
 func TestWaylandFromTheProject(t *testing.T) {

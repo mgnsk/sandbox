@@ -385,9 +385,9 @@ func TestHostPortsAndDNS(t *testing.T) {
 	}
 }
 
-func TestClaudeDirAndExchange(t *testing.T) {
+func TestAgentsMdAndExchange(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Default.ClaudeDir = "/store/claude"
+	h.cfg.FHS.AgentsMd = "/store/AGENTS.md"
 	exchange := filepath.Join(h.volume(), "exchange")
 	os.MkdirAll(filepath.Join(exchange, "sub"), 0o755)
 	target := filepath.Join(h.tmp, "host-file")
@@ -396,8 +396,9 @@ func TestClaudeDirAndExchange(t *testing.T) {
 	os.Symlink(target, filepath.Join(exchange, "sub/bar"))
 	os.WriteFile(filepath.Join(exchange, "kept.txt"), []byte("host output"), 0o644)
 	inv := h.run("", nil).pasta(t)
-	if !slices.Contains(inv.mounts(), "--ro-bind /store/claude /etc/claude-code") {
-		t.Error("no managed Claude config")
+	if !slices.Contains(inv.mounts(), "--ro-bind /store/AGENTS.md /etc/sandbox/AGENTS.md") ||
+		slices.ContainsFunc(inv.mounts(), func(m string) bool { return strings.Contains(m, "/etc/claude-code") }) {
+		t.Errorf("%q", inv.mounts())
 	}
 	// The host tees into it; a link planted there would aim that write at
 	// any host file.
@@ -417,12 +418,12 @@ func TestClaudeDirAndExchange(t *testing.T) {
 	}
 }
 
-// -- sandbox.nix --
+// -- flake.nix --
 
-// manifestJSON is m as project.nix writes it: null for no command, Claude
-// config or GitHub token command.
+// manifestJSON is m as manifest.nix writes it: null for no command or
+// GitHub token command.
 func manifestJSON(t *testing.T, m manifest) string {
-	v := map[string]any{"claudeDir": nil, "binds": []bind{}, "hostPorts": []string{}, "command": nil,
+	v := map[string]any{"binds": []bind{}, "hostPorts": []string{}, "command": nil,
 		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil,
 		"gitSigningKey": nil, "gitSigningKeyCommand": nil, "gitFromHost": m.GitFromHost}
 	if m.GitSigningKey != "" {
@@ -440,9 +441,6 @@ func manifestJSON(t *testing.T, m manifest) string {
 	if m.ForgejoTokenCommands != nil {
 		v["forgejoTokenCommands"] = m.ForgejoTokenCommands
 	}
-	if m.ClaudeDir != "" {
-		v["claudeDir"] = m.ClaudeDir
-	}
 	if m.Binds != nil {
 		v["binds"] = m.Binds
 	}
@@ -458,7 +456,7 @@ func manifestJSON(t *testing.T, m manifest) string {
 	return marshal(t, v)
 }
 
-// withProject writes a sandbox.nix whose evaluation (by the stand-in nix)
+// withProject writes a flake.nix whose evaluation (by the stand-in nix)
 // gives m.
 func (h *harness) withProject(m manifest, content, name string) string {
 	os.WriteFile(filepath.Join(h.project, projectFileName), []byte(content), 0o644)
@@ -467,11 +465,9 @@ func (h *harness) withProject(m manifest, content, name string) string {
 	return out
 }
 
-// Without its own sandbox.nix, with the profile's Claude config as the base
-// its Claude settings merge into.
+// Without its own flake.nix's config.
 func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Default.ClaudeDir = "/store/claude"
 	h.withProject(manifest{}, "{ ... }: { }\n", "m.json")
 	r := h.run("", nil)
 	if r.code != 0 {
@@ -479,7 +475,7 @@ func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
 	}
 	want := []string{"build", "--no-link", "--print-out-paths", "--file", "/store/project.nix",
 		"--argstr", "nixpkgs", "/store/nixpkgs", "--argstr", "system", "x86_64-linux",
-		"--argstr", "file", filepath.Join(h.project, "sandbox.nix"), "--argstr", "base", "/store/claude"}
+		"--argstr", "flake", h.project}
 	if calls := r.calls("nix"); len(calls) != 1 || !slices.Equal(calls[0], want) {
 		t.Errorf("nix %q", calls)
 	}
@@ -493,7 +489,7 @@ func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
 	}
 }
 
-// What evaluates sandbox.nix is the project's code: it gets no guard, no
+// What evaluates flake.nix is the project's code: it gets no guard, no
 // token and no host port, and the user's token commands run once, for the
 // sandbox itself.
 func TestProjectEvaluationHasNoGuards(t *testing.T) {
@@ -512,7 +508,7 @@ func TestProjectEvaluationHasNoGuards(t *testing.T) {
 	inner, outer := parseInvocation(t, pastas[0]), parseInvocation(t, pastas[1])
 	for _, name := range []string{"SANDBOX_GH_PROXY", "GH_TOKEN", "SSH_AUTH_SOCK", "BROWSER", "SANDBOX_CA_FILE"} {
 		if _, ok := inner.setenv()[name]; ok {
-			t.Errorf("%s where sandbox.nix is evaluated", name)
+			t.Errorf("%s where flake.nix is evaluated", name)
 		}
 		if _, ok := outer.setenv()[name]; !ok {
 			t.Errorf("no %s in the sandbox", name)
@@ -542,15 +538,14 @@ func TestProjectEvaluationIsCached(t *testing.T) {
 			t.Errorf("run %d: %d evaluations", i, got)
 		}
 	}
-	// Changed, reloaded, or with another profile Claude config, it's
-	// evaluated again.
+	// Changed - flake.nix or its lock - or reloaded, it's evaluated again.
 	os.WriteFile(filepath.Join(h.project, projectFileName), []byte("{ ... }: { command = [ \"n2\" ]; }\n"), 0o644)
 	if evaluations() != 1 || evaluations() != 0 || evaluations("--reload") != 1 {
 		t.Error("not re-evaluated after a change or --reload")
 	}
-	h.cfg.Default.ClaudeDir = "/store/claude"
-	if evaluations() != 1 {
-		t.Error("not re-evaluated for another base")
+	os.WriteFile(filepath.Join(h.project, lockFileName), []byte("{}"), 0o644)
+	if evaluations() != 1 || evaluations() != 0 {
+		t.Error("not re-evaluated after a new lock")
 	}
 	// A cache that doesn't name a store path is ignored.
 	cache := filepath.Join(h.volume(), "project.json")
@@ -565,34 +560,34 @@ func TestProjectEvaluationIsCached(t *testing.T) {
 
 func TestProjectAddsToTheProfile(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Default.ClaudeDir = "/store/claude-default"
-	claude := "/nix/store/" + strings.Repeat("a", 32) + "-claude-project"
-	h.withProject(manifest{Command: []string{"echo", "from-manifest"}, ClaudeDir: claude}, "{ ... }: { }\n", "m.json")
+	h.withProject(manifest{Command: []string{"echo", "from-manifest"}}, "{ ... }: { }\n", "m.json")
 	r := h.run("", nil)
 	inv := r.pasta(t)
 	if !slices.Equal(inv.command(), []string{"echo", "from-manifest"}) || r.stdout != "from-manifest\n" {
 		t.Errorf("%q %q", inv.command(), r.stdout)
 	}
-	// A link, resolved inside: the sandbox chose the path, and bound, it
-	// would be resolved on the host, to wherever a link there leads.
-	if !slices.Contains(inv.mounts(), "--symlink "+claude+" /etc/claude-code") ||
-		slices.ContainsFunc(inv.mounts(), func(m string) bool { return strings.Contains(m, "bind "+claude) }) {
-		t.Errorf("%q", inv.mounts())
+	// A sandbox.nix left from before is only warned about.
+	if strings.Contains(r.stderr, "sandbox.nix") {
+		t.Errorf("%q", r.stderr)
+	}
+	os.WriteFile(filepath.Join(h.project, oldProjectFileName), nil, 0o644)
+	if r := h.run("", nil); r.code != 0 || !strings.Contains(r.stderr, "sandbox.nix is no longer read") {
+		t.Errorf("%d %q", r.code, r.stderr)
 	}
 	// A command given wins; --no-project-config skips it all.
 	if got := h.run("", nil, "echo", "given").pasta(t).command(); !slices.Equal(got, []string{"echo", "given"}) {
 		t.Errorf("%q", got)
 	}
 	if r := h.run("", nil, "--no-project-config"); len(r.calls("nix")) != 0 || r.pasta(t).command() != nil {
-		t.Error("sandbox.nix used with --no-project-config")
+		t.Error("flake.nix used with --no-project-config")
 	}
 }
 
 func TestBadManifestsAndFailures(t *testing.T) {
 	h := newHarness(t)
 	os.WriteFile(filepath.Join(h.project, projectFileName), []byte("{ ... }: { }\n"), 0o644)
-	h.env["FAKE_NIX_OUT"] = h.storeFile("bad.json", `{"claudeDir": "/etc/claude-code"}`)
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "bad sandbox.nix result") || len(r.calls("pasta")) != 1 {
+	h.env["FAKE_NIX_OUT"] = h.storeFile("bad.json", `{"env": {"A": "b"}}`)
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "bad flake.nix evaluation") || len(r.calls("pasta")) != 1 {
 		t.Errorf("%d %q", r.code, r.stderr)
 	}
 	for env, want := range map[string]string{
@@ -626,20 +621,24 @@ func TestBadManifestsAndFailures(t *testing.T) {
 		{Binds: []bind{{Src: "~/.ssh\x1b[1K~/data", Mode: "ro"}}},
 		{HostPorts: []string{"22\rnone"}},
 	} {
-		// Another sandbox.nix each time: evaluated, not from the cache.
+		// Another flake.nix each time: evaluated, not from the cache.
 		os.WriteFile(filepath.Join(h.project, projectFileName), fmt.Appendf(nil, "{ ... }: { n = %d; }\n", i), 0o644)
 		if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storeFile("ctl.json", manifestJSON(t, bad))}); r.code != 1 ||
-			!strings.Contains(r.stderr, "bad sandbox.nix result") || strings.ContainsAny(r.stderr, "\x1b\r") {
+			!strings.Contains(r.stderr, "bad flake.nix evaluation") || strings.ContainsAny(r.stderr, "\x1b\r") {
 			t.Errorf("%+v: %d %q", bad, r.code, r.stderr)
 		}
 	}
-	if r := h.run("", map[string]string{"FAKE_NIX_EXIT": "1"}); r.code != 1 || !strings.Contains(r.stderr, "evaluating "+h.project+"/sandbox.nix: exit status 1") {
+	if r := h.run("", map[string]string{"FAKE_NIX_EXIT": "1"}); r.code != 1 || !strings.Contains(r.stderr, "evaluating "+h.project+"/flake.nix: exit status 1") {
 		t.Errorf("%q", r.stderr)
 	}
 	// The launcher reads it on the host; a link would let the sandbox pick
 	// which host file.
 	os.Remove(filepath.Join(h.project, projectFileName))
 	os.Symlink(h.configPath(), filepath.Join(h.project, projectFileName))
+	h.run("", nil).refused(t, "it must be a regular file")
+	os.Remove(filepath.Join(h.project, projectFileName))
+	os.WriteFile(filepath.Join(h.project, projectFileName), nil, 0o644)
+	os.Symlink(h.configPath(), filepath.Join(h.project, lockFileName))
 	h.run("", nil).refused(t, "it must be a regular file")
 }
 
@@ -654,7 +653,7 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 
 	p := h.pty(nil)
 	shown := p.expect("Allow? [y/N] ")
-	for _, want := range []string{h.project + "/sandbox.nix asks for host access", "bind ~/d (read-write)", "bind /srv/x at /x (read-only, optional)", "host port 5432"} {
+	for _, want := range []string{h.project + "/flake.nix asks for host access", "bind ~/d (read-write)", "bind /srv/x at /x (read-only, optional)", "host port 5432"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("%q not in %q", want, shown)
 		}
@@ -815,14 +814,11 @@ func TestApprovedBindsAreResolved(t *testing.T) {
 	}
 }
 
-// .sandbox.env: its token commands go over sandbox.nix's and are approved
-// like them, even without a sandbox.nix; its git settings apply inside
-// without asking; a Claude key from it gets the managed apiKeyHelper.
+// .sandbox.env: its token commands go over the flake's and are approved
+// like them, even without a flake.nix; its git settings apply inside
+// without asking.
 func TestLocalConfig(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Default.ClaudeDir = filepath.Join(h.tmp, "claude")
-	os.MkdirAll(h.cfg.Default.ClaudeDir, 0o755)
-	os.WriteFile(filepath.Join(h.cfg.Default.ClaudeDir, "managed-settings.json"), []byte(`{"env": {"A": "1"}}`), 0o644)
 	mark := filepath.Join(h.tmp, "ran")
 	token := "github_pat_" + strings.Repeat("t", 30)
 	write := func(content string) {
@@ -855,13 +851,11 @@ func TestLocalConfig(t *testing.T) {
 	if r.code != 0 || !exists(mark) {
 		t.Errorf("approved: %d %q", r.code, r.stdout)
 	}
-	// The Claude key's settings (see TestClaudeKeySettings) over the managed
-	// ones.
-	if settings := r.pasta(t).bind(t, "/etc/claude-code/managed-settings.json"); filepath.Dir(settings) == h.cfg.Default.ClaudeDir {
-		t.Errorf("the managed settings as they are: %s", settings)
+	if env := r.pasta(t).setenv(); env["ANTHROPIC_UNIX_SOCKET"] == "" {
+		t.Errorf("no Claude API guard: %v", env)
 	}
 
-	// Over sandbox.nix's: what's left is what was approved, so not asked.
+	// Over the flake's: what's left is what was approved, so not asked.
 	os.Remove(mark)
 	h.withProject(manifest{tokenCommands: tokenCommands{GitHubTokenCommand: "echo theirs" + token}}, "{ ... }: { }\n", "m.json")
 	if r := h.run("", nil); r.code != 0 || !exists(mark) {
@@ -887,7 +881,7 @@ func TestLocalConfig(t *testing.T) {
 		t.Errorf("bad key: %d %q", r.code, r.stdout)
 	}
 
-	// From sandbox.nix, for everyone: approved and used without a
+	// From the flake, for everyone: approved and used without a
 	// .sandbox.env; a .sandbox.env's own key wins, and the command then
 	// isn't asked about.
 	os.Remove(filepath.Join(h.project, localConfigFileName))
@@ -898,7 +892,7 @@ func TestLocalConfig(t *testing.T) {
 	}
 	p.send("y\r")
 	if r := p.wait(); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAteam" {
-		t.Errorf("sandbox.nix's key: %d %q", r.code, r.stdout)
+		t.Errorf("the flake's key: %d %q", r.code, r.stdout)
 	}
 	write("git:\n  signingKey: ssh-ed25519 AAAAmine\n")
 	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAmine" {
@@ -914,7 +908,7 @@ func TestLocalConfig(t *testing.T) {
 		t.Errorf("not run from /: %d %q", r.code, r.stdout)
 	}
 
-	// The host's git identity, for sandbox.nix's git.fromHost: under what
+	// The host's git identity, for the flake's git.fromHost: under what
 	// .sandbox.env sets, and off with GIT_FROM_HOST=0.
 	bin := t.TempDir()
 	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf 'user.name\\nHost\\0user.email\\nhost@example.com\\0'\n"), 0o755)
@@ -929,24 +923,6 @@ func TestLocalConfig(t *testing.T) {
 	write("git:\n  fromHost: false\n")
 	if r := h.run("", withGit); r.code != 0 || r.pasta(t).setenv()["GIT_AUTHOR_EMAIL"] != "" {
 		t.Errorf("fromHost: false: %d %q", r.code, r.stderr)
-	}
-
-	// A Claude key command of its own, next to a sandbox.nix: the managed
-	// settings the evaluation builds say so, and the launcher edits none.
-	h.cfg.Default.ClaudeDir = "/store/claude"
-	claude := "/nix/store/" + strings.Repeat("a", 32) + "-claude-project"
-	h.withProject(manifest{ClaudeDir: claude}, "{ ... }: { k = 1; }\n", "m5.json")
-	write("guards:\n  claudeApiKey:\n    tokenCommand: echo " + claudeKey + "\n")
-	p = h.pty(nil)
-	p.expect("Allow? [y/N] ")
-	p.send("y\r")
-	r = p.wait()
-	if calls := r.calls("nix"); r.code != 0 || len(calls) != 1 || !slices.Equal(calls[0][len(calls[0])-3:], []string{"--argstr", "claudeApiKey", "1"}) {
-		t.Errorf("%d %q %q", r.code, calls, r.stdout)
-	}
-	if mounts := r.pasta(t).mounts(); !slices.Contains(mounts, "--symlink "+claude+" /etc/claude-code") ||
-		slices.ContainsFunc(mounts, func(m string) bool { return strings.HasSuffix(m, "/managed-settings.json") }) {
-		t.Errorf("%q", mounts)
 	}
 
 	// A bad file stops the start.
@@ -965,10 +941,9 @@ const claudeKey = "sk-ant-api03-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 
 // A Claude API key command puts Claude Code on the proxy: from the user's
 // config (here a profile's, for this project only) or, approved, from
-// sandbox.nix; without one, Claude Code logs in inside as usual.
+// the flake; without one, Claude Code logs in inside as usual.
 func TestClaudeAPIKey(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Default.ClaudeDir = "/store/claude"
 	onKey := func(r *result) bool {
 		env := r.pasta(t).setenv()
 		return env["ANTHROPIC_UNIX_SOCKET"] == h.runtime+"/claude-api.sock" && env["ANTHROPIC_BASE_URL"] == "http://api.anthropic.com"
@@ -977,7 +952,7 @@ func TestClaudeAPIKey(t *testing.T) {
 		t.Errorf("without a command: %d %q", r.code, r.stderr)
 	}
 
-	h.cfg.Profiles = []profile{{Name: "api", Paths: []string{h.project}, ClaudeDir: "/store/claude",
+	h.cfg.Profiles = []profile{{Name: "api", Paths: []string{h.project},
 		tokenCommands: tokenCommands{ClaudeAPIKeyCommand: "echo " + claudeKey}}}
 	r := h.run("", nil)
 	if r.code != 0 || !onKey(r) || !strings.HasSuffix(r.pasta(t).bind(t, h.runtime+"/claude-api.sock"), "/claude-api.sock") {
@@ -986,7 +961,7 @@ func TestClaudeAPIKey(t *testing.T) {
 	h.cfg.Profiles[0].ClaudeAPIKeyCommand = "echo 'x y'"
 	h.run("", nil).refused(t, "guards.claudeApiKey.tokenCommand (echo 'x y') didn't print a token")
 
-	// From sandbox.nix: approved first.
+	// From the flake: approved first.
 	h.cfg.Profiles = nil
 	h.withProject(manifest{tokenCommands: tokenCommands{ClaudeAPIKeyCommand: "echo " + claudeKey}}, "{ ... }: { }\n", "m.json")
 	p := h.pty(nil)
@@ -995,11 +970,11 @@ func TestClaudeAPIKey(t *testing.T) {
 	}
 	p.send("y\r")
 	if r := p.wait(); r.code != 0 || !onKey(r) {
-		t.Errorf("sandbox.nix: %d %q", r.code, r.stdout)
+		t.Errorf("the flake: %d %q", r.code, r.stdout)
 	}
 }
 
-// Token commands: the user's config's run as they are; sandbox.nix's only
+// Token commands: the user's config's run as they are; the flake's only
 // once approved on the terminal, asked once and again when they change.
 // Either way the token reaches the guard, and a failing command stops the
 // start.
@@ -1060,10 +1035,10 @@ func TestTokenCommands(t *testing.T) {
 		t.Errorf("declined: %d %q", r.code, r.stdout)
 	}
 
-	// The user's config wins: sandbox.nix's is neither asked about nor run.
+	// The user's config wins: the flake's is neither asked about nor run.
 	h.cfg.Default.GitHubTokenCommand = "echo " + token
 	if r := h.run("", nil); r.code != 0 || ran() {
-		t.Errorf("config over sandbox.nix: %d %q", r.code, r.stderr)
+		t.Errorf("config over the flake: %d %q", r.code, r.stderr)
 	}
 }
 

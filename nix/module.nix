@@ -24,42 +24,22 @@ let
         default = [ ];
         description = "The profile applies when the sandbox starts in or under one of these (`~` expanded).";
       };
-      projectFiles = mkOption {
-        type = types.listOf types.str;
-        default = [ ];
-        description = ''
-          The profile applies when the project root has one of these, e.g.
-          flake.nix. Such a profile can only set claude.*: sandboxed code can
-          create the file, so binds and token commands need paths alone.
-        '';
-      };
       priority = mkOption {
         type = types.int;
         default = 0;
-        description = "Among matching profiles, the highest priority wins.";
+        description = "Among profiles whose paths match, the highest priority wins.";
       };
     };
   };
 
-  githubHook = pkgs.writeShellApplication {
-    name = "deny-github-http";
-    runtimeInputs = [
-      pkgs.jq
-      pkgs.gnugrep
-      pkgs.gnused
-    ];
-    text = builtins.readFile ./claude/deny-github-http.sh;
-  };
-
-  loginHook = pkgs.writeShellApplication {
-    name = "deny-cli-login";
-    runtimeInputs = [
-      pkgs.jq
-      pkgs.gnugrep
-      pkgs.gnused
-    ];
-    text = builtins.readFile ./claude/deny-cli-login.sh;
-  };
+  # What every sandbox tells the agents in it (/etc/sandbox/AGENTS.md):
+  # what it is and what its guards do. sandbox.lib.mkClaude puts it in
+  # Claude Code's system prompt.
+  agentsMd = pkgs.concatText "AGENTS.md" [
+    ./agents/sandbox.md
+    ./agents/github.md
+    ./agents/forgejo.md
+  ];
 
   # The userland inside, fixed: what the sandbox itself needs (a shell, nix
   # to enter the project's dev shell, terminfo; git and ssh, which its
@@ -122,39 +102,6 @@ let
         "${env}/bin"
       ]
       ++ lib.optional cfg.nixProfile.enable "$HOME/.nix-profile/bin";
-      claudeApiKeyCommand =
-        let
-          own = l.guards.claudeApiKey.tokenCommand or null;
-        in
-        if !cfg.claude.enable then
-          null
-        else if own != null then
-          own
-        else
-          cfg.guards.claudeApiKey.tokenCommand;
-      claudeApiKey = claudeApiKeyCommand != null;
-      claudeDir = layer'.claudeDir name (layer'.claudeValues {
-        lspMarketplace = "sandbox";
-        claude = {
-          settings = lib.recursiveUpdate (lib.recursiveUpdate cfg.claude.settings l.claude.settings) (
-            lib.optionalAttrs claudeApiKey {
-              # A placeholder, so Claude Code neither asks to log in nor to
-              # approve an environment key; claude-api-proxy swaps in the
-              # real one.
-              apiKeyHelper = "echo sandbox-placeholder";
-            }
-          );
-          memory = lib.concatStringsSep "\n" (
-            lib.filter (s: s != "") [
-              cfg.claude.memory
-              l.claude.memory
-            ]
-          );
-          mcpServers = cfg.claude.mcpServers // l.claude.mcpServers;
-          lspServers = cfg.claude.lspServers // l.claude.lspServers;
-          marketplaces = cfg.claude.marketplaces // l.claude.marketplaces;
-        };
-      }) { };
     in
     {
       env = {
@@ -171,8 +118,11 @@ let
         NIX_CONFIG = cfg.nixConfig;
       };
       binds = cfg.binds ++ l.binds;
-      claudeDir = if cfg.claude.enable then "${claudeDir}" else null;
-      inherit claudeApiKeyCommand;
+      claudeApiKeyCommand =
+        let
+          own = l.guards.claudeApiKey.tokenCommand or null;
+        in
+        if own != null then own else cfg.guards.claudeApiKey.tokenCommand;
       githubTokenCommand =
         let
           own = l.guards.github.tokenCommand or null;
@@ -208,6 +158,7 @@ let
       # before the user's files.
       bashrc = "${bashrc}";
       profile = "${profile}";
+      agentsMd = "${agentsMd}";
       nixLd = "${pkgs.nix-ld}/libexec/nix-ld";
       ldPath =
         if pkgs.stdenv.hostPlatform.isx86_64 then
@@ -247,7 +198,7 @@ let
         defaultGlobals = import ./wayland.nix;
       };
     };
-    # A project's sandbox.nix, evaluated inside a sandbox by project.nix
+    # A project's flake.nix, evaluated inside a sandbox by project.nix
     # against this nixpkgs.
     project = {
       eval = "${./.}/project.nix";
@@ -258,38 +209,14 @@ let
       nixProfile = cfg.nixProfile.enable;
       homeManager = cfg.homeManager.enable;
     };
-    default = resolve "default" {
-      binds = [ ];
-      claude = {
-        settings = { };
-        memory = "";
-        mcpServers = { };
-        lspServers = { };
-        marketplaces = { };
-      };
-    };
+    default = resolve "default" { binds = [ ]; };
     profiles = lib.mapAttrsToList (
       name: p:
-      # The sandbox writes the project: a file there can't be what gives a
-      # project more of the host.
-      lib.throwIf
-        (
-          p.projectFiles != [ ]
-          && (
-            p.binds != [ ]
-            || p.guards.github.tokenCommand != null
-            || p.guards.forgejo.tokenCommands != { }
-            || p.guards.claudeApiKey.tokenCommand != null
-          )
-        )
-        "profiles.${name}: a profile picked by projectFiles can only set claude.*, as sandboxed code can create the file: binds and token commands go in a profile picked by paths alone"
-        (
-          resolve name p
-          // {
-            inherit name;
-            inherit (p) paths projectFiles priority;
-          }
-        )
+      resolve name p
+      // {
+        inherit name;
+        inherit (p) paths priority;
+      }
     ) cfg.profiles;
   };
 
@@ -300,7 +227,7 @@ in
     profiles = mkOption {
       type = types.attrsOf profileType;
       default = { };
-      description = "Per-project additions, picked at start by path or project file: binds, claude.* and the guards' token commands, over the top level's.";
+      description = "Per-project additions, picked at start by path: binds and the guards' token commands, over the top level's.";
     };
 
     stateDir = mkOption {
@@ -308,7 +235,8 @@ in
       default = null;
       description = ''
         Host directory with a folder per project: its home volume, its
-        exchange dir and what the host keeps for it (sandbox.nix approvals);
+        exchange dir and what the host keeps for it (approvals of what
+        projects ask for);
         $XDG_DATA_HOME/sandbox (~/.local/share/sandbox) when null. `~` and
         environment variables are expanded at start; $SANDBOX_STATE_DIR
         overrides it.
@@ -439,7 +367,7 @@ in
               through a proxy (wl-veil) that passes on only an allowlist of
               the compositor's globals, as $XDG_RUNTIME_DIR/wayland-0 inside.
               The real socket is never bound in. null leaves it to each
-              project's sandbox.nix, whose guards.wayland.enable takes your
+              project's sandbox module, whose guards.wayland.enable takes your
               yes on the terminal; true or false decides it for every
               project.
             '';
@@ -454,20 +382,11 @@ in
             description = ''
               Changes to the allowlist of Wayland globals, by interface name:
               true adds one to the default list (nix/wayland.nix), false
-              removes one. Applied after a project's sandbox.nix's changes,
-              so yours win.
+              removes one. Applied after a project's changes, so yours win.
             '';
           };
         };
       };
-
-    claude = layerOptions.claude // {
-      enable = mkOption {
-        type = types.bool;
-        default = true;
-        description = "Managed settings/memory for Claude Code at /etc/claude-code - for the `claude` the project's dev shell (or your ~/.nix-profile, home-manager) brings; the sandbox ships none.";
-      };
-    };
 
     package = mkOption {
       type = types.package;
@@ -488,35 +407,5 @@ in
     package = pkgs.writeShellScriptBin "sandbox" ''
       exec ${lib.getExe sandboxPkgs.sandbox} launch --config ${configFile} "$@"
     '';
-
-    claude.settings = lib.mkMerge [
-      {
-        # A store path can't update itself.
-        env.DISABLE_AUTOUPDATER = 1;
-      }
-      {
-        hooks.PreToolUse = [
-          {
-            matcher = "Bash";
-            hooks = [
-              {
-                type = "command";
-                command = lib.getExe githubHook;
-              }
-              {
-                type = "command";
-                command = lib.getExe loginHook;
-              }
-            ];
-          }
-        ];
-      }
-    ];
-
-    claude.memory = lib.mkMerge [
-      (builtins.readFile ./claude/sandbox.md)
-      (builtins.readFile ./claude/github.md)
-      (builtins.readFile ./claude/forgejo.md)
-    ];
   };
 }

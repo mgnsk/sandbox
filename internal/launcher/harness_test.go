@@ -16,7 +16,7 @@ package launcher
 //     destination is under the test's $XDG_RUNTIME_DIR become symlinks
 //     there, so a client inside finds a guard's socket where it would in a
 //     real sandbox.
-//   - nix (inside, for sandbox.nix) records its argv and prints
+//   - nix (inside, for flake.nix) records its argv and prints
 //     $FAKE_NIX_OUT.
 //
 // The guards are the real ones.

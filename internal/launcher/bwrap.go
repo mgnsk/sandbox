@@ -87,6 +87,9 @@ func baseArgs(cfg *config, env map[string]string) bwrapArgs {
 		cfg.FHS.BashCompletion: "/usr/share/bash-completion",
 		cfg.FHS.Bashrc:         "/etc/bashrc",
 		cfg.FHS.Profile:        "/etc/profile",
+		// What the agents inside read about the sandbox (mkClaude's
+		// system prompt).
+		cfg.FHS.AgentsMd: "/etc/sandbox/AGENTS.md",
 	} {
 		if src != "" {
 			a.roBind(src, dst)
