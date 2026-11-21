@@ -127,14 +127,15 @@ func Clean(s string) string {
 	}, s)
 }
 
-// CleanText is Clean, keeping line breaks.
+// CleanText is Clean, keeping line breaks and turning tabs into four
+// spaces: indented text, such as a GraphQL query, keeps its shape.
 func CleanText(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || unicode.IsPrint(r) {
 			return r
 		}
 		return '?'
-	}, s)
+	}, strings.ReplaceAll(s, "\t", "    "))
 }
 
 // CleanLimit is Clean, cut to limit characters with an ellipsis.

@@ -29,7 +29,6 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
-	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -76,7 +75,7 @@ func Main(configPath string, opts Options, command []string) int {
 	code, err := run(ctx, cancel, configPath, opts, command, signals)
 	if err != nil {
 		// An error may quote what the project's files say.
-		fmt.Fprintf(os.Stderr, "sandbox: %s\n", popup.CleanText(strings.ReplaceAll(err.Error(), "\t", "    ")))
+		fmt.Fprintf(os.Stderr, "sandbox: %s\n", popup.CleanText(err.Error()))
 		code = 1
 	}
 	// Stopped by a signal before the sandbox ran: end as the signal would,
