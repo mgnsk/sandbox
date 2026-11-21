@@ -381,35 +381,9 @@ removes those links, and your next start with your own links them again.
 
 ### Options
 
-The options of your sandbox config; all are in [nix/module.nix](nix/module.nix).
-
-| Option | Default | |
-| --- | --- | --- |
-| `passEnv` | `[ ]` | Host variables passed in, besides TERM/COLORTERM/LANG/LC_ALL; everything else is cleared. |
-| `binds` | `[ ]` | Host paths bound in: `{ src; dst; mode = "ro" \| "rw"; optional; hideGit; }`; `~`, `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` expanded in `src`. One whose src is the project is left to the project bind. |
-| `hostPorts` | `[ ]` | Like `SANDBOX_HOST_PORTS`, always. |
-| `stateDir` | `$XDG_DATA_HOME/sandbox` | One folder per project: its `$HOME`, exchange dir, `sandbox.nix` approvals and cache. `$SANDBOX_STATE_DIR` overrides. |
-| `nixLd.libraries` | libstdc++, zlib, openssl, curl, libgcc | For prebuilt binaries. |
-| `nixConfig` | flakes on | `NIX_CONFIG` inside; there is no nix.conf in there. |
-| `nixProfile.enable` | off (on with the home-manager module) | Link the host's `~/.nix-profile` in and put its `bin/` on `PATH`, after the sandbox's own. |
-| `homeManager.enable` | off (on with the home-manager module) | Link your current home-manager generation into each project's `$HOME` at every start. |
-| `locales` | C.UTF-8, en_US.UTF-8 | glibcLocales build for `LOCALE_ARCHIVE`; override to add yours. |
-| `guards.sshAgent` | on | `enable`, `socket` (the host agent's; `$SSH_AUTH_SOCK` at start) and `path` (inside; `$XDG_RUNTIME_DIR/ssh-agent.sock`). See [SSH agent](#ssh-agent). |
-| `guards.github.tokenCommand` | none | A shell command printing the token, run on the host at each start. See [GitHub and Forgejo](#github-and-forgejo). |
-| `guards.forgejo.tokenCommands.<host>` | `{ }` | The same per Forgejo host. |
-| `guards.claudeApiKey.tokenCommand` | none | A shell command printing a Claude API key: Claude Code then runs on it, held outside. See [Claude Code](#claude-code). |
-| `guards.openUrl.enable` | on | `xdg-open` inside opens http(s) URLs in the host's browser, after a popup. |
-| `guards.secretService.enable` | on | A per-project Secret Service for tools using libsecret, storing in the host's (gnome-keyring, KeePassXC, ...). Without one on the host the sandbox doesn't start: turn this off then. |
-| `guards.notifications.enable` | on | With a Wayland display inside, show a popup as a desktop notification too. See [Popups from a window](#popups-from-a-window). |
-| `guards.wayland.enable` | `null` | Windows on your Wayland display: `true` or `false` for every project, `null` to leave it to each project's `sandbox.nix`. See [Wayland](#wayland). |
-| `guards.wayland.globals.<name>` | `{ }` | Changes to the allowlist of Wayland globals: `true` adds one, `false` removes one. Yours go over a project's. |
-| `claude.enable` | on | Claude Code's managed config at `/etc/claude-code`, for the `claude` your dev shell or profile brings. |
-| `claude.settings` | autoupdater off, hooks steering GitHub HTTP requests to `gh` and denying `gh`/`fj` logins | managed-settings.json, merged across modules. |
-| `claude.memory` | sandbox, GitHub, Forgejo notes | Managed CLAUDE.md; your lines are appended. |
-| `claude.mcpServers` | `{ }` | Managed MCP servers (exclusive: a project's .mcp.json is then ignored). |
-| `claude.lspServers.<name>` | `{ }` | `{ package; executable; args; extensionToLanguage; settings; }`, see below. |
-| `claude.marketplaces.<name>` | `{ }` | Plugin marketplace directories (store paths). |
-| `profiles.<name>` | `{ }` | Per-project additions, see [Profiles](#profiles). |
+[OPTIONS.md](OPTIONS.md) lists every option of your sandbox config and of a
+project's `sandbox.nix`, with its type, default and description. It's
+generated from the declarations in `nix/`, so it says what the code does.
 
 A project's `sandbox.nix` can set `binds`, `hostPorts`, `claude.*` (except
 `enable`), the token commands and `guards.wayland` too, and `command` and
@@ -671,6 +645,7 @@ make coverage          # line coverage of the Go code by the tests
 make fmt               # format Go and nix files
 make vuln              # known vulnerabilities the Go code reaches
 make vendor-hash       # after a go.mod change: the modules' hash in nix/go.nix
+make options           # after a change to an option: OPTIONS.md
 make demo-flake        # a fresh user in a container: a project with flake.nix and sandbox.nix
 make demo-home-manager # the same with the sandbox from a home-manager config
 ```

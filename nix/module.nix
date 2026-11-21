@@ -300,7 +300,7 @@ in
     profiles = mkOption {
       type = types.attrsOf profileType;
       default = { };
-      description = "Per-project additions, picked at start by path or project file.";
+      description = "Per-project additions, picked at start by path or project file: binds, claude.* and the guards' token commands, over the top level's.";
     };
 
     stateDir = mkOption {
@@ -358,6 +358,7 @@ in
         curl
         libgcc
       ];
+      defaultText = lib.literalExpression "with pkgs; [ stdenv.cc.cc.lib zlib openssl curl libgcc ]";
       description = "Libraries prebuilt (non-nix) binaries find through nix-ld, which is at the dynamic loader's path (/lib64/ld-linux-x86-64.so.2 on x86_64).";
     };
 

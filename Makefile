@@ -11,7 +11,7 @@ NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix demo/*/*.nix
 
 BIN := .build/go/bin
 
-.PHONY: list test coverage build lint vuln vendor-hash fmt demo-flake demo-home-manager demo-clean
+.PHONY: list test coverage build lint vuln vendor-hash options fmt demo-flake demo-home-manager demo-clean
 
 .DEFAULT_GOAL := list
 
@@ -27,7 +27,7 @@ SANDBOX_BIN = $$(nix build --no-link --print-out-paths .\#checks.$(SYSTEM).defau
 # build of the sandbox - and lint. The real-sandbox tests need a host with
 # unprivileged user namespaces; inside a sandbox they skip.
 test: ## Nix checks, all Go tests (RUN=filter) and lint
-	nix build --no-link .#checks.$(SYSTEM).project .#checks.$(SYSTEM).config
+	nix build --no-link .#checks.$(SYSTEM).project .#checks.$(SYSTEM).config .#checks.$(SYSTEM).options
 	SANDBOX_BIN=$(SANDBOX_BIN) $(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
 	$(if $(RUN),,$(MAKE) lint)
 
@@ -57,6 +57,11 @@ vendor-hash: ## Update nix/go.nix's vendorHash after a go.mod change
 	hash=$$(nix build --no-link .#checks.$(SYSTEM).default 2>&1 | sed -n 's/^ *got: *//p'); \
 		test -n "$$hash" && sed -i "s|vendorHash = \"\";|vendorHash = \"$$hash\";|" nix/go.nix
 	nix build --no-link .#checks.$(SYSTEM).default
+
+# After a change to an option: its type, default or description. `make
+# test` fails while OPTIONS.md isn't what the declarations give.
+options: ## Write OPTIONS.md from the option declarations
+	cp --no-preserve=mode $$(nix build --no-link --print-out-paths .\#checks.$(SYSTEM).options.doc) OPTIONS.md
 
 fmt: ## Format the Go and nix files
 	$(DEV) gofmt -w cmd internal e2e

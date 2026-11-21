@@ -37,6 +37,7 @@
         tests = pkgs.callPackage ./nix/tests.nix { };
         project = pkgs.callPackage ./nix/project-check.nix { };
         config = pkgs.callPackage ./nix/config-check.nix { inherit evalSandbox; };
+        options = pkgs.callPackage ./nix/options-doc.nix { };
         default = mkSandbox { inherit pkgs; };
       });
 
