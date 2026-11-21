@@ -21,16 +21,15 @@ let
   inherit (pkgs) lib;
   layer = import ./layer.nix { inherit lib pkgs; };
 
+  # What a project asks of the host is the user's to allow.
+  approved = "Takes the user's yes on the terminal, asked once and again whenever it changes; their own config's wins.";
+
   cfg =
     (lib.evalModules {
       modules = [
         {
           options = layer.options // {
-            hostPorts = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              description = "Host loopback ports reachable inside, like the top-level option.";
-            };
+            hostPorts = layer.hostPortsOption approved;
             command = lib.mkOption {
               type = lib.types.nullOr (lib.types.listOf lib.types.str);
               default = null;
@@ -39,22 +38,6 @@ let
                 "develop"
               ];
               description = "What `sandbox` with no command runs, in place of a login shell.";
-            };
-            guards.github.tokenCommand = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              example = "op read op://Employee/GitHub/token";
-              description = ''
-                A shell command printing the GitHub token, run on the host at
-                each start once the user approves it on the terminal (asked
-                once, and again whenever it changes). The user's own config
-                wins.
-              '';
-            };
-            guards.forgejo.tokenCommands = lib.mkOption {
-              type = lib.types.attrsOf lib.types.str;
-              default = { };
-              description = "Shell commands printing each Forgejo host's token, approved like guards.github.tokenCommand.";
             };
             git.fromHost = lib.mkOption {
               type = lib.types.bool;
@@ -82,34 +65,31 @@ let
                 commands. A user's .sandbox.yml wins.
               '';
             };
-            guards.claudeApiKey.tokenCommand = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = "A shell command printing a Claude API key for Claude Code inside, approved like guards.github.tokenCommand.";
-            };
-            guards.wayland.enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = ''
-                Windows on the host's Wayland display, for GUI programs
-                inside, through a proxy that passes on only an allowlist of
-                the compositor's globals. Takes the user's yes on the
-                terminal (asked once, and again whenever it changes); their
-                own config can turn it on or off for every project.
-              '';
-            };
-            guards.wayland.globals = lib.mkOption {
-              type = lib.types.attrsOf lib.types.bool;
-              default = { };
-              example = {
-                wl_data_device_manager = true;
+            guards = layer.tokenCommandOptions approved // {
+              wayland.enable = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = ''
+                  Windows on the host's Wayland display, for GUI programs
+                  inside, through a proxy that passes on only an allowlist of
+                  the compositor's globals. Takes the user's yes on the
+                  terminal (asked once, and again whenever it changes); their
+                  own config can turn it on or off for every project.
+                '';
               };
-              description = ''
-                Changes to the allowlist of Wayland globals, by interface
-                name: true adds one to the default list, which takes the
-                user's yes like enable; false removes one. The user's own
-                changes go over these.
-              '';
+              wayland.globals = lib.mkOption {
+                type = lib.types.attrsOf lib.types.bool;
+                default = { };
+                example = {
+                  wl_data_device_manager = true;
+                };
+                description = ''
+                  Changes to the allowlist of Wayland globals, by interface
+                  name: true adds one to the default list, which takes the
+                  user's yes like enable; false removes one. The user's own
+                  changes go over these.
+                '';
+              };
             };
           };
         }

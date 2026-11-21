@@ -1,7 +1,8 @@
 # The Go tests, as a check, with gh, fj and dbus-daemon for
-# the tests that run them. The real-sandbox tests (e2e), and the others that
-# need unprivileged user namespaces or a nix daemon, skip themselves: the nix
-# build sandbox has neither.
+# the tests that run them. Not the real-sandbox tests (e2e), which aren't in
+# this source: the nix build sandbox has neither the unprivileged user
+# namespaces nor the nix daemon they need, and the tests here that need one
+# skip themselves.
 {
   cacert,
   callPackage,
