@@ -18,6 +18,9 @@ import (
 // "unknown" when it can't be read.
 type Peer struct {
 	Cwd, Cmdline string
+	// Args are the command line's words, nil when it can't be read: the
+	// peer's own claim, never proof of what it does.
+	Args []string
 	// Its session, when it has a controlling terminal; 0 without one, or
 	// when it can't be read. See popup.Request.
 	Session int
@@ -48,7 +51,11 @@ func Describe(conn net.Conn) Peer {
 		p.Cwd = cwd
 	}
 	if data, err := os.ReadFile(proc + "/cmdline"); err == nil && len(data) > 0 {
-		p.Cmdline = Cmdline(bytes.Split(bytes.TrimSuffix(data, []byte{0}), []byte{0}))
+		args := bytes.Split(bytes.TrimSuffix(data, []byte{0}), []byte{0})
+		p.Cmdline = Cmdline(args)
+		for _, arg := range args {
+			p.Args = append(p.Args, string(arg))
+		}
 	}
 	if data, err := os.ReadFile(proc + "/stat"); err == nil {
 		p.Session = session(string(data))

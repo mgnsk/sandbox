@@ -47,7 +47,8 @@ What you get, per project:
   | Secret Service | libsecret for tools inside, kept apart per project in your keyring | never |
 
   A popup takes `y` (once), `A` (always, in this sandbox) or `N` (no, the
-  default).
+  default). For an ssh login whose popup names its server, `A` covers that
+  server alone.
 - **An exchange dir** (`$SANDBOX_EXCHANGE`), read-only inside, for output of
   commands you run on the host.
 - **Claude Code** with managed settings and a `CLAUDE.md` that tells it about
@@ -526,7 +527,9 @@ login, `git push` over ssh) gets the sandbox's popup first, except git
 commit and tag signatures with your signing key: `git.signingKey`, or the
 `user.signingKey` of your global git config on the host. With any other key
 in the agent a git signature asks too. The agent's own approval, if it has
-one, still applies on top.
+one, still applies on top. A login's popup names its server, by the host key
+ssh (OpenSSH 8.9 or later) reports and your `known_hosts` on the host; other
+clients' logins say the server is unknown.
 
 Your `~/.ssh/config` isn't there inside, only your `known_hosts`
 (read-only). Without home-manager's `programs.ssh`, bind it in with
