@@ -26,6 +26,8 @@ Not reachable - don't probe, plan around it:
   tools and tell the user to add it to the project's dev shell for good
 - all of `~` is a per-project volume, not the host's - host files appear
   only where bound in (the project dir and whatever the user configured)
+- writing outside `~`, the project, `/tmp` and `$XDG_RUNTIME_DIR`: the root
+  is read-only, so nothing can be created in `/`, `/etc`, `/usr` or `/var`
 - services on the host itself (its loopback or its own addresses), except
   ports the user listed in `SANDBOX_HOST_PORTS` when starting the sandbox,
   which appear at `127.0.0.1:<port>` inside. If a task needs one, ask the

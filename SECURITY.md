@@ -526,6 +526,13 @@ CA certificates come from the store too. With the ssh agent guard, the
 user's `~/.ssh/known_hosts` is bound read-only as the system-wide one: every
 project sees which hosts the user connects to, unless the file is hashed.
 
+All of it is mounted on a tmpfs root, which is made read-only once the
+mounts are in place. Left writable, it would let sandboxed code move `/etc`
+aside and make its own - its own managed Claude config, startup files and
+`hosts` - for the rest of that sandbox. What can be written inside is
+`/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR`, the home volume, the project and
+read-write binds.
+
 What the launcher runs is from the store too: bwrap, pasta, dbus-daemon and
 ip are store paths in its generated config, and the guards are its own
 binary. From the host's `PATH` it runs only what is the user's own: their

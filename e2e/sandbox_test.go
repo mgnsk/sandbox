@@ -314,13 +314,39 @@ func TestStoreAndClaudeConfigAreReadOnly(t *testing.T) {
 	}
 }
 
+// The root is read-only: /etc, which is no mount of its own, can't be moved
+// aside and made anew with a managed Claude config of the sandbox's own.
+// What's meant to be written to still is.
+func TestTheRootIsReadOnly(t *testing.T) {
+	p := newProject(t)
+	r := p.run(t, `mv /etc /etc.old && mkdir -p /etc/claude-code && echo '{}' > /etc/claude-code/managed-settings.json
+mkdir /var || echo no-var
+echo x > /etc/hosts.new || echo no-file
+cat /etc/claude-code/managed-settings.json
+touch /tmp/x "$XDG_RUNTIME_DIR/x" "$HOME/x" ./x /dev/shm/x && echo writable
+`, nil)
+	var settings struct {
+		Env map[string]any `json:"env"`
+	}
+	out, refused := strings.CutPrefix(r.stdout, "no-var\nno-file\n")
+	out, wrote := strings.CutSuffix(out, "writable\n")
+	if err := json.Unmarshal([]byte(out), &settings); err != nil || !refused || !wrote ||
+		fmt.Sprint(settings.Env["DISABLE_AUTOUPDATER"]) != "1" {
+		t.Errorf("%v %q %q", err, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "cannot move '/etc'") || !strings.Contains(r.stderr, "Read-only file system") {
+		t.Errorf("%q", r.stderr)
+	}
+}
+
 // With a sandbox.nix the managed Claude config is a link into the store,
 // followed inside (see TestAManifestCannotBringAHostDirectoryIn): to the
-// project's settings over the profile's, read-only like the rest.
+// project's settings over the profile's, read-only like the rest - the link
+// too.
 func TestClaudeConfigOfAProjectIsReadThroughItsLink(t *testing.T) {
 	p := newProject(t)
 	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte(`{ ... }: { claude.settings.env.FROM_PROJECT = "yes"; }`+"\n"), 0o644)
-	r := p.run(t, "readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n", nil)
+	r := p.run(t, "ln -sfn /tmp /etc/claude-code; readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n", nil)
 	link, rest, _ := strings.Cut(r.stdout, "\n")
 	var settings struct {
 		Env map[string]any `json:"env"`
@@ -329,7 +355,7 @@ func TestClaudeConfigOfAProjectIsReadThroughItsLink(t *testing.T) {
 		settings.Env["FROM_PROJECT"] != "yes" || fmt.Sprint(settings.Env["DISABLE_AUTOUPDATER"]) != "1" {
 		t.Errorf("%v %q", err, r.stdout)
 	}
-	if !strings.Contains(r.stderr, "Read-only file system") {
+	if !strings.Contains(r.stderr, "ln: ") || !strings.Contains(r.stderr, "CLAUDE.md: Read-only file system") {
 		t.Errorf("%q", r.stderr)
 	}
 }
