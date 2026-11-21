@@ -678,6 +678,90 @@ func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
 	}
 }
 
+// Each thing is approved on its own. So a start that uses less of what's
+// approved - here the user's own config has a token command, as a sandbox
+// installed with one has and `nix run` hasn't - doesn't ask, and going back
+// and forth between the two asks once each, not every time.
+func TestApprovalsAreKeptItemByItem(t *testing.T) {
+	h := newHarness(t)
+	n := 0
+	with := func(m manifest) {
+		n++
+		h.withProject(m, fmt.Sprintf("{ ... }: { n = %d; }\n", n), fmt.Sprintf("m%d.json", n))
+	}
+	// asks says whether a start asks, and for what; it answers yes.
+	asks := func() (shown string, asked bool) {
+		t.Helper()
+		if r := h.run("", nil); r.code == 0 {
+			return "", false
+		}
+		p := h.pty(nil)
+		shown = p.expect("Allow? [y/N] ")
+		p.send("y\r")
+		if r := p.wait(); r.code != 0 {
+			t.Fatalf("%d %q", r.code, r.stdout)
+		}
+		return shown, true
+	}
+	token := "github_pat_" + strings.Repeat("t", 30)
+	mine, theirs := "echo mine"+token, "echo theirs"+token
+	m := manifest{HostPorts: []string{"5432", "22"}, tokenCommands: tokenCommands{GitHubTokenCommand: theirs}}
+	with(m)
+
+	// The user's config has the command: only the ports are asked about.
+	h.cfg.Default.GitHubTokenCommand = mine
+	if shown, asked := asks(); !asked || !strings.Contains(shown, "host port 22") || strings.Contains(shown, theirs) {
+		t.Errorf("with the user's command: %v %q", asked, shown)
+	}
+	// Without it the project's command is new, and shown with the rest.
+	h.cfg.Default.GitHubTokenCommand = ""
+	if shown, asked := asks(); !asked || !strings.Contains(shown, "host port 22") || !strings.Contains(shown, theirs) {
+		t.Errorf("without: %v %q", asked, shown)
+	}
+	// Both are approved now, whichever is started.
+	for _, command := range []string{mine, "", mine, ""} {
+		h.cfg.Default.GitHubTokenCommand = command
+		if shown, asked := asks(); asked {
+			t.Errorf("asked again with %q: %q", command, shown)
+		}
+	}
+
+	// Asking for less takes no yes...
+	m.HostPorts = []string{"5432"}
+	with(m)
+	if shown, asked := asks(); asked {
+		t.Errorf("less: %q", shown)
+	}
+	// ...and what was dropped is asked about when it's back, also after a
+	// project that asked for nothing.
+	m.HostPorts = []string{"5432", "22"}
+	with(m)
+	if shown, asked := asks(); !asked || !strings.Contains(shown, "host port 22") {
+		t.Errorf("back: %v %q", asked, shown)
+	}
+	with(manifest{})
+	if shown, asked := asks(); asked {
+		t.Errorf("nothing: %q", shown)
+	}
+	with(m)
+	if _, asked := asks(); !asked {
+		t.Error("everything back: not asked")
+	}
+
+	// The binds are approved as the list they are: one may be there to
+	// cover part of another, so a part of the list is asked about.
+	m = manifest{Binds: []bind{{Src: "/srv", Mode: "rw"}, {Src: "/srv/keys", Mode: "ro"}}}
+	with(m)
+	if _, asked := asks(); !asked {
+		t.Error("binds: not asked")
+	}
+	m.Binds = m.Binds[:1]
+	with(m)
+	if shown, asked := asks(); !asked || !strings.Contains(shown, "bind /srv (read-write)") {
+		t.Errorf("fewer binds: %v %q", asked, shown)
+	}
+}
+
 // An approval is for where a bind leads, not for its name: a source the
 // sandbox could aim elsewhere afterwards is refused, and one that leads
 // somewhere else than approved is asked about again.
@@ -947,7 +1031,7 @@ func TestTokenCommands(t *testing.T) {
 	p := h.pty(nil)
 	shown := p.expect("Allow? [y/N] ")
 	for _, want := range []string{"run on this host at each start, for the GitHub token:", "    " + m.GitHubTokenCommand,
-		"the commands run on this host as you, outside the sandbox", "This is asked once, and again only if it changes"} {
+		"the commands run on this host as you, outside the sandbox", "This is asked once, and again only for something new"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("%q not in %q", want, shown)
 		}

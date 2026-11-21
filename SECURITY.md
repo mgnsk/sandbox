@@ -281,10 +281,9 @@ it comes from is the boundary:
   project's for the same guard or host.
 - **The project's `sandbox.nix`** (or `.sandbox.yml`, below): sandboxed code can edit it, so its
   commands are shown on the terminal and run only after a yes, stored with
-  the project's other approvals and asked again whenever any of them
-  changes; without a terminal the sandbox doesn't start. A command the
-  user's config overrides, or for a guard that's off, is neither shown nor
-  run. The approval is the only check: a user who approves a command that
+  the project's other approvals and asked again when one changes; without a
+  terminal the sandbox doesn't start. A command the user's config overrides,
+  or for a guard that's off, is neither shown nor run. The approval is the only check: a user who approves a command that
   does more than print a token has run it.
 
 ## Claude Code: a login inside, or an API key outside
@@ -571,11 +570,18 @@ treated as untrusted input:
   inside.
 - What reaches beyond the inside - `binds`, `hostPorts`, token commands,
   which run on the host, and the Wayland guard (turning it on, or adding a
-  global to its allowlist) - needs a yes on the controlling terminal, again
-  whenever it changes. The approval and the
-  evaluation cache live in the project's volume dir, outside the home volume,
-  where the sandbox can't write; without a terminal the sandbox doesn't
-  start.
+  global to its allowlist) - needs a yes on the controlling terminal. The
+  approvals and the evaluation cache live in the project's volume dir,
+  outside the home volume, where the sandbox can't write; without a terminal
+  the sandbox doesn't start.
+- Each thing is approved on its own: a port, a command, the display, a
+  global. A start asks when it would use one that isn't approved, showing
+  all it would use, so one that uses less - the user's config has that
+  token command, or a project drops a port - doesn't ask. The binds are
+  approved as one list: one may cover part of another (read-only, inside a
+  read-write one), so a shorter list is asked about too. An approval of
+  something the project no longer asks for is dropped at the next start:
+  bringing it back asks again.
 - What's approved is what's shown. A command, bind or port with a control
   character - an escape sequence or carriage return that would show
   something else than what then runs - is refused, and what was typed
