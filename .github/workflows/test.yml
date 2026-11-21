@@ -47,6 +47,17 @@ jobs:
           nix build .#checks.x86_64-linux.default --out-link "$RUNNER_TEMP/gcroots/out"
           nix develop --profile "$RUNNER_TEMP/gcroots/dev" -c true
 
+      # What `go test` downloads and compiles: the nix cache holds the
+      # tools, not this. Keyed on what it's made from - the modules, and
+      # the lock for the Go version; an older one is a start otherwise.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'flake.lock') }}
+          restore-keys: go-${{ runner.os }}-
+
       # Ubuntu 24.04's AppArmor denies unprivileged user namespaces to
       # unconfined programs, which bwrap needs for the real-sandbox tests.
       - name: Allow unprivileged user namespaces
@@ -54,8 +65,11 @@ jobs:
       - name: make test
         # install-nix-action points TMPDIR at /home/runner/work/_temp, which
         # makes the tests' unix socket paths exceed the 108-byte limit.
+        # -count=1: with Go's cache restored, a test is still run, never
+        # answered from an earlier run's result.
         env:
           TMPDIR: /tmp
+          GOFLAGS: -count=1
         run: make test
 
       # The flake names aarch64 too, which nothing here builds: at least

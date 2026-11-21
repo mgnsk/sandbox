@@ -8,6 +8,7 @@ SYSTEM = $(eval SYSTEM := $$(shell nix eval --raw --impure --expr builtins.curre
 RUN ?=
 
 NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix demo/*/*.nix
+SHELL_FILES := demo/entrypoint.sh nix/claude/*.sh nix/etc/bashrc nix/etc/profile
 
 BIN := .build/go/bin
 
@@ -45,9 +46,11 @@ coverage: ## Line coverage of the Go code
 build: ## Build sandbox-bin into .build/go/bin
 	$(DEV) go build -o $(BIN)/sandbox-bin ./cmd/sandbox-bin
 
-lint: ## Check formatting, go vet and staticcheck
+# SC1091: what bashrc and profile source isn't there to follow.
+lint: ## Check formatting, go vet, staticcheck, the workflows and shell files
 	nix fmt -- --check $(NIX_FILES)
 	$(DEV) sh -c 'test -z "$$(gofmt -l cmd internal e2e)" && go vet ./... && staticcheck ./...'
+	$(DEV) sh -c 'actionlint && shellcheck -s bash -e SC1091 $(SHELL_FILES)'
 
 # Known vulnerabilities in the Go toolchain and modules, as far as the code
 # reaches them. Not part of test: what it finds is fixed by a newer nixpkgs

@@ -26,6 +26,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      # The store test.yml caches, so only what the new lock changes is
+      # built. Restored, never saved: that workflow keeps it.
+      - uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', '**/*.nix', '.github/workflows/test.yml') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
       - name: Diff
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
