@@ -602,11 +602,11 @@ gitignored keeps it out of commits, not out of the sandbox's reach - and the
 sandbox can read it, which is fine: it holds commands and public data, not
 secrets.
 
-`git.fromHost` (in either file) runs only `git config --global --get` on the
-host, for a fixed set of keys, from `/` - never in the project, whose `.git`
-the sandbox can write - and reads a signing key's `.pub` file without
-following a link at its last component. The values only set git's
-environment inside. All host commands (token and signing key commands) run
+`git.fromHost` (in either file) runs only `git config --global --list` on the
+host, once, from `/` - never in the project, whose `.git` the sandbox can
+write - uses a fixed set of its keys, and reads a signing key's `.pub`
+file without following a link at its last component. The values only set
+git's environment inside. All host commands (token and signing key commands) run
 from `/` too, as the guards and what they start do (the host's `xdg-open`,
 the browser), so nothing the sandbox wrote in the project reaches them.
 

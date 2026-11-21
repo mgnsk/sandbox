@@ -913,7 +913,7 @@ func TestLocalConfig(t *testing.T) {
 	// The host's git identity, for sandbox.nix's git.fromHost: under what
 	// .sandbox.env sets, and off with GIT_FROM_HOST=0.
 	bin := t.TempDir()
-	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\ncase \"$4\" in user.name) echo Host;; user.email) echo host@example.com;; *) exit 1;; esac\n"), 0o755)
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf 'user.name\\nHost\\0user.email\\nhost@example.com\\0'\n"), 0o755)
 	withGit := map[string]string{"PATH": bin + ":" + h.env["PATH"]}
 	h.withProject(manifest{GitFromHost: true}, "{ ... }: { z = 1; }\n", "m4.json")
 	write("git:\n  userName: Mine\n")
