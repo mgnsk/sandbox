@@ -127,21 +127,27 @@ sandbox's settings (`sandbox`) and Claude Code (`claude`) added.
 }
 ```
 
-Start the sandbox in the project; a bare `sandbox` enters the dev shell
-there:
+In the project, `nix develop` enters the sandbox by itself, and a bare
+`sandbox` enters the dev shell:
 
 ```sh
 cd ~/src/myproject
-sandbox                                # the dev shell, inside the sandbox
-sandbox nix develop -c claude          # Claude Code with the project's tools on PATH
-sandbox nix develop -c go test ./...   # a one-off command
+nix develop                  # the dev shell, inside the sandbox
+nix develop -c claude        # Claude Code with the project's tools on PATH
+nix develop -c go test ./... # a one-off command
+sandbox                      # the same as nix develop
 ```
 
-The shell refuses to start outside the sandbox (`requireSandbox = false;`
-turns that off). It's only a guard against a slip: the sandbox can edit
-the flake, so `nix develop` on the host would run whatever it put in the
-shell hook. With direnv, `use flake` in `.envrc` inside the sandbox does
-the same whenever you `cd` in - but don't allow it on the host.
+On the host, the shell's hook runs the same `nix develop` (with its `-c`
+command) as `sandbox nix develop`, with the `sandbox` on your `PATH`, and
+stops if there's none. `onHost = "refuse";` only stops, `"run"` stays on
+the host. Only that form carries over: `nix develop .#other`, flags, or a
+flake elsewhere enter the sandbox in the current directory with plain
+`nix develop`. And it's no boundary: `nix develop` on the host evaluates
+the flake and runs its hook there, which the sandbox can edit - so a
+tampered flake runs whatever it put there, as with any `nix develop`. With
+direnv, `use flake` in `.envrc` works inside the sandbox; on the host it
+stops.
 
 The sandbox the flake pins is only where `mkShell` comes from: your
 `sandbox` command evaluates the `sandbox` settings with its own options,

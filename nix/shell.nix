@@ -19,10 +19,11 @@
   # mkClaude's options (a module) for Claude Code in the shell; null for
   # none.
   claude ? null,
-  # Whether the shell refuses to start outside the sandbox. Only a guard
-  # against running it on the host by mistake: the sandbox can edit the
-  # flake, so this is no boundary.
-  requireSandbox ? true,
+  # What `nix develop` of this shell does outside a sandbox: "enter" runs
+  # the same `nix develop` (or `nix develop -c CMD`) in `sandbox` from PATH,
+  # "refuse" stops, "run" goes on, on the host. Not a boundary: the hook
+  # that does it is in the flake, which the sandbox can edit.
+  onHost ? "enter",
   packages ? [ ],
   shellHook ? "",
   passthru ? { },
@@ -33,7 +34,7 @@ pkgs.mkShell (
     "pkgs"
     "sandbox"
     "claude"
-    "requireSandbox"
+    "onHost"
   ]
   // {
     packages = [
@@ -47,13 +48,59 @@ pkgs.mkShell (
     });
 
     shellHook =
-      lib.optionalString requireSandbox ''
-        # SANDBOX_EXCHANGE is set by the sandbox.
-        if [ -z "''${SANDBOX_EXCHANGE-}" ]; then
-          echo "nix develop: not in the sandbox: run \`sandbox\` here" >&2
-          exit 1
-        fi
-      ''
+      assert lib.assertMsg (lib.elem onHost [
+        "enter"
+        "refuse"
+        "run"
+      ]) "sandbox.lib.mkShell: onHost is enter, refuse or run, not ${onHost}";
+      # SANDBOX_EXCHANGE is set by the sandbox.
+      lib.optionalString (onHost != "run") (
+        ''
+          if [ -z "''${SANDBOX_EXCHANGE-}" ]; then
+        ''
+        + lib.optionalString (onHost == "enter") ''
+          # nix develop has exec'd `bash RCFILE` (with a command) or
+          # `bash --rcfile RCFILE`: after this hook, RCFILE removes itself
+          # and execs the command, shell-quoted, if there's one. Anything
+          # else (direnv, nix print-dev-env) isn't entered.
+          __sandbox_enter() {
+            local -a argv
+            local rc line i after="" cmd=""
+            mapfile -d "" argv </proc/$$/cmdline || return
+            rc=''${argv[-1]}
+            for i in "''${!argv[@]}"; do
+              if [ "''${argv[i]}" = --rcfile ]; then
+                rc=''${argv[i + 1]-}
+              fi
+            done
+            case $rc in
+            /*/nix-shell.*) ;;
+            *) return ;;
+            esac
+            command -v sandbox >/dev/null || return
+            while IFS= read -r line; do
+              case $line in
+              "command rm -f "*) after=1 ;;
+              "exec "*)
+                if [ -n "$after" ]; then
+                  cmd=''${line#exec }
+                  break
+                fi
+                ;;
+              esac
+            done <"$rc"
+            command rm -f -- "$rc"
+            echo "nix develop: entering the sandbox" >&2
+            eval "exec sandbox nix develop ''${cmd:+-c $cmd}"
+          }
+          __sandbox_enter
+        ''
+        + ''
+            echo "nix develop: not in the sandbox: run \`sandbox\` here" >&2
+            exit 1
+          fi
+        ''
+      )
       + ''
         # nix develop points SHELL at stdenv's plain bash.
         export SHELL=${lib.getExe pkgs.bashInteractive}

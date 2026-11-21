@@ -684,5 +684,8 @@ isolate the rest.
 
 The same goes for a sandboxed project's own flake: `nix develop` (or `nix
 run`, direnv's `use flake`) on the host runs what the sandbox may have put
-there, outside it. `sandbox.lib.mkShell`'s shell refuses to start outside a
-sandbox, but that check is in the flake too: run them inside.
+there, outside it. `sandbox.lib.mkShell`'s shell hook re-runs `nix develop`
+in the sandbox, but that hook is in the flake too, run on the host by the
+very `nix develop` it redirects: it saves typing `sandbox`, not a tampered
+flake. After a session that could have edited the flake, enter with
+`sandbox`, which evaluates the flake only inside.

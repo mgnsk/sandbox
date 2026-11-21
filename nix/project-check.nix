@@ -21,6 +21,10 @@ let
     claude.package = fakeClaude;
     CGO_ENABLED = "0";
   };
+  refusing = sandboxLib.mkShell {
+    inherit pkgs;
+    onHost = "refuse";
+  };
   # The flake's own command over mkShell's default.
   ownCommand = sandboxLib.mkShell {
     inherit pkgs;
@@ -83,6 +87,13 @@ assert fails (
 assert fails (_: lsp { package = vscode-langservers-extracted; });
 assert shell.CGO_ENABLED == "0";
 assert lib.any (p: lib.getName p == "claude-code-sandbox") shell.nativeBuildInputs;
+assert
+  (builtins.tryEval
+    (sandboxLib.mkShell {
+      inherit pkgs;
+      onHost = "maybe";
+    }).shellHook
+  ).success == false;
 runCommand "sandbox-project-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .hostPorts == ["5432"]
@@ -127,6 +138,40 @@ runCommand "sandbox-project-check" { nativeBuildInputs = [ jq ]; } ''
   # On the Claude API guard: the placeholder key.
   ran=$(ANTHROPIC_UNIX_SOCKET=/s ${lib.getExe claude})
   jq -e '.apiKeyHelper == "echo sandbox-placeholder"' "$(arg --settings)"
+  # The shell hook as nix develop runs it: a file that evals it, removes
+  # itself and execs the command (or, interactive, is bash's rcfile).
+  rcfile() {
+    f=$TMPDIR/nix-shell.$1
+    {
+      echo 'eval "''${shellHook:-}"'
+      echo "command rm -f '$f'"
+      if [ -n "$2" ]; then echo "exec $2"; fi
+    } >$f
+    echo $f
+  }
+  mkdir -p $TMPDIR/bin
+  printf '#!/bin/sh\nprintf "%%s|" sandbox "$@"\n' >$TMPDIR/bin/sandbox
+  chmod +x $TMPDIR/bin/sandbox
+  hostPath=$TMPDIR/bin:$PATH
+  export shellHook=${lib.escapeShellArg shell.shellHook}
+  f=$(rcfile a "'echo' 'two words'")
+  got=$(PATH=$hostPath bash $f 2>/dev/null)
+  test "$got" = "sandbox|nix|develop|-c|echo|two words|" || { echo "with a command: $got"; exit 1; }
+  test ! -e $f
+  f=$(rcfile b "")
+  got=$(PATH=$hostPath bash --rcfile $f -i </dev/null 2>/dev/null)
+  test "$got" = "sandbox|nix|develop|" || { echo "interactive: $got"; exit 1; }
+  # Inside, the shell itself; without a sandbox command, or as another
+  # shell's hook, refused.
+  f=$(rcfile c "'echo' inside")
+  test "$(SANDBOX_EXCHANGE=/x PATH=$hostPath bash $f 2>/dev/null)" = inside
+  f=$(rcfile d "'echo' x")
+  ! bash $f 2>/dev/null
+  ! (PATH=$hostPath bash -c 'eval "$shellHook"' 2>/dev/null)
+  export shellHook=${lib.escapeShellArg refusing.shellHook}
+  f=$(rcfile e "'echo' x")
+  ! (PATH=$hostPath bash $f 2>/dev/null)
+
   # remote-control refuses the session flags.
   test "$(${lib.getExe claude} rc --x)" = "$(printf 'CLAUDE_CONFIG_DIR=%s\nrc\n--x' "$HOME/.claude-project")"
   touch $out
