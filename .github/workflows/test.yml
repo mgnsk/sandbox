@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: read
-  # cache-nix-action purges superseded caches.
-  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,6 +19,11 @@ jobs:
   # is fetched or built again.
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # cache-nix-action purges superseded caches.
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
@@ -54,3 +57,14 @@ jobs:
         env:
           TMPDIR: /tmp
         run: make test
+
+      # The flake names aarch64 too, which nothing here builds: at least
+      # it evaluates.
+      - name: Evaluate for aarch64
+        run: nix eval --raw .#packages.aarch64-linux.default.drvPath
+
+      # Not a failure of the change at hand: a newer nixpkgs or module
+      # fixes what this finds, so it only says so.
+      - name: Known vulnerabilities
+        continue-on-error: true
+        run: make vuln

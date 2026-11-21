@@ -44,6 +44,9 @@
         default = pkgs.mkShell {
           packages = [
             pkgs.go
+            # make lint and make vuln.
+            pkgs.go-tools
+            pkgs.govulncheck
             # gh and fj, which the proxy tests run, and the bus and
             # secret-tool (libsecret's client) the secret-service tests
             # start.

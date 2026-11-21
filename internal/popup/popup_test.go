@@ -131,7 +131,7 @@ func TestApprovalsQueueBehindAlways(t *testing.T) {
 }
 
 func TestClean(t *testing.T) {
-	if got := Clean("a\x1b[2Jb‮c\nd"); got != "a?[2Jb?c?d" {
+	if got := Clean("a\x1b[2Jb\u202ec\nd"); got != "a?[2Jb?c?d" {
 		t.Errorf("Clean = %q", got)
 	}
 	if got := CleanText("a\x1b\nb"); got != "a?\nb" {

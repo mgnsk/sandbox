@@ -1,7 +1,8 @@
 # Run from anywhere: outside the dev shell, each command enters it.
 DEV := $(if $(IN_NIX_SHELL),,nix develop -c)
 
-SYSTEM := $(shell nix eval --raw --impure --expr builtins.currentSystem)
+# Asked of nix only by the targets that use it, and once.
+SYSTEM = $(eval SYSTEM := $$(shell nix eval --raw --impure --expr builtins.currentSystem))$(SYSTEM)
 
 # A go test -run filter, e.g. make test RUN=HostPort
 RUN ?=
@@ -10,7 +11,7 @@ NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix demo/*/*.nix
 
 BIN := .build/go/bin
 
-.PHONY: list test coverage build lint fmt demo-flake demo-home-manager demo-clean
+.PHONY: list test coverage build lint vuln vendor-hash fmt demo-flake demo-home-manager demo-clean
 
 .DEFAULT_GOAL := list
 
@@ -18,27 +19,44 @@ BIN := .build/go/bin
 list: ## List the commands
 	@awk -F':.*## ' '/^[a-z-]+:.*## /{printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-# Everything: the sandbox.nix evaluation check, the Go tests - the
-# real-sandbox ones (e2e) against a fresh build of the sandbox - and lint.
-# The real-sandbox tests need a host with unprivileged user namespaces;
-# inside a sandbox they skip.
+# The sandbox built from this checkout, for the real-sandbox tests (e2e).
+SANDBOX_BIN = $$(nix build --no-link --print-out-paths .\#checks.$(SYSTEM).default)/bin/sandbox
+
+# Everything: the checks of the configuration and of sandbox.nix's
+# evaluation, the Go tests - the real-sandbox ones (e2e) against a fresh
+# build of the sandbox - and lint. The real-sandbox tests need a host with
+# unprivileged user namespaces; inside a sandbox they skip.
 test: ## Nix checks, all Go tests (RUN=filter) and lint
-	nix build --no-link .#checks.$(SYSTEM).project
-	SANDBOX_BIN=$$(nix build --no-link --print-out-paths .#checks.$(SYSTEM).default)/bin/sandbox \
-		$(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
+	nix build --no-link .#checks.$(SYSTEM).project .#checks.$(SYSTEM).config
+	SANDBOX_BIN=$(SANDBOX_BIN) $(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
 	$(if $(RUN),,$(MAKE) lint)
 
-# Line coverage of the Go code by its tests.
+# Line coverage of the Go code by its tests, the real-sandbox ones included
+# where they run.
 coverage: ## Line coverage of the Go code
 	mkdir -p .build/go
-	$(DEV) sh -c 'go test -coverpkg=./... -coverprofile=.build/go/cover.txt ./... && go tool cover -func=.build/go/cover.txt'
+	SANDBOX_BIN=$(SANDBOX_BIN) $(DEV) sh -c 'go test -coverpkg=./... -coverprofile=.build/go/cover.txt ./... && go tool cover -func=.build/go/cover.txt'
 
 build: ## Build sandbox-bin into .build/go/bin
 	$(DEV) go build -o $(BIN)/sandbox-bin ./cmd/sandbox-bin
 
-lint: ## Check formatting and go vet
+lint: ## Check formatting, go vet and staticcheck
 	nix fmt -- --check $(NIX_FILES)
-	$(DEV) sh -c 'test -z "$$(gofmt -l cmd internal e2e)" && go vet ./...'
+	$(DEV) sh -c 'test -z "$$(gofmt -l cmd internal e2e)" && go vet ./... && staticcheck ./...'
+
+# Known vulnerabilities in the Go toolchain and modules, as far as the code
+# reaches them. Not part of test: what it finds is fixed by a newer nixpkgs
+# or module, not by the change at hand. Needs the network (vuln.go.dev).
+vuln: ## Known vulnerabilities the Go code reaches
+	$(DEV) govulncheck ./...
+
+# After a change to go.mod or go.sum: the hash of the modules nix builds
+# the binary from, taken from the build that fails for the lack of it.
+vendor-hash: ## Update nix/go.nix's vendorHash after a go.mod change
+	sed -i 's|vendorHash = "[^"]*";|vendorHash = "";|' nix/go.nix
+	hash=$$(nix build --no-link .#checks.$(SYSTEM).default 2>&1 | sed -n 's/^ *got: *//p'); \
+		test -n "$$hash" && sed -i "s|vendorHash = \"\";|vendorHash = \"$$hash\";|" nix/go.nix
+	nix build --no-link .#checks.$(SYSTEM).default
 
 fmt: ## Format the Go and nix files
 	$(DEV) gofmt -w cmd internal e2e
