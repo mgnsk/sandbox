@@ -1,0 +1,55 @@
+name: vendor hash
+
+# On a Dependabot PR that changes go.mod or go.sum, a commit with the
+# vendorHash in nix/go.nix that goes with them: Dependabot doesn't know
+# about it, and the build fails without it.
+
+on:
+  pull_request:
+    paths: [go.mod, go.sum]
+
+permissions:
+  # The push. Dependabot's runs get a read-only token unless asked.
+  contents: write
+  # Running test.yml on the pushed commit.
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vendor-hash:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # The branch itself, not the merge commit, to push to it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      # The store test.yml caches. Restored, never saved: that workflow
+      # keeps it.
+      - uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', '**/*.nix', '.github/workflows/test.yml') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - name: make vendor-hash
+        run: make vendor-hash
+      # A push with this run's token starts no workflows, so test.yml is
+      # started by hand on the new commit; its checks show on the PR.
+      - name: Push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if git diff --quiet; then
+            echo "vendorHash is up to date"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am 'Update vendorHash'
+          git push
+          gh workflow run test.yml --ref "$BRANCH"
