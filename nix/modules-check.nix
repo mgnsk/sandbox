@@ -96,10 +96,17 @@ runCommand "sandbox-modules-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     (.permissions.allow | sort) == (["Bash(go test:*)", "mcp__x__*", "mcp__my_server__*", "LSP"] | sort)
     and .env.DISABLE_AUTOUPDATER == 1
-    and (.hooks.PreToolUse[0].hooks | length) == 2
+    and (.hooks.PreToolUse | map(select(.matcher == "Bash")) | .[0].hooks | length) == 2
+    and (.hooks.PreToolUse | map(select(.matcher == "^(mcp__my_server__.*|mcp__x__.*|LSP)$")) | length) == 1
     and has("apiKeyHelper") == false
   ' $settings
-  for hook in $(jq -r '.hooks.PreToolUse[0].hooks[].command' $settings); do test -x "$hook"; done
+  for hook in $(jq -r '.hooks.PreToolUse[].hooks[].command' $settings); do test -x "$hook"; done
+  allow=$(jq -r '.hooks.PreToolUse[] | select(.matcher | startswith("^")) | .hooks[0].command' $settings)
+  $allow | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+  # The matcher takes the whole name.
+  matcher=$(jq -r '.hooks.PreToolUse[] | select(.matcher | startswith("^")) | .matcher' $settings)
+  for t in LSP mcp__x__a mcp__my_server__b; do grep -qE "$matcher" <<<"$t"; done
+  for t in xLSP mcp__xy__a mcp__x; do ! grep -qE "$matcher" <<<"$t"; done
 
   # The wrapper: language servers as a plugin, the placeholder key only on
   # the Claude API guard.
