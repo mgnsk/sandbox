@@ -316,6 +316,45 @@ func TestReadBodyLimit(t *testing.T) {
 	}
 }
 
+// roundTripFunc is a function as an http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A body read for the popup reaches the transport with GetBody, so a request
+// on an HTTP/2 connection the host shuts down (GOAWAY) after the body was
+// sent is retried on a new one instead of failing.
+func TestReadBodiesCanBeSentAgain(t *testing.T) {
+	w := newWorld(t)
+	w.popups.Answer = popup.Always
+	upstream := w.proxy.Transport
+	var replayed [][]byte
+	w.proxy.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.GetBody == nil {
+			t.Errorf("%s %s: no GetBody", r.Method, r.URL)
+		} else {
+			for range 2 {
+				body, _ := r.GetBody()
+				data, _ := io.ReadAll(body)
+				replayed = append(replayed, data)
+			}
+		}
+		return upstream.RoundTrip(r)
+	})
+	c, _, _ := w.https(t)
+	payload := `{"title": "x"}`
+	if resp, body := do(t, c, "POST", "https://api.example/ok/issues", strings.NewReader(payload),
+		"Content-Type", "application/json"); resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	if len(replayed) != 2 || string(replayed[0]) != payload || string(replayed[1]) != payload {
+		t.Errorf("replayed %q", replayed)
+	}
+	if s := w.upstream.Seen(); len(s) != 1 || string(s[0].Body) != payload {
+		t.Errorf("upstream got %+v", s)
+	}
+}
+
 // -- the HTTPS proxy itself --
 
 // connect CONNECTs to target through the proxy at u with auth as
