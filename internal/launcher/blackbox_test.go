@@ -195,6 +195,11 @@ func TestStateDir(t *testing.T) {
 	if !isDir(filepath.Join(h.tmp, "elsewhere", volumeName(h.project))) {
 		t.Error("$SANDBOX_STATE_DIR not used")
 	}
+	h.cfg.StateDir = "~/../tilde"
+	h.run("", nil)
+	if !isDir(filepath.Join(h.home, "../tilde", volumeName(h.project))) {
+		t.Error("~ in stateDir not expanded")
+	}
 	h.cfg.StateDir = ""
 	h.run("", map[string]string{"XDG_DATA_HOME": filepath.Join(h.tmp, "data")})
 	if !isDir(filepath.Join(h.tmp, "data/sandbox", volumeName(h.project))) {

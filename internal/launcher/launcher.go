@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -289,6 +290,9 @@ func (l *launcher) makeVolume() error {
 		stateDir = l.cfg.StateDir
 	}
 	if stateDir != "" {
+		if stateDir == "~" || strings.HasPrefix(stateDir, "~/") {
+			stateDir = l.home + stateDir[1:]
+		}
 		stateDir = os.Expand(stateDir, func(name string) string {
 			if v, ok := l.vars[name]; ok {
 				return v
