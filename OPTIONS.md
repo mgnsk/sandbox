@@ -504,7 +504,10 @@ Rules every session loads, after the sandbox's AGENTS.md (`agentsMd`): the sandb
 
 Settings given with --settings at every run: over
 ~/.gemini/antigravity-cli/settings.json, for that run only, never
-saved. Merged across modules.
+saved. Merged across modules. `enableTerminalSandbox` defaults to
+false: agy's own sandbox for commands needs nested namespaces, which
+the sandbox blocks, so each command would fail there before agy
+retried it outside.
 
 - Type: `JSON value`
 - Default: `{ }`

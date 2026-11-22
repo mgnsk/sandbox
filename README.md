@@ -364,7 +364,9 @@ linked at `~/.gemini/config/plugins/sandbox`, so your own `~/.gemini`
 config stays yours. agy's hooks have no way to leave a command to its own
 permissions, so the commands they don't deny are allowed outright: in the
 sandbox, agy runs shell commands without asking, whatever its permission
-preset. The wrapper also turns the auto-updater off. These are
+preset. The wrapper also turns the auto-updater off, and agy's own
+sandbox for commands (`settings.enableTerminalSandbox`, which needs the
+nested namespaces the sandbox blocks) is off by default. These are
 pinned defaults, not enforced: anything inside can disable the plugin or
 replace its link until the next `agy` run. Only `adminSettings` is out of
 the sandbox's reach.
