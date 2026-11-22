@@ -310,6 +310,7 @@ claude = {
     Run the tests before calling a change done.
   '';
   # managed-mcp.json: once any is set, a project's .mcp.json is ignored.
+  # Its tools, like the LSP tool's, are allowed without a prompt.
   mcpServers.mcp-nixos = { type = "stdio"; command = lib.getExe pkgs.mcp-nixos; };
   # Language servers, each run from its package's bin/, never from PATH.
   lspServers.gopls = { package = pkgs.gopls; extensionToLanguage.".go" = "go"; };

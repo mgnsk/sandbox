@@ -111,6 +111,19 @@ let
     )}
   '';
   plugins = lib.optional (cfg.lspServers != { }) lspPlugin ++ cfg.plugins;
+
+  # Allow rules for what the distribution configured, so its tools don't
+  # prompt: every tool of each managed MCP server, and the LSP tool. A
+  # server's tools are named with each character of its name outside
+  # [A-Za-z0-9_-] as _; the wildcard form also covers a name with __.
+  mcpToolPrefix =
+    name:
+    lib.concatMapStrings (c: if builtins.match "[A-Za-z0-9_-]" c != null then c else "_") (
+      lib.stringToCharacters name
+    );
+  allowRules =
+    map (n: "mcp__${mcpToolPrefix n}__*") (lib.attrNames cfg.mcpServers)
+    ++ lib.optional (cfg.lspServers != { }) "LSP";
   pluginArgs = lib.concatMap (p: [
     "--plugin-dir"
     "${p}"
@@ -164,7 +177,8 @@ in
       default = { };
       description = ''
         Managed MCP servers. Managed MCP config is exclusive: once any is
-        set, a project's own .mcp.json is ignored.
+        set, a project's own .mcp.json is ignored. Their tools are allowed
+        without a prompt (`mcp__<name>__*` in the managed settings).
       '';
     };
     lspServers = mkOption {
@@ -173,6 +187,7 @@ in
       description = ''
         Language servers, in a plugin of their own (--plugin-dir) that runs
         each from its store path, so plugin and server are pinned together.
+        The LSP tool is allowed without a prompt.
       '';
     };
     plugins = mkOption {
@@ -190,6 +205,7 @@ in
         # A store path can't update itself.
         env.DISABLE_AUTOUPDATER = 1;
       }
+      (lib.mkIf (allowRules != [ ]) { permissions.allow = allowRules; })
       {
         hooks.PreToolUse = [
           {

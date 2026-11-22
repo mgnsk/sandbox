@@ -28,6 +28,10 @@ let
           type = "stdio";
           command = "x";
         };
+        mcpServers."my.server" = {
+          type = "stdio";
+          command = "y";
+        };
         lspServers.gopls = {
           package = gopls;
           extensionToLanguage.".go" = "go";
@@ -90,7 +94,7 @@ runCommand "sandbox-modules-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '.mcpServers.x.command == "x"' ${etc."claude-code/managed-mcp.json"}
   settings=${etc."claude-code/managed-settings.json"}
   jq -e '
-    .permissions.allow == ["Bash(go test:*)"]
+    (.permissions.allow | sort) == (["Bash(go test:*)", "mcp__x__*", "mcp__my_server__*", "LSP"] | sort)
     and .env.DISABLE_AUTOUPDATER == 1
     and (.hooks.PreToolUse[0].hooks | length) == 2
     and has("apiKeyHelper") == false
