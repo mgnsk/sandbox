@@ -132,8 +132,8 @@ provided.
 
 On top of it:
 
-- **the distribution's `packages`**, in every project: `claude`, `agy` and
-  `code` when it turns those on, gh, ...;
+- **the distribution's `packages`**, in every project: `claude` and `code`
+  when it turns those on, gh, ...;
 - **the project's dev shell** (a flake's `devShells`, devenv), first on
   `PATH` inside it: its tools and environment variables;
 - **your own profile**, when the distribution turns it on: `~/.nix-profile`
@@ -332,44 +332,6 @@ sandbox runs the [Claude API guard](#claude-api-key).
 
 Your own `~/.claude` (from home-manager, with `homeManager.enable`) still
 applies under the managed config.
-
-### Antigravity CLI
-
-`antigravity.enable` puts Google's `agy` in every project. Unlike Claude
-Code it has no managed config over `~/.gemini`, so the wrapper sets it up at
-each run instead:
-
-```nix
-antigravity = {
-  enable = true;
-  # Given with --settings: over ~/.gemini/antigravity-cli/settings.json for
-  # the run, never saved. Merged across modules.
-  settings.agentMode = "accept-edits";
-  # The sandbox plugin's rules, after the sandbox's AGENTS.md.
-  rules = ''
-    Run the tests before calling a change done.
-  '';
-  # The sandbox plugin's MCP servers, added to the user's and project's own.
-  mcpServers.mcp-nixos.command = lib.getExe pkgs.mcp-nixos;
-  # Plugin directories, linked at ~/.gemini/config/plugins/sandbox-<name>.
-  plugins.team = ./antigravity-plugin;
-  # /etc/antigravity/admin_settings.json, agy's enterprise policy.
-  adminSettings = { };
-};
-```
-
-The sandbox's rules, MCP servers and hooks (the same as Claude Code's: no gh
-or fj login inside, no GitHub around gh) come in a plugin of its own,
-linked at `~/.gemini/config/plugins/sandbox`, so your own `~/.gemini`
-config stays yours. agy's hooks have no way to leave a command to its own
-permissions, so the commands they don't deny are allowed outright: in the
-sandbox, agy runs shell commands without asking, whatever its permission
-preset. The wrapper also turns the auto-updater off, and agy's own
-sandbox for commands (`settings.enableTerminalSandbox`, which needs the
-nested namespaces the sandbox blocks) is off by default. These are
-pinned defaults, not enforced: anything inside can disable the plugin or
-replace its link until the next `agy` run. Only `adminSettings` is out of
-the sandbox's reach.
 
 ### VS Code
 

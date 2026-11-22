@@ -1,7 +1,7 @@
 # Only with the GitHub guard running (a token command is set): without it
 # there's no proxy to keep requests on.
-# shellcheck disable=SC2154 # cmd comes from lib.sh, which goes first
-[ "${GH_TOKEN:-}" = sandbox-placeholder ] || pass
+[ "${GH_TOKEN:-}" = sandbox-placeholder ] || exit 0
+cmd=$(jq -r '.tool_input.command // ""')
 hosts='(^|[^[:alnum:].-])([[:alnum:]-]+\.)*(github\.com|githubusercontent\.com|githubassets\.com)'
 clients='(^|[[:space:];&|(`])(fetch-url|curl|wget|xh|aria2c)([[:space:]]|$)'
 # Check each simple command on its own, so e.g. `curl localhost; git ls-remote
@@ -21,6 +21,9 @@ while [ -z "$hit" ] && IFS= read -r seg; do
 	fi
 done < <(sed -E 's/(\$\(|[;&|`()])+/\n/g' <<<"$cmd")
 if [ -n "$hit" ]; then
-	deny "GitHub must be accessed through the gh CLI, not HTTP clients. Use gh api, gh repo/pr/issue/release/run/gist ..., or gh api repos/OWNER/REPO/contents/PATH for raw files."
+	jq -n '{hookSpecificOutput: {
+		hookEventName: "PreToolUse",
+		permissionDecision: "deny",
+		permissionDecisionReason: "GitHub must be accessed through the gh CLI, not HTTP clients. Use gh api, gh repo/pr/issue/release/run/gist ..., or gh api repos/OWNER/REPO/contents/PATH for raw files."
+	}}'
 fi
-pass

@@ -61,7 +61,19 @@ let
     }
   );
 
-  hook = import ./agent-hooks.nix { inherit lib pkgs; } "claude";
+  hook =
+    name:
+    lib.getExe (
+      pkgs.writeShellApplication {
+        inherit name;
+        runtimeInputs = [
+          pkgs.jq
+          pkgs.gnugrep
+          pkgs.gnused
+        ];
+        text = builtins.readFile ./claude-hooks/${name}.sh;
+      }
+    );
 
   claude = lib.getExe cfg.package;
 
