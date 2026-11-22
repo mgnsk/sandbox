@@ -169,10 +169,10 @@ runCommand "sandbox-modules-check" { nativeBuildInputs = [ jq ]; } ''
   login=$(grep deny-cli-login <<<"$hooks")
   call() { jq -n --arg c "$1" '{toolCall: {name: "run_command", args: {CommandLine: $c}}}'; }
   call 'gh auth login' | $login | jq -e '.decision == "deny" and (.reason | test("Never log gh"))'
-  call 'gh pr list' | $login | jq -e '. == {}'
+  call 'gh pr list' | $login | jq -e '. == {decision: "allow"}'
   github=$(grep deny-github-http <<<"$hooks")
   call 'curl https://api.github.com' | GH_TOKEN=sandbox-placeholder $github | jq -e '.decision == "deny"'
-  call 'curl https://api.github.com' | $github | jq -e '. == {}'
+  call 'curl https://api.github.com' | $github | jq -e '. == {decision: "allow"}'
   claudeLogin=$(jq -r '.hooks.PreToolUse[0].hooks[] | select(.command | test("deny-cli-login")) | .command' $settings)
   jq -n '{tool_input: {command: "fj auth login"}}' | $claudeLogin |
     jq -e '.hookSpecificOutput.permissionDecision == "deny"'
