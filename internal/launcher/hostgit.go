@@ -9,7 +9,7 @@ import (
 )
 
 // hostGit is the git identity from the user's global git config on the
-// host (git.fromHost, in sandbox.nix or .sandbox.yml): name, email, and the
+// host (git.fromHost, in the project's flake or .sandbox.yml): name, email, and the
 // ssh public key it signs with. Only `git config --global --list` runs,
 // once, from /, never in the project, whose .git the sandbox can write; a
 // value that isn't set, or no git on the host, leaves it empty.

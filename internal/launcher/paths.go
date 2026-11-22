@@ -165,25 +165,6 @@ func hostName(project string) string {
 	return name
 }
 
-const nixBase32 = "0123456789abcdfghijklmnpqrsvwxyz"
-
-// isStorePath says whether p is a path in the nix store, in its canonical
-// form: no "..", nothing to resolve to elsewhere.
-func isStorePath(p string) bool {
-	rest, ok := strings.CutPrefix(p, "/nix/store/")
-	name, _, _ := strings.Cut(rest, "/")
-	hash, _, named := strings.Cut(name, "-")
-	return ok && named && len(hash) == 32 && filepath.Clean(p) == p &&
-		!strings.ContainsFunc(hash, func(r rune) bool { return !strings.ContainsRune(nixBase32, r) })
-}
-
-// isStoreObject says whether p is a store path itself, not a path in one:
-// with nothing under it to resolve, O_NOFOLLOW is all it takes to read the
-// object and nothing else.
-func isStoreObject(p string) bool {
-	return isStorePath(p) && filepath.Dir(p) == "/nix/store"
-}
-
 // readRegularFile reads the regular file at path, of up to limit bytes -
 // not through a symlink at its last component, which would have the
 // launcher read a host file of the sandbox's choosing.
@@ -206,18 +187,6 @@ func readRegularFile(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// lastStorePath is the last line of out that's a store path: a build's
-// result, after whatever a shell's startup files printed.
-func lastStorePath(out string) string {
-	last := ""
-	for line := range strings.Lines(out) {
-		if line = strings.TrimSpace(line); isStorePath(line) {
-			last = line
-		}
-	}
-	return last
-}
-
 // writeJSON writes value atomically into a directory only the host writes;
 // through a file of its own, as another sandbox of the project may be
 // starting too.
@@ -238,13 +207,6 @@ func writeJSON(path string, value any) error {
 		_ = os.Remove(tmp.Name())
 	}
 	return err
-}
-
-// cacheKey is a hash of what a cached result was made from.
-func cacheKey(parts ...any) string {
-	data, _ := json.Marshal(parts)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 // xdgDir is $env, or fallback under home when that's unset.

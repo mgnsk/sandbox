@@ -3,13 +3,11 @@ package launcher
 import (
 	"bytes"
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/mgnsk/sandbox/internal/hostname"
@@ -20,7 +18,7 @@ import (
 // printing a token for an API guard; a Claude API key command puts Claude
 // Code on that key. They come from the user's config (a profile's, or the
 // top level's: trusted, run as they are) or from the project - a user's
-// .sandbox.yml over its sandbox.nix - and those run only once approved on
+// .sandbox.yml over its flake.nix - and those run only once approved on
 // the terminal (see approve). The user's config's win.
 type tokenCommands struct {
 	GitHubTokenCommand string `json:"githubTokenCommand,omitempty"`
@@ -61,10 +59,6 @@ func (t tokenCommands) without(over tokenCommands) tokenCommands {
 		return ok
 	})
 	return t
-}
-
-func (t tokenCommands) empty() bool {
-	return t.GitHubTokenCommand == "" && len(t.ForgejoTokenCommands) == 0 && t.ClaudeAPIKeyCommand == ""
 }
 
 // check tidies t as a project's file has it - commands trimmed, Forgejo
@@ -145,40 +139,4 @@ func (l *launcher) runHostCommand(ctx context.Context, what, command string) (st
 		return "", fmt.Errorf("%s (%s): %w", what, command, err)
 	}
 	return strings.TrimSpace(out.String()), nil
-}
-
-// claudeKeySettings binds a copy of claudeDir's managed settings with the
-// apiKeyHelper placeholder over the original, when they lack it: a key
-// command from .sandbox.yml comes with no managed config of its own (one
-// from the user's config or sandbox.nix already has it). Without it Claude
-// Code would ask to log in.
-func claudeKeySettings(g *guards, a *bwrapArgs, claudeDir string) error {
-	path := filepath.Join(claudeDir, "managed-settings.json")
-	data, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	settings := map[string]any{}
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &settings); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-	}
-	if _, ok := settings["apiKeyHelper"]; ok {
-		return nil
-	}
-	settings["apiKeyHelper"] = "echo sandbox-placeholder"
-	dir, err := g.tempdir()
-	if err != nil {
-		return err
-	}
-	out := filepath.Join(dir, "managed-settings.json")
-	if data, err = json.Marshal(settings, json.Deterministic(true)); err != nil {
-		return err
-	}
-	if err := os.WriteFile(out, data, 0o644); err != nil {
-		return err
-	}
-	a.roBind(out, "/etc/claude-code/managed-settings.json")
-	return nil
 }

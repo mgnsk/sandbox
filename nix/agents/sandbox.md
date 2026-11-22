@@ -17,13 +17,14 @@ Not reachable - don't probe, plan around it:
 - sudo/setuid (no_new_privs, all caps dropped), files owned by other
   users
 - the host's /usr, /bin and /lib: every program comes from the nix store.
-  The sandbox itself has only bash, nix, git, less, nano, ssh, jq, curl, rg,
-  which, ps/pgrep/pkill, zip, unzip and the basic
-  coreutils/grep/sed/tar/make set; every other tool comes from the project's dev shell
-  (`nix develop`), plus `~/.nix-profile` when linked (only by a sandbox
-  installed through home-manager). A missing command is
-  missing, not misconfigured - use `nix shell nixpkgs#<pkg>` for one-off
-  tools and tell the user to add it to the project's dev shell for good
+  The sandbox has bash, nix, git, less, nano, ssh, jq, curl, rg, which,
+  ps/pgrep/pkill, zip, unzip and the basic coreutils/grep/sed/tar/make
+  set, plus the tools its configuration adds for every project; every
+  other tool comes from the project's dev shell (`nix develop`), plus
+  `~/.nix-profile` when linked. A missing command is missing, not
+  misconfigured - use `nix shell nixpkgs#<pkg>` for one-off tools and tell
+  the user to add it to the project's dev shell (or the sandbox's
+  configuration, for every project) for good
 - all of `~` is a per-project volume, not the host's - host files appear
   only where bound in (the project dir and whatever the user configured)
 - writing outside `~`, the project, `/tmp` and `$XDG_RUNTIME_DIR`: the root

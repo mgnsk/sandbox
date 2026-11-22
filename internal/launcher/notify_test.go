@@ -182,7 +182,7 @@ func TestPopupsAsNotifications(t *testing.T) {
 	p.send("n\r")
 	p.wait()
 	h.cfg.Guards.Notifications = true
-	h.cfg.Guards.Wayland.Enable = nil
+	h.cfg.Guards.Wayland.Enable = false
 	p = h.pty(env, h.tool("detached"), testbin.Path(t), "xdg-open", "https://example.org/b")
 	p.expect("N = no:")
 	time.Sleep(600 * time.Millisecond)

@@ -433,7 +433,7 @@ func (g *guards) caBundle(a *bwrapArgs, runtimeDir string) error {
 
 // claudeAPI: Claude Code inside sends its API requests as plain HTTP over a
 // socket to claude-api-proxy, which adds key - from the key command, held
-// only in its memory; the managed apiKeyHelper gives it a placeholder key.
+// only in its memory; mkClaude's apiKeyHelper gives it a placeholder key.
 func (g *guards) claudeAPI(ctx context.Context, a *bwrapArgs, key, runtimeDir string) error {
 	inside := runtimeDir + "/claude-api.sock"
 	a.setenv("ANTHROPIC_UNIX_SOCKET", inside)

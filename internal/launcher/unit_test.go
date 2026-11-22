@@ -229,29 +229,6 @@ func TestHostName(t *testing.T) {
 	}
 }
 
-func TestIsStorePath(t *testing.T) {
-	hash := strings.Repeat("a", 32)
-	for path, want := range map[string]bool{
-		"/nix/store/" + hash + "-x":                    true,
-		"/nix/store/" + hash + "-x/sub/file":           true,
-		"/nix/store/" + hash + "-x/../../etc":          false,
-		"/nix/store/" + hash + "-x/./y":                false,
-		"/nix/store/" + hash + "-x/":                   false,
-		"/nix/store/" + hash:                           false,
-		"/nix/store/" + strings.Repeat("e", 32) + "-x": false, // Not in nix's base32.
-		"/etc/passwd":                                  false,
-		"/nix/store/short-x":                           false,
-	} {
-		if got := isStorePath(path); got != want {
-			t.Errorf("isStorePath(%q) = %v", path, got)
-		}
-	}
-	out := "noise\n/nix/store/" + hash + "-a\nmore noise\n/nix/store/" + hash + "-b\n"
-	if got := lastStorePath(out); got != "/nix/store/"+hash+"-b" {
-		t.Errorf("lastStorePath = %q", got)
-	}
-}
-
 func TestSelectProfile(t *testing.T) {
 	dir := t.TempDir()
 	dotfiles := filepath.Join(dir, "dotfiles")
@@ -262,30 +239,25 @@ func TestSelectProfile(t *testing.T) {
 	cfg := &config{
 		Default: profile{Name: "default"},
 		Profiles: []profile{
-			{Name: "flake", ProjectFiles: []string{"flake.nix"}, Priority: 10},
+			{Name: "dotfiles", Paths: []string{"~/dotfiles"}, Priority: 10},
 			{Name: "audio", Paths: []string{"~/dotfiles/nix/audio"}, Priority: 20},
 			{Name: "never"},
 		},
 	}
 	vars := map[string]string{"HOME": dir}
-	pick := func(cwd, project string) string { return selectProfile(cfg, cwd, project, vars).Name }
-	if got := pick(project, project); got != "default" {
+	pick := func(cwd string) string { return selectProfile(cfg, cwd, vars).Name }
+	if got := pick(project); got != "default" {
 		t.Error(got)
 	}
-	os.WriteFile(filepath.Join(project, "flake.nix"), nil, 0o644)
-	if got := pick(project, project); got != "flake" {
-		t.Error(got)
-	}
-	if got := pick(filepath.Join(dotfiles, "nix/audio/x"), dotfiles); got != "audio" {
-		t.Error(got)
-	}
-	// A prefix of a path component isn't a match.
-	if got := pick(filepath.Join(dotfiles, "nix/audiox"), dotfiles); got != "default" {
+	if got := pick(dotfiles); got != "dotfiles" {
 		t.Error(got)
 	}
 	// Both match: the higher priority wins.
-	os.WriteFile(filepath.Join(dotfiles, "flake.nix"), nil, 0o644)
-	if got := pick(filepath.Join(dotfiles, "nix/audio/x"), dotfiles); got != "audio" {
+	if got := pick(filepath.Join(dotfiles, "nix/audio/x")); got != "audio" {
+		t.Error(got)
+	}
+	// A prefix of a path component isn't a match.
+	if got := pick(filepath.Join(dotfiles, "nix/audiox")); got != "dotfiles" {
 		t.Error(got)
 	}
 }
@@ -349,43 +321,11 @@ func TestInsideEnv(t *testing.T) {
 	}
 }
 
-func TestReadManifest(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.json")
-	read := func(content string) (*manifest, error) {
-		os.WriteFile(path, []byte(content), 0o644)
-		return readManifest(path)
-	}
-	m, err := read(`{"claudeDir": "/nix/store/` + strings.Repeat("a", 32) + `-c", "binds": [{"src": "~/x", "dst": null, "mode": "rw", "optional": false, "hideGit": false}], "hostPorts": ["5432"], "command": ["true"]}`)
-	if err != nil || len(m.Binds) != 1 || m.Binds[0].Mode != "rw" || m.HostPorts[0] != "5432" || m.Command[0] != "true" {
-		t.Errorf("%+v %v", m, err)
-	}
-	// It comes out of a sandbox; nothing in it is taken on trust.
-	for _, bad := range []string{
-		`{`,
-		`{"claudeDir": "/etc/claude-code"}`,
-		`{"claudeDir": "/nix/store/` + strings.Repeat("a", 32) + `-x/../../etc"}`,
-		`{"env": {"A": "b"}}`,
-		`{"binds": [{"src": "~/x", "mode": "rwx"}]}`,
-		`{"binds": [{"src": "~/x"}]}`,
-		`{"binds": [{"src": "~/x", "mode": "ro", "optional": "yes"}]}`,
-		`{"binds": [{"src": "~/x", "mode": "ro", "extra": 1}]}`,
-		`{"hostPorts": [5432]}`,
-		`{"command": []}`,
-		`{"command": "ls"}`,
-		`{"command": ["a"], "command": ["b"]}`,
-	} {
-		if _, err := read(bad); err == nil {
-			t.Errorf("%s read", bad)
-		}
-	}
-}
-
-// The launcher reads sandbox.nix on the host; a link would let the sandbox
-// pick which host file.
+// The launcher reads .sandbox.yml on the host; a link would let the
+// sandbox pick which host file.
 func TestReadProjectFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sandbox.nix")
+	path := filepath.Join(dir, ".sandbox.yml")
 	os.Symlink("/etc/passwd", path)
 	if _, err := readProjectFile(path); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("link: %v", err)
@@ -397,37 +337,18 @@ func TestReadProjectFile(t *testing.T) {
 	}
 }
 
-func TestWithManifest(t *testing.T) {
-	p := profile{ClaudeDir: "/store/claude-default", Binds: []bind{{Src: "a"}}}
-	m := &manifest{ClaudeDir: "/store/claude-project", Binds: []bind{{Src: "b"}}}
-	got := withManifest(p, m)
-	if got.ClaudeDir != "/store/claude-project" || !got.claudeFromProject || len(got.Binds) != 2 || len(p.Binds) != 1 {
-		t.Errorf("%+v", got)
-	}
-	// Without Claude Code in the profile, none comes in through the
-	// project.
-	if got := withManifest(profile{}, m); got.ClaudeDir != "" {
-		t.Errorf("%+v", got)
-	}
-}
-
 func TestHostAccessString(t *testing.T) {
-	access := hostAccess{
-		Binds: []approvedBind{{bind: bind{Src: "~/d", Mode: "rw"}, Resolved: "/mnt/d"},
-			{bind: bind{Src: "/srv/x", Dst: "/x", Mode: "ro", Optional: true}}},
-		HostPorts:          []string{"5432"},
-		GitHubTokenCommand: "one\ntwo",
-	}
+	access := hostAccess{tokenCommands: tokenCommands{GitHubTokenCommand: "one\ntwo"}, GitSigningKeyCommand: "key"}
 	// A command's further lines stay under it.
-	want := "  bind ~/d -> /mnt/d (read-write)\n  bind /srv/x at /x (read-only, optional)\n  host port 5432\n" +
-		"  run on this host at each start, for the GitHub token:\n    one\n    two"
+	want := "  run on this host at each start, for the GitHub token:\n    one\n    two\n" +
+		"  run on this host at each start, for git's signing key:\n    key"
 	if got := access.String(); got != want {
 		t.Errorf("%q", got)
 	}
 }
 
 // Whose token command runs: the user's config's, then .sandbox.yml's, then
-// sandbox.nix's - per guard, and per Forgejo host. What the user's config
+// the flake's - per guard, and per Forgejo host. What the user's config
 // already sets is neither asked about nor run.
 func TestTokenCommandsPrecedence(t *testing.T) {
 	mine := tokenCommands{GitHubTokenCommand: "mine", ForgejoTokenCommands: map[string]string{"a.example": "mine-a"}}
@@ -452,7 +373,7 @@ func TestTokenCommandsPrecedence(t *testing.T) {
 		!maps.Equal(got.ForgejoTokenCommands, map[string]string{"a.example": "mine-a", "b.example": "local-b", "c.example": "theirs-c"}) {
 		t.Errorf("used: %+v", got)
 	}
-	if !(tokenCommands{}).empty() || asked.empty() || !theirs.without(theirs).empty() {
+	if !noCommands(tokenCommands{}) || noCommands(asked) || !noCommands(theirs.without(theirs)) {
 		t.Error("empty")
 	}
 	if _, err := forgejoHosts("x", map[string]string{"not a host": "c"}); err == nil {

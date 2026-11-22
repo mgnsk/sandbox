@@ -24,8 +24,7 @@ type config struct {
 		// with a Wayland display.
 		Notifications bool `json:"notifications"`
 		Wayland       struct {
-			// nil leaves it to the project's sandbox.nix.
-			Enable *bool `json:"enable"`
+			Enable bool `json:"enable"`
 			// The user's changes to the allowlist, over the defaults and
 			// the project's.
 			Globals        map[string]bool `json:"globals"`
@@ -61,32 +60,29 @@ type config struct {
 		NixProfile  bool `json:"nixProfile"`
 		HomeManager bool `json:"homeManager"`
 	} `json:"init"`
-	HostPath   string        `json:"hostPath"`
-	DBusDaemon string        `json:"dbusDaemon"`
-	Project    nixEvaluation `json:"project"`
+	HostPath   string `json:"hostPath"`
+	DBusDaemon string `json:"dbusDaemon"`
+	// Files at /etc/<path> inside, read-only: Claude Code's managed
+	// config, AGENTS.md, ...
+	Etc []etcFile `json:"etc"`
+	Git struct {
+		FromHost bool `json:"fromHost"`
+	} `json:"git"`
 }
 
-// nixEvaluation is a nix file to evaluate a config file with, against a
-// nixpkgs.
-type nixEvaluation struct {
-	Eval    string `json:"eval"`
-	Nixpkgs string `json:"nixpkgs"`
-	System  string `json:"system"`
+type etcFile struct {
+	Path   string `json:"path"`
+	Source string `json:"source"`
 }
 
 type profile struct {
 	// For a reader of the config; nothing goes by it.
-	Name      string            `json:"name"`
-	Env       map[string]string `json:"env"`
-	Binds     []bind            `json:"binds"`
-	ClaudeDir string            `json:"claudeDir"`
-	// ClaudeDir is sandbox.nix's (see applyProject): a path the sandbox
-	// chose, which nothing on the host may resolve.
-	claudeFromProject bool
+	Name  string            `json:"name"`
+	Env   map[string]string `json:"env"`
+	Binds []bind            `json:"binds"`
 	tokenCommands
-	Paths        []string `json:"paths"`
-	ProjectFiles []string `json:"projectFiles"`
-	Priority     int      `json:"priority"`
+	Paths    []string `json:"paths"`
+	Priority int      `json:"priority"`
 }
 
 type bind struct {

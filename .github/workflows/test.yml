@@ -75,7 +75,7 @@ jobs:
       # The flake names aarch64 too, which nothing here builds: at least
       # it evaluates.
       - name: Evaluate for aarch64
-        run: nix eval --raw .#packages.aarch64-linux.default.drvPath
+        run: nix eval --raw .#checks.aarch64-linux.default.drvPath
 
       # Not a failure of the change at hand: a newer nixpkgs or module
       # fixes what this finds, so it only says so.

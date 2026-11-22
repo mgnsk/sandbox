@@ -2,18 +2,20 @@
 
 Every option, with its type and default. Generated from the option
 declarations in `nix/` by `make options`: change those, not this file.
-The [README](README.md#configuring-the-sandbox) says what they're for
-and where a setting belongs.
+The [README](README.md#configuring-the-sandbox) says what they're for.
 
-- [In your config, a profile or a project's sandbox.nix](#in-your-config-a-profile-or-a-projects-sandboxnix)
-- [Your sandbox config](#your-sandbox-config)
-- [A project's sandbox.nix](#a-projects-sandboxnix)
+They're the modules given to `sandbox.lib.mkSandbox`: a distribution's
+own, trusted like the rest of it. Nothing here is asked about.
 
-## In your config, a profile or a project's sandbox.nix
+- [At the top level or in a profile](#at-the-top-level-or-in-a-profile)
+- [The sandbox](#the-sandbox)
+- [Claude Code](#claude-code)
+- [VS Code](#vs-code)
 
-These are the same in all three. A profile's go over your config's for
-its projects, and a project's `sandbox.nix`'s over both - where its
-binds take your yes on the terminal first.
+## At the top level or in a profile
+
+A profile's (`profiles.<name>`) go over the top level's for its
+projects; a profile also takes the guards' token commands.
 
 ### `binds`
 
@@ -56,121 +58,57 @@ Host path. `~` and `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` are expanded at start.
 
 - Type: `string`
 
-### `claude.lspServers`
+## The sandbox
 
-Language servers, each an enabled plugin of a generated marketplace
-in the store (`sandbox`, or `project` for a project's sandbox.nix),
-so plugin and server are pinned together.
+### `agentsMd`
+
+/etc/sandbox/AGENTS.md: what the sandbox is and what its guards do,
+for the agents inside. Claude Code's managed CLAUDE.md starts with
+it. Merged across modules: what's added goes after the sandbox's
+own.
+
+- Type: `strings concatenated with "\n"`
+
+### `etc`
+
+Files at /etc/<name> inside, read-only: config programs read there,
+out of the sandbox's reach. claude.* sets /etc/claude-code.
 
 - Type: `attribute set of (submodule)`
 - Default: `{ }`
+- Example: `{ "claude-code/CLAUDE.md".text = "..."; }`
 
-### `claude.lspServers.<name>.args`
+### `etc.<name>.source`
 
-Arguments the server is started with.
+The file; `text` makes one.
 
-- Type: `list of string`
-- Default: `[ ]`
+- Type: `absolute path`
 
-Example:
+### `etc.<name>.text`
 
-```nix
-[
-  "--stdio"
-]
-```
+The file's content.
 
-### `claude.lspServers.<name>.executable`
-
-The server's name in the package's bin/, for a package whose main
-program isn't the server. The server is always that file in
-`package`: never a command looked up on PATH.
-
-- Type: `string matching the pattern [^/]+`
-- Default: `package.meta.mainProgram`
-- Example: `"vscode-json-language-server"`
-
-### `claude.lspServers.<name>.extensionToLanguage`
-
-File extensions the server handles, with their LSP language ids.
-
-- Type: `attribute set of string`
-- Default: `{ }`
-
-Example:
-
-```nix
-{
-  ".go" = "go";
-}
-```
-
-### `claude.lspServers.<name>.package`
-
-The language server; its version is the plugin's, so a new one refreshes Claude Code's cached copy.
-
-- Type: `package`
-
-### `claude.lspServers.<name>.settings`
-
-Server settings (workspace/configuration).
-
-- Type: `null or JSON value`
+- Type: `null or strings concatenated with "\n"`
 - Default: `null`
 
-### `claude.marketplaces`
+### `git.fromHost`
 
-Plugin marketplaces: directories with a .claude-plugin/marketplace.json,
-e.g. store paths. Enable their plugins in `settings.enabledPlugins`.
-With any marketplace (or LSP server), Claude Code knows only these:
-it is registered before the first session, and other marketplaces
-(the official one, `/plugin marketplace add`) are refused.
-
-- Type: `attribute set of absolute path`
-- Default: `{ }`
-
-### `claude.mcpServers`
-
-Managed MCP servers. Managed MCP config is exclusive: once any is
-set, a project's own .mcp.json is ignored.
-
-- Type: `attribute set of (JSON value)`
-- Default: `{ }`
-
-### `claude.memory`
-
-Managed CLAUDE.md every session loads.
-
-- Type: `strings concatenated with "\n"`
-- Default: `""`
-
-### `claude.settings`
-
-Claude Code managed-settings.json (merged across modules; outranks every other settings file).
-
-- Type: `JSON value`
-- Default: `{ }`
-
-## Your sandbox config
-
-`programs.sandbox.settings` in home-manager. Trusted like the rest of
-your config: nothing here is asked about. A profile
-(`profiles.<name>`) also takes the options above and the guards' token
-commands, for its projects.
-
-### `claude.enable`
-
-Managed settings/memory for Claude Code at /etc/claude-code - for the `claude` the project's dev shell (or your ~/.nix-profile, home-manager) brings; the sandbox ships none.
+Take git's name, email and ssh signing key inside from your global
+git config on the host (`git config --global`, run from /), where
+nothing more specific sets them. A project's .sandbox.yml can turn
+it off (git.fromHost: false).
 
 - Type: `boolean`
-- Default: `true`
+- Default: `false`
 
 ### `guards.claudeApiKey.tokenCommand`
 
 A shell command that prints a Claude API key, run like
-guards.github.tokenCommand. With one, Claude Code inside runs on
-that key, which a host proxy adds - in place of logging in inside,
-so not for Claude subscriptions. Trusted, as your config: run without asking, and it wins over a project's, which runs only once you approve it. A profile can set its own.
+guards.github.tokenCommand. With one, Claude Code inside sends its
+requests to a host proxy that adds the key - in place of logging in
+inside, so not for Claude subscriptions. claude.enable's Claude
+Code takes the placeholder key it needs then; another needs
+`apiKeyHelper` set to `echo sandbox-placeholder`. Trusted, as your config: run without asking, and it wins over a project's .sandbox.yml, whose commands run only once you approve them. A profile can set its own.
 
 - Type: `null or string`
 - Default: `null`
@@ -179,7 +117,7 @@ so not for Claude subscriptions. Trusted, as your config: run without asking, an
 ### `guards.forgejo.tokenCommands`
 
 The same per Forgejo instance, by host[:port]: each command prints
-that instance's token. Trusted, as your config: run without asking, and it wins over a project's, which runs only once you approve it. A profile can set its own.
+that instance's token. Trusted, as your config: run without asking, and it wins over a project's .sandbox.yml, whose commands run only once you approve them. A profile can set its own.
 
 - Type: `attribute set of string`
 - Default: `{ }`
@@ -200,7 +138,7 @@ requests from inside - any gh's, or any other client's - go through
 a host proxy that adds the token and holds writes for a popup. The
 token is handed to the proxy in memory: never on disk, never inside
 the sandbox. Without one that proxy doesn't run, and requests go
-out without a token. Trusted, as your config: run without asking, and it wins over a project's, which runs only once you approve it. A profile can set its own.
+out without a token. Trusted, as your config: run without asking, and it wins over a project's .sandbox.yml, whose commands run only once you approve them. A profile can set its own.
 
 - Type: `null or string`
 - Default: `null`
@@ -261,20 +199,17 @@ Host agent socket; $SSH_AUTH_SOCK at start when null.
 Windows on the host's Wayland display, for GUI programs inside:
 through a proxy (wl-veil) that passes on only an allowlist of
 the compositor's globals, as $XDG_RUNTIME_DIR/wayland-0 inside.
-The real socket is never bound in. null leaves it to each
-project's sandbox.nix, whose guards.wayland.enable takes your
-yes on the terminal; true or false decides it for every
-project.
+The real socket is never bound in. Without a display on the
+host, the sandbox starts without one. vscode.enable turns it on.
 
-- Type: `null or boolean`
-- Default: `null`
+- Type: `boolean`
+- Default: `false`
 
 ### `guards.wayland.globals`
 
 Changes to the allowlist of Wayland globals, by interface name:
 true adds one to the default list (nix/wayland.nix), false
-removes one. Applied after a project's sandbox.nix's changes,
-so yours win.
+removes one.
 
 - Type: `attribute set of boolean`
 - Default: `{ }`
@@ -292,8 +227,8 @@ Example:
 
 Link the host's current home-manager generation into the volume at
 each start, removing links into older ones. Off, the links of an
-earlier start are removed. The home-manager module
-turns this on.
+earlier start are removed. Each user's own dotfiles (and a
+~/.claude of theirs, under the managed config), in every project.
 
 - Type: `boolean`
 - Default: `false`
@@ -342,7 +277,7 @@ Libraries prebuilt (non-nix) binaries find through nix-ld, which is at the dynam
 
 Link the host's ~/.nix-profile into the volume and put its bin/ on
 PATH (after the sandbox's own). Off, a link from an earlier start is
-removed. The home-manager module turns this on.
+removed. Each user's own tools, in every project.
 
 - Type: `boolean`
 - Default: `false`
@@ -352,6 +287,16 @@ removed. The home-manager module turns this on.
 The `sandbox` command.
 
 - Type: `package` (read only)
+
+### `packages`
+
+Packages on PATH inside, after the sandbox's own: the tools every
+project gets, whatever its dev shell brings (which comes first on
+PATH inside `nix develop`).
+
+- Type: `list of package`
+- Default: `[ ]`
+- Example: `[ pkgs.gh pkgs.go-task ]`
 
 ### `passEnv`
 
@@ -363,7 +308,7 @@ and LC_ALL. Everything else is cleared.
 
 ### `profiles`
 
-Per-project additions, picked at start by path or project file: binds, claude.* and the guards' token commands, over the top level's.
+Per-project additions, picked at start by path: binds and the guards' token commands, over the top level's.
 
 - Type: `attribute set of (submodule)`
 - Default: `{ }`
@@ -377,24 +322,16 @@ The profile applies when the sandbox starts in or under one of these (`~` expand
 
 ### `profiles.<name>.priority`
 
-Among matching profiles, the highest priority wins.
+Among profiles whose paths match, the highest priority wins.
 
 - Type: `signed integer`
 - Default: `0`
 
-### `profiles.<name>.projectFiles`
-
-The profile applies when the project root has one of these, e.g.
-flake.nix. Such a profile can only set claude.*: sandboxed code can
-create the file, so binds and token commands need paths alone.
-
-- Type: `list of string`
-- Default: `[ ]`
-
 ### `stateDir`
 
 Host directory with a folder per project: its home volume, its
-exchange dir and what the host keeps for it (sandbox.nix approvals);
+exchange dir and what the host keeps for it (approvals of the
+commands a project's .sandbox.yml runs);
 $XDG_DATA_HOME/sandbox (~/.local/share/sandbox) when null. `~` and
 environment variables are expanded at start; $SANDBOX_STATE_DIR
 overrides it.
@@ -402,70 +339,52 @@ overrides it.
 - Type: `null or string`
 - Default: `null`
 
-## A project's sandbox.nix
+## Claude Code
 
-In the project, which sandboxed code can write: what reaches the host
-takes your yes on the terminal first.
+### `claude.enable`
 
-### `command`
+Whether to enable Claude Code in the sandbox, as `claude`, with managed config at /etc/claude-code.
 
-What `sandbox` with no command runs, in place of a login shell.
+- Type: `boolean`
+- Default: `false`
+- Example: `true`
 
-- Type: `null or (list of string)`
-- Default: `null`
+### `claude.lspServers`
+
+Language servers, in a plugin of their own (--plugin-dir) that runs
+each from its store path, so plugin and server are pinned together.
+
+- Type: `attribute set of (submodule)`
+- Default: `{ }`
+
+### `claude.lspServers.<name>.args`
+
+Arguments the server is started with.
+
+- Type: `list of string`
+- Default: `[ ]`
 
 Example:
 
 ```nix
 [
-  "nix"
-  "develop"
+  "--stdio"
 ]
 ```
 
-### `git.fromHost`
+### `claude.lspServers.<name>.executable`
 
-Take git's name, email and ssh signing key inside from each
-user's global git config on the host (`git config --global`,
-run from /), where nothing more specific sets them. A user's
-.sandbox.yml can turn it off (git.fromHost: false).
+The server's name in the package's bin/, for a package whose main
+program isn't the server. The server is always that file in
+`package`: never a command looked up on PATH.
 
-- Type: `boolean`
-- Default: `false`
+- Type: `string matching the pattern [^/]+`
+- Default: `package.meta.mainProgram`
+- Example: `"vscode-json-language-server"`
 
-### `git.signingKey`
+### `claude.lspServers.<name>.extensionToLanguage`
 
-An ssh public key in the user's agent: git inside signs commits and tags with it. A user's .sandbox.yml wins.
-
-- Type: `null or string`
-- Default: `null`
-- Example: `"ssh-ed25519 AAAA..."`
-
-### `git.signingKeyCommand`
-
-A shell command printing that public key, run on the host at
-each start once the user approves it, like the token
-commands. A user's .sandbox.yml wins.
-
-- Type: `null or string`
-- Default: `null`
-- Example: `"op read \"op://Employee/GitHub SSH key/public key\""`
-
-### `guards.claudeApiKey.tokenCommand`
-
-A shell command that prints a Claude API key, run like
-guards.github.tokenCommand. With one, Claude Code inside runs on
-that key, which a host proxy adds - in place of logging in inside,
-so not for Claude subscriptions. Takes the user's yes on the terminal, asked once and again for anything new; their own config's wins.
-
-- Type: `null or string`
-- Default: `null`
-- Example: `"op read op://Employee/Claude/credential"`
-
-### `guards.forgejo.tokenCommands`
-
-The same per Forgejo instance, by host[:port]: each command prints
-that instance's token. Takes the user's yes on the terminal, asked once and again for anything new; their own config's wins.
+File extensions the server handles, with their LSP language ids.
 
 - Type: `attribute set of string`
 - Default: `{ }`
@@ -474,66 +393,104 @@ Example:
 
 ```nix
 {
-  "codeberg.org" = "op read op://Employee/Codeberg/token";
+  ".go" = "go";
 }
 ```
 
-### `guards.github.tokenCommand`
+### `claude.lspServers.<name>.package`
 
-A shell command that prints the GitHub token, e.g. from a secret
-manager, run on the host at each start. With one, GitHub API
-requests from inside - any gh's, or any other client's - go through
-a host proxy that adds the token and holds writes for a popup. The
-token is handed to the proxy in memory: never on disk, never inside
-the sandbox. Without one that proxy doesn't run, and requests go
-out without a token. Takes the user's yes on the terminal, asked once and again for anything new; their own config's wins.
+The language server.
 
-- Type: `null or string`
+- Type: `package`
+
+### `claude.lspServers.<name>.settings`
+
+Server settings (workspace/configuration).
+
+- Type: `null or JSON value`
 - Default: `null`
-- Example: `"op read op://Employee/GitHub/token"`
 
-### `guards.wayland.enable`
+### `claude.mcpServers`
 
-Windows on the host's Wayland display, for GUI programs
-inside, through a proxy that passes on only an allowlist of
-the compositor's globals. Takes the user's yes on the
-terminal (asked once, and again for anything new); their
-own config can turn it on or off for every project.
+Managed MCP servers. Managed MCP config is exclusive: once any is
+set, a project's own .mcp.json is ignored.
 
-- Type: `boolean`
-- Default: `false`
-
-### `guards.wayland.globals`
-
-Changes to the allowlist of Wayland globals, by interface
-name: true adds one to the default list, which takes the
-user's yes like enable; false removes one. The user's own
-changes go over these.
-
-- Type: `attribute set of boolean`
+- Type: `attribute set of (JSON value)`
 - Default: `{ }`
 
-Example:
+### `claude.memory`
 
-```nix
-{
-  wl_data_device_manager = true;
-}
-```
+The managed CLAUDE.md every session loads, after the sandbox's AGENTS.md (`agentsMd`).
 
-### `hostPorts`
+- Type: `strings concatenated with "\n"`
+- Default: `""`
 
-Host loopback ports reachable inside at 127.0.0.1, in addition to $SANDBOX_HOST_PORTS at start. Takes the user's yes on the terminal, asked once and again for anything new; their own config's wins.
+### `claude.package`
 
-- Type: `list of string`
+The Claude Code that's wrapped (unfree: the pkgs given must allow it).
+
+- Type: `package`
+- Default: `pkgs.claude-code`
+
+### `claude.plugins`
+
+Plugin directories (with a .claude-plugin/plugin.json), each given with --plugin-dir.
+
+- Type: `list of absolute path`
 - Default: `[ ]`
 
-Example:
+### `claude.settings`
+
+Managed settings (/etc/claude-code/managed-settings.json): over every
+other settings file. Merged across modules.
+
+- Type: `JSON value`
+- Default: `{ }`
+
+## VS Code
+
+### `vscode.args`
+
+Arguments it's always started with. The default skips the workspace
+trust prompt, which keeps extensions off until it is answered: the
+sandbox is the boundary.
+
+- Type: `list of string`
+
+Default:
 
 ```nix
 [
-  "5037"
-  "8080/udp"
-  "9000-9010"
+  "--disable-workspace-trust"
 ]
 ```
+
+### `vscode.enable`
+
+Whether to enable VS Code in the sandbox, as `code`, with the Wayland guard on.
+
+- Type: `boolean`
+- Default: `false`
+- Example: `true`
+
+### `vscode.extensions`
+
+Extensions, built in (vscode-with-extensions): pinned like the rest, none installed into the volume by hand.
+
+- Type: `list of package`
+- Default: `[ ]`
+- Example: `[ pkgs.vscode-extensions.anthropic.claude-code ]`
+
+### `vscode.fonts`
+
+Fonts for its fontconfig: the sandbox has no host fonts.
+
+- Type: `list of package`
+- Default: `[ pkgs.dejavu_fonts pkgs.noto-fonts-color-emoji ]`
+
+### `vscode.package`
+
+VS Code (unfree: the pkgs given must allow it).
+
+- Type: `package`
+- Default: `pkgs.vscode`

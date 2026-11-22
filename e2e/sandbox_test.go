@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -207,45 +206,6 @@ func TestASubdirectoryGetsTheWholeWorkTree(t *testing.T) {
 	}
 }
 
-// Evaluated in a nested sandbox, its default command applies.
-func TestProjectSandboxNixIsApplied(t *testing.T) {
-	p := newProject(t)
-	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte(`{ ... }: { command = [ "sh" "-c" "echo from-project" ]; }`+"\n"), 0o644)
-	r := p.run(t, "", nil).ok(t)
-	if lines := strings.Split(strings.TrimSpace(r.stdout), "\n"); lines[len(lines)-1] != "from-project" {
-		t.Errorf("%q", r.stdout)
-	}
-}
-
-// What sandbox.nix evaluates to is the sandbox's to choose - here by a
-// ~/.bash_profile in the volume that answers for nix - and a store path can
-// be a link to anywhere: as the managed Claude config, it must not bring a
-// host directory in.
-func TestAManifestCannotBringAHostDirectoryIn(t *testing.T) {
-	p := newProject(t)
-	secret := filepath.Join(filepath.Dir(p.dir), "secret")
-	os.Mkdir(secret, 0o755)
-	os.WriteFile(filepath.Join(secret, "managed-settings.json"), []byte(`{"host": "TOPSECRET"}`), 0o644)
-	// Planted from inside, before the project has a sandbox.nix.
-	// (The environment doesn't reach the inside: the path is in the script.)
-	planted := strings.TrimSpace(p.run(t, `ln -s '`+secret+`' "$HOME/dir"
-dir=$(nix-store --add "$HOME/dir")
-printf '{"claudeDir": "%s", "binds": [], "hostPorts": [], "command": null}' "$dir" > "$HOME/manifest.json"
-manifest=$(nix-store --add "$HOME/manifest.json")
-echo "if grep -qzx build /proc/\$\$/cmdline; then echo $manifest; exit 0; fi" > "$HOME/.bash_profile"
-echo "$dir"
-`, nil).ok(t).stdout)
-	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte("{ ... }: { }\n"), 0o644)
-	r := p.run(t, "readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; ls /etc/claude-code/\n", nil)
-	// The planted path was taken - and leads nowhere inside.
-	if lines := strings.Split(r.stdout, "\n"); !strings.HasPrefix(planted, "/nix/store/") || lines[0] != planted {
-		t.Fatalf("/etc/claude-code is %q, planted %q: %q", lines[0], planted, r.stderr)
-	}
-	if strings.Contains(r.stdout+r.stderr, "TOPSECRET") || strings.Contains(r.stdout, "managed-settings.json") {
-		t.Errorf("a host directory came in as /etc/claude-code: %q %q", r.stdout, r.stderr)
-	}
-}
-
 func TestTheEnvironmentIsClearedAndAllowListed(t *testing.T) {
 	r := newProject(t).run(t, `echo "GH_TOKEN=[$GH_TOKEN]"; echo "SOME_HOST_VAR=[$SOME_HOST_VAR]"
 echo "HOME=[$HOME]"; echo "TERM=[$TERM]"
@@ -297,65 +257,32 @@ func TestBashCompletion(t *testing.T) {
 	}
 }
 
-func TestStoreAndClaudeConfigAreReadOnly(t *testing.T) {
+func TestStoreAndAgentsMdAreReadOnly(t *testing.T) {
 	p := newProject(t)
 	if r := p.run(t, `echo x > "$(command -v git)"`+"\n", nil); r.code == 0 || !strings.Contains(r.stderr, "Read-only file system") {
 		t.Errorf("%d %q", r.code, r.stderr)
 	}
-	r := p.run(t, "cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n", nil)
-	var settings struct {
-		Env map[string]any `json:"env"`
-	}
-	if err := json.Unmarshal([]byte(r.stdout), &settings); err != nil || fmt.Sprint(settings.Env["DISABLE_AUTOUPDATER"]) != "1" {
-		t.Errorf("%v %q", err, r.stdout)
-	}
-	if !strings.Contains(r.stderr, "Read-only file system") {
-		t.Errorf("%q", r.stderr)
+	r := p.run(t, "head -1 /etc/sandbox/AGENTS.md; test -e /etc/claude-code || echo no-claude-code; echo x > /etc/sandbox/AGENTS.md\n", nil)
+	if r.stdout != "# Sandbox\nno-claude-code\n" || !strings.Contains(r.stderr, "Read-only file system") {
+		t.Errorf("%q %q", r.stdout, r.stderr)
 	}
 }
 
 // The root is read-only: /etc, which is no mount of its own, can't be moved
-// aside and made anew with a managed Claude config of the sandbox's own.
-// What's meant to be written to still is.
+// aside and made anew with an AGENTS.md of the sandbox's own. What's meant
+// to be written to still is.
 func TestTheRootIsReadOnly(t *testing.T) {
 	p := newProject(t)
-	r := p.run(t, `mv /etc /etc.old && mkdir -p /etc/claude-code && echo '{}' > /etc/claude-code/managed-settings.json
+	r := p.run(t, `mv /etc /etc.old && mkdir -p /etc/sandbox && echo planted > /etc/sandbox/AGENTS.md
 mkdir /var || echo no-var
 echo x > /etc/hosts.new || echo no-file
-cat /etc/claude-code/managed-settings.json
+head -1 /etc/sandbox/AGENTS.md
 touch /tmp/x "$XDG_RUNTIME_DIR/x" "$HOME/x" ./x /dev/shm/x && echo writable
 `, nil)
-	var settings struct {
-		Env map[string]any `json:"env"`
-	}
-	out, refused := strings.CutPrefix(r.stdout, "no-var\nno-file\n")
-	out, wrote := strings.CutSuffix(out, "writable\n")
-	if err := json.Unmarshal([]byte(out), &settings); err != nil || !refused || !wrote ||
-		fmt.Sprint(settings.Env["DISABLE_AUTOUPDATER"]) != "1" {
-		t.Errorf("%v %q %q", err, r.stdout, r.stderr)
+	if r.stdout != "no-var\nno-file\n# Sandbox\nwritable\n" {
+		t.Errorf("%q %q", r.stdout, r.stderr)
 	}
 	if !strings.Contains(r.stderr, "cannot move '/etc'") || !strings.Contains(r.stderr, "Read-only file system") {
-		t.Errorf("%q", r.stderr)
-	}
-}
-
-// With a sandbox.nix the managed Claude config is a link into the store,
-// followed inside (see TestAManifestCannotBringAHostDirectoryIn): to the
-// project's settings over the profile's, read-only like the rest - the link
-// too.
-func TestClaudeConfigOfAProjectIsReadThroughItsLink(t *testing.T) {
-	p := newProject(t)
-	os.WriteFile(filepath.Join(p.dir, "sandbox.nix"), []byte(`{ ... }: { claude.settings.env.FROM_PROJECT = "yes"; }`+"\n"), 0o644)
-	r := p.run(t, "ln -sfn /tmp /etc/claude-code; readlink /etc/claude-code; cat /etc/claude-code/managed-settings.json; echo x > /etc/claude-code/CLAUDE.md\n", nil)
-	link, rest, _ := strings.Cut(r.stdout, "\n")
-	var settings struct {
-		Env map[string]any `json:"env"`
-	}
-	if err := json.Unmarshal([]byte(rest), &settings); err != nil || !strings.HasPrefix(link, "/nix/store/") ||
-		settings.Env["FROM_PROJECT"] != "yes" || fmt.Sprint(settings.Env["DISABLE_AUTOUPDATER"]) != "1" {
-		t.Errorf("%v %q", err, r.stdout)
-	}
-	if !strings.Contains(r.stderr, "ln: ") || !strings.Contains(r.stderr, "CLAUDE.md: Read-only file system") {
 		t.Errorf("%q", r.stderr)
 	}
 }

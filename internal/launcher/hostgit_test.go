@@ -94,7 +94,7 @@ func TestSSHSigningKey(t *testing.T) {
 	}
 }
 
-// Git's settings: a user's .sandbox.yml over sandbox.nix's, and the host's
+// Git's settings: a user's .sandbox.yml over the config's, and the host's
 // identity under both, where they ask for it.
 func TestGitSettings(t *testing.T) {
 	h := hostGit{Name: "Host", Email: "host@example.com", SigningKey: "ssh-ed25519 AAAAhost"}
@@ -110,27 +110,25 @@ func TestGitSettings(t *testing.T) {
 
 	on, off := true, false
 	for _, tc := range []struct {
-		local gitSettings
-		m     manifest
-		want  bool
+		local, config gitSettings
+		want          bool
 	}{
-		{gitSettings{}, manifest{}, false},
-		{gitSettings{}, manifest{GitFromHost: true}, true},
-		{gitSettings{FromHost: &off}, manifest{GitFromHost: true}, false},
-		{gitSettings{FromHost: &on}, manifest{}, true},
+		{gitSettings{}, gitSettings{FromHost: &off}, false},
+		{gitSettings{}, gitSettings{FromHost: &on}, true},
+		{gitSettings{FromHost: &off}, gitSettings{FromHost: &on}, false},
+		{gitSettings{FromHost: &on}, gitSettings{FromHost: &off}, true},
 	} {
-		if got := tc.local.over(tc.m.git()).fromHost(); got != tc.want {
-			t.Errorf("%+v %+v: %v", tc.local, tc.m, got)
+		if got := tc.local.over(tc.config).fromHost(); got != tc.want {
+			t.Errorf("%+v over %+v: %v", tc.local, tc.config, got)
 		}
 	}
 	if c, err := parseLocalConfig([]byte("git:\n  fromHost: false\n")); err != nil || c.Git.FromHost == nil || *c.Git.FromHost {
 		t.Errorf("%+v %v", c, err)
 	}
 
-	// Either a key or a command of one's own replaces both of
-	// sandbox.nix's.
-	theirs := (&manifest{GitSigningKey: "ssh-ed25519 AAAAteam"}).git()
-	theirCommand := (&manifest{GitSigningKeyCommand: "team"}).git()
+	// Either a key or a command of one's own replaces both of the base's.
+	theirs := gitSettings{SigningKey: "ssh-ed25519 AAAAteam"}
+	theirCommand := gitSettings{SigningKeyCommand: "team"}
 	for _, tc := range []struct {
 		local, base gitSettings
 		key, cmd    string

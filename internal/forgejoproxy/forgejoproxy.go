@@ -10,8 +10,8 @@
 // inside. This proxy adds the token for that host, which never enters the
 // sandbox: the one its token command printed at start
 // (guards.forgejo.tokenCommands, from the user's config or an approved
-// sandbox.nix), piped in by the launcher and kept in memory only. The host's fj, and any login it
-// has, is never used. Per request (the mechanics are apiproxy's):
+// project flake), piped in by the launcher and kept in memory only. The
+// host's fj, and any login it has, is never used. Per request (the mechanics are apiproxy's):
 //
 //   - OAuth endpoints (/login/oauth/...) are refused, so `fj auth login`
 //     can't get a token inside: one stored there would be readable by all
@@ -54,7 +54,7 @@ func New(hostTokens map[string]string) *apiproxy.Proxy {
 			token, ok := lookup(host)
 			if !ok {
 				return apiproxy.Route{}, fmt.Errorf("no token for %s - add a command printing one to"+
-					" guards.forgejo.tokenCommands, in sandbox.nix or your sandbox config", host)
+					" guards.forgejo.tokenCommands, in the project's flake or your sandbox config", host)
 			}
 			return apiproxy.TokenRoute(host, token), nil
 		},

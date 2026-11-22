@@ -132,12 +132,8 @@ func launch() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "config", Destination: &config,
 				Usage: "the sandbox's configuration `FILE` (the sandbox command passes its own)", TakesFile: true},
-			&cli.BoolFlag{Name: "reload", Destination: &opts.Reload,
-				Usage: "evaluate sandbox.nix again, even if unchanged"},
 			&cli.BoolFlag{Name: "no-project-config", Destination: &opts.NoProjectConfig,
-				Usage: "ignore sandbox.nix and .sandbox.yml"},
-			&cli.BoolFlag{Name: "eval", Destination: &opts.Eval, Hidden: true,
-				Usage: "the sandbox sandbox.nix is evaluated in: no project config, guards or host ports"},
+				Usage: "ignore the project's .sandbox.yml"},
 		},
 		OnUsageError: usageError("sandbox", " (put -- before a command starting with -)", 1),
 		Action: func(_ context.Context, cmd *cli.Command) error {

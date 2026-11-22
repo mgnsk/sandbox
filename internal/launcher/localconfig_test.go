@@ -34,7 +34,7 @@ git:
 		c.Git.FromHost == nil || *c.Git.FromHost {
 		t.Errorf("got %+v", c)
 	}
-	if c, err := parseLocalConfig(nil); err != nil || c.Git.FromHost != nil || !c.tokenCommands.empty() {
+	if c, err := parseLocalConfig(nil); err != nil || c.Git.FromHost != nil || !noCommands(c.tokenCommands) {
 		t.Errorf("empty: %+v %v", c, err)
 	}
 
@@ -82,7 +82,7 @@ func TestGitEnv(t *testing.T) {
 
 func TestReadLocalConfigRefusesALink(t *testing.T) {
 	dir := t.TempDir()
-	if c, err := readLocalConfig(dir); err != nil || !c.tokenCommands.empty() || c.Git != (gitSettings{}) {
+	if c, err := readLocalConfig(dir); err != nil || !noCommands(c.tokenCommands) || c.Git != (gitSettings{}) {
 		t.Errorf("none: %+v %v", c, err)
 	}
 	os.WriteFile(filepath.Join(dir, "elsewhere"), []byte("git:\n  userName: x\n"), 0o644)
@@ -92,31 +92,5 @@ func TestReadLocalConfigRefusesALink(t *testing.T) {
 	}
 }
 
-func TestClaudeKeySettings(t *testing.T) {
-	g := &guards{}
-	defer func() {
-		for _, d := range g.dirs {
-			os.RemoveAll(d)
-		}
-	}()
-	claudeDir := t.TempDir()
-	os.WriteFile(filepath.Join(claudeDir, "managed-settings.json"), []byte(`{"env": {"A": "1"}}`), 0o644)
-	var a bwrapArgs
-	if err := claudeKeySettings(g, &a, claudeDir); err != nil {
-		t.Fatal(err)
-	}
-	args := strings.Join(a, " ")
-	if !strings.Contains(args, "/etc/claude-code/managed-settings.json") || len(g.dirs) != 1 {
-		t.Fatalf("%q", args)
-	}
-	data, _ := os.ReadFile(filepath.Join(g.dirs[0], "managed-settings.json"))
-	if got := string(data); got != `{"apiKeyHelper":"echo sandbox-placeholder","env":{"A":"1"}}` {
-		t.Errorf("%s", got)
-	}
-	// Already there (the user's config's key, or sandbox.nix's): left alone.
-	os.WriteFile(filepath.Join(claudeDir, "managed-settings.json"), []byte(`{"apiKeyHelper": "x"}`), 0o644)
-	a = bwrapArgs{}
-	if err := claudeKeySettings(g, &a, claudeDir); err != nil || len(a) != 0 {
-		t.Errorf("%v %q", err, a)
-	}
-}
+// noCommands says whether t has no command.
+func noCommands(t tokenCommands) bool { return len(hostAccess{tokenCommands: t}.items()) == 0 }

@@ -94,6 +94,9 @@ func baseArgs(cfg *config, env map[string]string) bwrapArgs {
 	}
 	a.roBind(cfg.FHS.NixLd, cfg.FHS.LdPath)
 	a.roBind(cfg.FHS.SSL, "/etc/ssl")
+	for _, f := range cfg.Etc {
+		a.roBind(f.Source, "/etc/"+f.Path)
+	}
 	for _, path := range cfg.HostEtc {
 		a.add("--ro-bind-try", path, path)
 	}

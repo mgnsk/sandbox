@@ -171,32 +171,20 @@ func TestRelinkReplacesALeftoverTempLink(t *testing.T) {
 	}
 }
 
-func TestKnownMarketplaces(t *testing.T) {
-	home, managed := t.TempDir(), t.TempDir()
+// The link to the managed marketplace list an earlier sandbox made goes;
+// the volume's own list stays.
+func TestUnlinkKnownMarketplaces(t *testing.T) {
+	home := t.TempDir()
 	link := filepath.Join(home, ".claude/plugins/known_marketplaces.json")
-	target := filepath.Join(managed, "known_marketplaces.json")
-	// A fresh volume has no list; with no managed one, nothing is made.
-	linkKnownMarketplaces(home, managed)
-	if _, err := os.Lstat(filepath.Dir(link)); err == nil {
-		t.Error("made a dir for nothing")
-	}
-	// One Claude Code wrote itself is replaced.
+	unlinkKnownMarketplaces(home)
 	os.MkdirAll(filepath.Dir(link), 0o755)
-	os.WriteFile(link, []byte("{}"), 0o644)
-	os.WriteFile(target, []byte(`{"sandbox": {}}`), 0o644)
-	linkKnownMarketplaces(home, managed)
-	if got, _ := os.Readlink(link); got != target {
-		t.Errorf("-> %q", got)
-	}
-	// Gone from the configuration, the link goes too.
-	os.Remove(target)
-	linkKnownMarketplaces(home, managed)
+	os.Symlink("/etc/claude-code/known_marketplaces.json", link)
+	unlinkKnownMarketplaces(home)
 	if isLink(link) {
 		t.Error("link kept")
 	}
-	// The volume's own list, without a managed one, stays.
 	os.WriteFile(link, []byte("{}"), 0o644)
-	linkKnownMarketplaces(home, managed)
+	unlinkKnownMarketplaces(home)
 	if data, _ := os.ReadFile(link); string(data) != "{}" {
 		t.Errorf("own list %q", data)
 	}
