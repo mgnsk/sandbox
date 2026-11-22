@@ -121,9 +121,18 @@ let
     lib.concatMapStrings (c: if builtins.match "[A-Za-z0-9_-]" c != null then c else "_") (
       lib.stringToCharacters name
     );
-  allowRules =
-    map (n: "mcp__${mcpToolPrefix n}__*") (lib.attrNames cfg.mcpServers)
-    ++ lib.optional (cfg.lspServers != { }) "LSP";
+  mcpPrefixes = map mcpToolPrefix (lib.attrNames cfg.mcpServers);
+  allowRules = map (p: "mcp__${p}__*") mcpPrefixes ++ lib.optional (cfg.lspServers != { }) "LSP";
+  # Plan mode ignores allow rules, but not a PreToolUse hook's allow: one
+  # for the same tools, matched as a whole name (the prefixes are regex-safe).
+  allowMatcher = "^(${
+    lib.concatStringsSep "|" (
+      map (p: "mcp__${p}__.*") mcpPrefixes ++ lib.optional (cfg.lspServers != { }) "LSP"
+    )
+  })$";
+  allowHook = pkgs.writeShellScript "claude-allow" ''
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
+  '';
   pluginArgs = lib.concatMap (p: [
     "--plugin-dir"
     "${p}"
@@ -178,7 +187,8 @@ in
       description = ''
         Managed MCP servers. Managed MCP config is exclusive: once any is
         set, a project's own .mcp.json is ignored. Their tools are allowed
-        without a prompt (`mcp__<name>__*` in the managed settings).
+        without a prompt, in plan mode too (`mcp__<name>__*` in the managed
+        settings, and a PreToolUse hook).
       '';
     };
     lspServers = mkOption {
@@ -187,7 +197,7 @@ in
       description = ''
         Language servers, in a plugin of their own (--plugin-dir) that runs
         each from its store path, so plugin and server are pinned together.
-        The LSP tool is allowed without a prompt.
+        The LSP tool is allowed without a prompt, in plan mode too.
       '';
     };
     plugins = mkOption {
@@ -205,7 +215,20 @@ in
         # A store path can't update itself.
         env.DISABLE_AUTOUPDATER = 1;
       }
-      (lib.mkIf (allowRules != [ ]) { permissions.allow = allowRules; })
+      (lib.mkIf (allowRules != [ ]) {
+        permissions.allow = allowRules;
+        hooks.PreToolUse = [
+          {
+            matcher = allowMatcher;
+            hooks = [
+              {
+                type = "command";
+                command = "${allowHook}";
+              }
+            ];
+          }
+        ];
+      })
       {
         hooks.PreToolUse = [
           {
