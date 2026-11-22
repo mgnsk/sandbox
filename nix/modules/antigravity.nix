@@ -14,10 +14,13 @@
 # link or disable the plugin until the next run. Only admin_settings.json,
 # at /etc/antigravity, is out of the sandbox's reach.
 #
-# TODO: a Gemini API key guard like guards.claudeApiKey (agy takes
-# modelProvider "gemini" with GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL, so
-# a host proxy could hold the key); until then agy logs in inside. Drop
-# this once that guard exists.
+# TODO: a Gemini API key guard like guards.claudeApiKey; until then agy
+# logs in inside. Either agy takes modelProvider "gemini" with
+# GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL, or gateway mode in
+# admin_settings.json (gateway.enabled, gateway.url at the router,
+# AGY_LLM_GATEWAY_API_KEY a placeholder) sends all model traffic there,
+# without a Google sign-in; either way a host proxy adds the real key. Never
+# gateway.apiKey: /etc is readable inside. Drop this once that guard exists.
 {
   config,
   lib,
