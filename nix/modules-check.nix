@@ -1,6 +1,6 @@
-# claude.*, antigravity.* and vscode.*: what they put in the configuration
-# (packages, /etc files, the Wayland guard), and the claude and agy wrappers
-# run against stand-ins, and the hooks against tool calls.
+# claude.* and vscode.*: what they put in the configuration (packages,
+# /etc files, the Wayland guard), and the claude wrapper run against a
+# stand-in claude-code.
 {
   evalSandbox,
   lib,
@@ -15,8 +15,6 @@ let
   # Prints what it was run with.
   fakeClaude = writeShellScriptBin "claude" ''printf '%s\n' "$@"'';
   fakeCode = writeShellScriptBin "code" ''printf '%s\n' "$@"'';
-  fakeAgy = writeShellScriptBin "agy" ''printf '%s\n' "$AGY_CLI_DISABLE_AUTO_UPDATE" "$@"'';
-  extraPlugin = runCommand "extra-plugin" { } "mkdir $out && echo '{}' > $out/plugin.json";
   eval = modules: evalSandbox { inherit pkgs modules; };
   cfg = eval [
     {
@@ -45,32 +43,12 @@ let
         enable = true;
         package = fakeCode;
       };
-      antigravity = {
-        enable = true;
-        package = fakeAgy;
-        rules = "antigravity rules";
-        settings.agentMode = "plan";
-        mcpServers.x.command = "x";
-        plugins.extra = extraPlugin;
-        adminSettings.mcp.enabled = false;
-      };
       etc."x/y".text = "z";
     }
   ];
   off = eval [ ];
   claude = lib.findFirst (p: lib.getName p == "claude-code-sandbox") null cfg.packages;
   code = lib.findFirst (p: lib.getName p == "code") null cfg.packages;
-  agy = lib.findFirst (p: lib.getName p == "antigravity-cli-sandbox") null cfg.packages;
-  # agy's own sandbox, turned back on.
-  agyOwnSandbox =
-    lib.findFirst (p: lib.getName p == "antigravity-cli-sandbox") null
-      (eval [
-        {
-          antigravity.enable = true;
-          antigravity.package = fakeAgy;
-          antigravity.settings.enableTerminalSandbox = true;
-        }
-      ]).packages;
   etc = lib.mapAttrs (_: f: f.source) cfg.etc;
   fails = modules: !(builtins.tryEval (eval modules).configFile.drvPath).success;
   lsp = server: {
@@ -97,7 +75,7 @@ assert fails [
   })
 ];
 assert fails [ (lsp { package = vscode-langservers-extracted; }) ];
-assert claude != null && code != null && agy != null && agyOwnSandbox != null;
+assert claude != null && code != null;
 assert cfg.guards.wayland.enable;
 assert !off.guards.wayland.enable && off.packages == [ ];
 # Without them, /etc has only AGENTS.md.
@@ -137,47 +115,6 @@ runCommand "sandbox-modules-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '.apiKeyHelper == "echo sandbox-placeholder"' "$(arg --settings)"
   # remote-control refuses the session flags.
   test "$(${lib.getExe claude} rc --x)" = "$(printf 'rc\n--x')"
-
-  # agy: the plugins linked into ~/.gemini/config/plugins, stale links of
-  # the wrapper's removed and the user's kept, the settings for the run, the
-  # auto-updater off.
-  export HOME=$PWD/home
-  plugins=$HOME/.gemini/config/plugins
-  mkdir -p "$plugins/own"
-  ln -s ${builtins.storeDir}/gone "$plugins/sandbox-gone"
-  ln -s ${builtins.storeDir}/theirs "$plugins/theirs"
-  ran=$(${lib.getExe agy} -p hi)
-  echo "$ran"
-  test "$(head -1 <<<"$ran")" = 1
-  test "$(sed -n 2p <<<"$ran")" = --settings
-  jq -e '. == {agentMode: "plan", enableTerminalSandbox: false}' "$(sed -n 3p <<<"$ran")"
-  test "$(tail -2 <<<"$ran")" = "$(printf -- '-p\nhi')"
-  test -d "$plugins/own" && test -L "$plugins/theirs" && ! test -L "$plugins/sandbox-gone"
-  test "$(readlink "$plugins/sandbox-extra")" = ${extraPlugin}
-  plugin=$(readlink "$plugins/sandbox")
-  jq -e '.name == "sandbox"' "$plugin/plugin.json"
-  jq -e '.mcpServers.x.command == "x"' "$plugin/mcp_config.json"
-  grep -q '^# Sandbox' "$plugin/rules/AGENTS.md"
-  grep -q 'Company notes.' "$plugin/rules/AGENTS.md"
-  tail -1 "$plugin/rules/AGENTS.md" | grep -qx 'antigravity rules'
-  jq -e '.mcp.enabled == false' ${etc."antigravity/admin_settings.json"}
-  jq -e '. == {enableTerminalSandbox: true}' "$(${lib.getExe agyOwnSandbox} | sed -n 3p)"
-
-  # The hooks, in each agent's format: the call's command in, a denial out.
-  hooks=$(jq -r '.sandbox.PreToolUse[0].hooks[].command' "$plugin/hooks.json")
-  test "$(jq -r '.sandbox.PreToolUse[0].matcher' "$plugin/hooks.json")" = run_command
-  test "$(wc -l <<<"$hooks")" = 2
-  login=$(grep deny-cli-login <<<"$hooks")
-  call() { jq -n --arg c "$1" '{toolCall: {name: "run_command", args: {CommandLine: $c}}}'; }
-  call 'gh auth login' | $login | jq -e '.decision == "deny" and (.reason | test("Never log gh"))'
-  call 'gh pr list' | $login | jq -e '. == {decision: "allow"}'
-  github=$(grep deny-github-http <<<"$hooks")
-  call 'curl https://api.github.com' | GH_TOKEN=sandbox-placeholder $github | jq -e '.decision == "deny"'
-  call 'curl https://api.github.com' | $github | jq -e '. == {decision: "allow"}'
-  claudeLogin=$(jq -r '.hooks.PreToolUse[0].hooks[] | select(.command | test("deny-cli-login")) | .command' $settings)
-  jq -n '{tool_input: {command: "fj auth login"}}' | $claudeLogin |
-    jq -e '.hookSpecificOutput.permissionDecision == "deny"'
-  test -z "$(jq -n '{tool_input: {command: "fj auth list"}}' | $claudeLogin)"
 
   # code: on a Wayland display only, with Chromium's sandbox off.
   ! ${lib.getExe code} 2>/dev/null

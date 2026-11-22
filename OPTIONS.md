@@ -10,7 +10,6 @@ own, trusted like the rest of it. Nothing here is asked about.
 - [At the top level or in a profile](#at-the-top-level-or-in-a-profile)
 - [The sandbox](#the-sandbox)
 - [Claude Code](#claude-code)
-- [Antigravity CLI](#antigravity-cli)
 - [VS Code](#vs-code)
 
 ## At the top level or in a profile
@@ -64,17 +63,16 @@ Host path. `~` and `$HOME`, `$USER`, `$XDG_RUNTIME_DIR` are expanded at start.
 ### `agentsMd`
 
 /etc/sandbox/AGENTS.md: what the sandbox is and what its guards do,
-for the agents inside. Claude Code's managed CLAUDE.md and the
-Antigravity CLI's sandbox rules start with it. Merged across
-modules: what's added goes after the sandbox's own.
+for the agents inside. Claude Code's managed CLAUDE.md starts with
+it. Merged across modules: what's added goes after the sandbox's
+own.
 
 - Type: `strings concatenated with "\n"`
 
 ### `etc`
 
 Files at /etc/<name> inside, read-only: config programs read there,
-out of the sandbox's reach. claude.* sets /etc/claude-code,
-antigravity.adminSettings /etc/antigravity.
+out of the sandbox's reach. claude.* sets /etc/claude-code.
 
 - Type: `attribute set of (submodule)`
 - Default: `{ }`
@@ -448,77 +446,6 @@ other settings file. Merged across modules.
 
 - Type: `JSON value`
 - Default: `{ }`
-
-## Antigravity CLI
-
-### `antigravity.adminSettings`
-
-/etc/antigravity/admin_settings.json, agy's enterprise policy
-(models, MCP, permissions, the LLM gateway): the one part of its
-config the sandbox can't write. Not written when empty.
-
-- Type: `JSON value`
-- Default: `{ }`
-
-### `antigravity.enable`
-
-Whether to enable the Antigravity CLI in the sandbox, as `agy`, with the sandbox's rules, hooks and MCP servers in a plugin of its own.
-
-- Type: `boolean`
-- Default: `false`
-- Example: `true`
-
-### `antigravity.mcpServers`
-
-MCP servers (mcp_config.json's `mcpServers`), in the sandbox plugin:
-added to the user's and the project's own.
-
-- Type: `attribute set of (JSON value)`
-- Default: `{ }`
-- Example: `{ mcp-nixos.command = lib.getExe pkgs.mcp-nixos; }`
-
-### `antigravity.package`
-
-The Antigravity CLI that's wrapped (unfree: the pkgs given must allow it).
-
-- Type: `package`
-- Default: `pkgs.antigravity-cli`
-
-### `antigravity.plugins`
-
-Plugin directories (with a plugin.json), each linked at
-~/.gemini/config/plugins/sandbox-<name>.
-
-- Type: `attribute set of absolute path`
-- Default: `{ }`
-- Example: `{ team = ./antigravity-plugin; }`
-
-### `antigravity.rules`
-
-Rules every session loads, after the sandbox's AGENTS.md (`agentsMd`): the sandbox plugin's rules/AGENTS.md.
-
-- Type: `strings concatenated with "\n"`
-- Default: `""`
-
-### `antigravity.settings`
-
-Settings given with --settings at every run: over
-~/.gemini/antigravity-cli/settings.json, for that run only, never
-saved. Merged across modules. `enableTerminalSandbox` defaults to
-false: agy's own sandbox for commands needs nested namespaces, which
-the sandbox blocks, so each command would fail there before agy
-retried it outside.
-
-- Type: `JSON value`
-- Default: `{ }`
-
-Example:
-
-```nix
-{
-  agentMode = "accept-edits";
-}
-```
 
 ## VS Code
 
