@@ -22,11 +22,13 @@ deny() {
 	exit 0
 }
 
-# pass: no decision, so the agent's own permissions decide. Antigravity
-# wants a JSON object either way.
+# pass: lets the call through. Claude Code: no decision, so its own
+# permissions decide. Antigravity has no such answer - a reply without a
+# decision ({}) denies the call - so it's allowed outright, over agy's own
+# permission prompts: the sandbox is the boundary.
 pass() {
 	if [ "$agent" = antigravity ]; then
-		echo '{}'
+		echo '{"decision": "allow"}'
 	fi
 	exit 0
 }
