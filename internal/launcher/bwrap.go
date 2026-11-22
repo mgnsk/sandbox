@@ -87,9 +87,6 @@ func baseArgs(cfg *config, env map[string]string) bwrapArgs {
 		cfg.FHS.BashCompletion: "/usr/share/bash-completion",
 		cfg.FHS.Bashrc:         "/etc/bashrc",
 		cfg.FHS.Profile:        "/etc/profile",
-		// What the agents inside read about the sandbox (mkClaude's
-		// system prompt).
-		cfg.FHS.AgentsMd: "/etc/sandbox/AGENTS.md",
 	} {
 		if src != "" {
 			a.roBind(src, dst)
@@ -97,6 +94,9 @@ func baseArgs(cfg *config, env map[string]string) bwrapArgs {
 	}
 	a.roBind(cfg.FHS.NixLd, cfg.FHS.LdPath)
 	a.roBind(cfg.FHS.SSL, "/etc/ssl")
+	for _, f := range cfg.Etc {
+		a.roBind(f.Source, "/etc/"+f.Path)
+	}
 	for _, path := range cfg.HostEtc {
 		a.add("--ro-bind-try", path, path)
 	}

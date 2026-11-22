@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// gitSettings are git's identity and signing inside: the flake's
-// (git.fromHost and the signing key, for everyone on the project), a user's
-// .sandbox.yml's over them, and what the host's own git config fills in.
+// gitSettings are git's identity and signing inside: the configuration's
+// git.fromHost, a user's .sandbox.yml's over it, and what the host's own
+// git config fills in.
 // They only set git's environment inside; a signing key command runs on
 // the host, once approved like the token commands.
 type gitSettings struct {
@@ -123,7 +123,7 @@ func (g gitSettings) setEnv(inside map[string]string) {
 // config, which home-manager links in.
 func (l *launcher) gitEnv(ctx context.Context, git gitSettings, inside map[string]string) error {
 	var host hostGit
-	if !l.opts.Eval && (git.fromHost() || l.cfg.Guards.SSHAgent.Enable) {
+	if git.fromHost() || l.cfg.Guards.SSHAgent.Enable {
 		host = readHostGit(ctx, l.home)
 	}
 	if git.fromHost() {

@@ -1,5 +1,5 @@
-# What the top level, each profile and a project's sandbox module can set.
-# Shared by module.nix and manifest.nix.
+# What the top level and each profile can set, and the options both take
+# with a note on whose word they are. For module.nix.
 #
 # Not packages or env: those are the top level's alone (module.nix). A
 # project's tools and variables come from its dev shell (a flake, devenv),
@@ -44,8 +44,8 @@ in
 {
   inherit json;
 
-  # guards.*.tokenCommand(s): the same options at the top level, in a
-  # profile and in a project's sandbox module. Only whose word it is differs,
+  # guards.*.tokenCommand(s): the same options at the top level and in a
+  # profile. Only whose word it is differs,
   # which note says.
   tokenCommandOptions = note: {
     github.tokenCommand = mkOption {
@@ -81,8 +81,8 @@ in
         A shell command that prints a Claude API key, run like
         guards.github.tokenCommand. With one, Claude Code inside sends its
         requests to a host proxy that adds the key - in place of logging in
-        inside, so not for Claude subscriptions. sandbox.lib.mkClaude's
-        Claude Code takes the placeholder key it needs then; another needs
+        inside, so not for Claude subscriptions. claude.enable's Claude
+        Code takes the placeholder key it needs then; another needs
         `apiKeyHelper` set to `echo sandbox-placeholder`. ${note}
       '';
     };

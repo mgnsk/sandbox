@@ -1,4 +1,4 @@
-# The launcher's config from a fixture module, its fixed userland, and the
+# The launcher's config from a fixture module, its userland, and the
 # options that are gone.
 {
   evalSandbox,
@@ -9,14 +9,11 @@
 let
   configFile = modules: (evalSandbox { inherit pkgs modules; }).configFile;
   config = configFile [ ./fixtures/settings.nix ];
+  withHello = configFile [ { packages = [ pkgs.hello ]; } ];
   fails = modules: !(builtins.tryEval (configFile modules).drvPath).success;
 in
-# No configuration adds tools.
-assert fails [ { packages = [ pkgs.hello ]; } ];
+# The base set stays; a project file picks no profile.
 assert fails [ { basePackages = [ ]; } ];
-# Claude Code's config is the project's (sandbox.lib.mkClaude), and a
-# project file picks no profile.
-assert fails [ { claude.memory = "x"; } ];
 assert fails [ { profiles.x.projectFiles = [ "flake.nix" ]; } ];
 assert fails [ { env.EDITOR = "nvim"; } ];
 # The API guards have no switch.
@@ -26,7 +23,8 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .hostPorts == ["5432"]
     and .guards.notifications == true
-    and .guards.wayland.enable == null
+    and .guards.wayland.enable == false
+    and .git.fromHost == false
     and .guards.wayland.globals == {zwp_tablet_manager_v2: false}
     and (.guards.wayland.defaultGlobals | index("xdg_wm_base") != null)
     and (.guards.wayland.defaultGlobals | index("wl_data_device_manager") == null)
@@ -40,7 +38,10 @@ runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   for tool in claude python3 hello; do test ! -e "$bin/$tool"; done
   grep -q EDITOR "$(jq -r '.fhs.profile' ${config})"
   test -x "$(jq -r '.tools.wlVeil' ${config})"
-  grep -q '^# Sandbox' "$(jq -r '.fhs.agentsMd' ${config})"
+  grep -q '^# Sandbox' "$(jq -r '.etc[] | select(.path == "sandbox/AGENTS.md") | .source' ${config})"
+  # packages come on top of the base set.
+  bin=$(jq -r '.default.env.PATH | split(":")[0]' ${withHello})
+  test -x "$bin/hello" && test -x "$bin/git"
   test -f "$(jq -r '.fhs.bashCompletion' ${config})/bash_completion"
   grep -q bash_completion "$(jq -r '.fhs.bashrc' ${config})"
   grep -q PS1= "$(jq -r '.fhs.bashrc' ${config})"

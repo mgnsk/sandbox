@@ -12,10 +12,10 @@
 // comes from store paths in CONFIG.json or from this binary, never from the
 // host's PATH. The guards and init are subcommands of this binary.
 //
-// A project's flake.nix (its default dev shell's sandbox module) adds to
-// the selected profile. It is evaluated inside a sandbox of the project,
-// and what it asks for beyond the inside (binds, host ports) is shown on
-// the terminal for approval first.
+// What runs inside - packages, /etc files such as Claude Code's managed
+// config - comes from the configuration alone, never from the project; a
+// project's .sandbox.yml (each user's) can only add token commands, shown
+// on the terminal for approval first, and git settings.
 package launcher
 
 import (
@@ -166,19 +166,15 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 	g.runtimeDir = l.runtimeDir
 
-	prof, project, err := l.applyProject(ctx, selectProfile(l.cfg, l.cwd, l.vars))
+	prof, git, err := l.applyProject(selectProfile(l.cfg, l.cwd, l.vars))
 	if err != nil {
 		return nil, nil, err
 	}
-	// The configured ports, the project's and $SANDBOX_HOST_PORTS; none,
-	// like no Wayland display, where flake.nix is evaluated.
-	hostPorts := hostPortSpecs(slices.Concat(l.cfg.HostPorts, project.hostPorts))
-	if l.opts.Eval {
-		hostPorts = nil
-	} else if err := l.resolveWayland(project.wayland); err != nil {
+	if err := l.resolveWayland(); err != nil {
 		return nil, nil, err
 	}
-	tcp, udp, err := parseHostPorts(hostPorts)
+	// The configured ports and $SANDBOX_HOST_PORTS.
+	tcp, udp, err := parseHostPorts(hostPortSpecs(l.cfg.HostPorts))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -187,7 +183,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	}
 
 	inside := insideEnv(l.cfg, prof, l.vars)
-	if err := l.gitEnv(ctx, project.git, inside); err != nil {
+	if err := l.gitEnv(ctx, git, inside); err != nil {
 		return nil, nil, err
 	}
 	a, resolver, err := l.sandboxArgs(ctx, g, prof, inside)
@@ -216,16 +212,14 @@ func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, ins
 	// round.
 	a.bind(l.homeVolume(), l.home)
 
-	if !l.opts.Eval {
-		// Before the guards start, so they get its path.
-		if popuprelay.Usable() {
-			if err := g.listenPopups(); err != nil {
-				return a, "", err
-			}
-		}
-		if err := l.startGuards(ctx, g, &a, prof); err != nil {
+	// Before the guards start, so they get its path.
+	if popuprelay.Usable() {
+		if err := g.listenPopups(); err != nil {
 			return a, "", err
 		}
+	}
+	if err := l.startGuards(ctx, g, &a, prof); err != nil {
+		return a, "", err
 	}
 
 	resolver, err := l.resolvConf(g, &a)
@@ -239,8 +233,8 @@ func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, ins
 	a.add(exchange...)
 	a.add(bindArgs(prof.Binds, l.vars, l.project)...)
 	// After the last mount: they're made on a tmpfs of the user's, where
-	// what's no mount of its own - /etc, above AGENTS.md and what bash
-	// and the resolver read - could otherwise be moved aside
+	// what's no mount of its own - /etc, above the configured files and
+	// what bash and the resolver read - could otherwise be moved aside
 	// and made anew by the sandbox. Only this mount: /tmp, the volume and
 	// the project stay writable.
 	a.add("--remount-ro", "/")
@@ -400,27 +394,21 @@ func (l *launcher) startGuards(ctx context.Context, g *guards, a *bwrapArgs, pro
 }
 
 // resolveWayland decides whether the Wayland guard runs, and with which
-// globals. The user's own config says whether it does; when it doesn't
-// say, the project's (project, approved already) does. The
-// allowlist is the defaults, then the project's changes, then the user's:
-// theirs win.
-func (l *launcher) resolveWayland(project waylandAccess) error {
+// globals: the configuration's word, and its changes to the default
+// allowlist.
+func (l *launcher) resolveWayland() error {
 	wc := l.cfg.Guards.Wayland
 	if err := waylandguard.CheckGlobals(wc.Globals); err != nil {
 		return err
 	}
-	enable := project.Enable
-	if wc.Enable != nil {
-		enable = *wc.Enable
-	}
-	if !enable {
+	if !wc.Enable {
 		return nil
 	}
 	if l.cfg.Tools.WlVeil == "" {
 		return errors.New("guards.wayland: this sandbox has no wl-veil")
 	}
 	// Not nil even when empty: that's a config error the guard reports.
-	l.wayland = append([]string{}, waylandguard.Globals(wc.DefaultGlobals, project.Globals, wc.Globals)...)
+	l.wayland = append([]string{}, waylandguard.Globals(wc.DefaultGlobals, nil, wc.Globals)...)
 	return nil
 }
 

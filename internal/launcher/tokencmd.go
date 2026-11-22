@@ -61,10 +61,6 @@ func (t tokenCommands) without(over tokenCommands) tokenCommands {
 	return t
 }
 
-func (t tokenCommands) empty() bool {
-	return t.GitHubTokenCommand == "" && len(t.ForgejoTokenCommands) == 0 && t.ClaudeAPIKeyCommand == ""
-}
-
 // check tidies t as a project's file has it - commands trimmed, Forgejo
 // hosts as host[:port] - and says what's wrong with it.
 func (t *tokenCommands) check() error {

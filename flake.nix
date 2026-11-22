@@ -15,32 +15,23 @@
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
-      # A `sandbox` package from configuration modules (see nix/module.nix
-      # for the options). Not exported: a sandbox config of one's own comes
-      # through the home-manager module only.
+      # The configuration from modules (see nix/module.nix for the options).
       evalSandbox = import ./nix/eval.nix { inherit lib; };
       mkSandbox = args: (evalSandbox args).package;
     in
     {
-      # programs.sandbox for home-manager.
-      homeManagerModules.default = import ./nix/hm-module.nix { inherit evalSandbox; };
-
-      # For a project's flake.nix: mkShell, a dev shell with the sandbox's
-      # configuration on it, and mkClaude, Claude Code configured by the
-      # project (see nix/shell.nix, nix/claude.nix).
-      lib = import ./nix/lib.nix { inherit lib; };
-
-      # The sandbox with default settings, run from this flake's remote:
-      #   nix run github:mgnsk/sandbox[/REV] -- COMMAND...
-      # It reads no user config; settings of your own come from home-manager
-      # (homeManagerModules), a project's from its flake (lib.mkShell).
-      packages = forAllSystems (pkgs: {
-        default = mkSandbox { inherit pkgs; };
-      });
+      # A `sandbox` command from configuration modules - the tools every
+      # project gets inside (Claude Code, VS Code, ...), the guards, binds -
+      # for a distribution of the sandbox to install, e.g. an organisation's
+      # tools flake:
+      #   packages.sandbox = sandbox.lib.mkSandbox { inherit pkgs; modules = [ ./sandbox ]; };
+      # pkgs must allow what's unfree among the packages (claude-code,
+      # vscode). The options are in OPTIONS.md.
+      lib = { inherit mkSandbox; };
 
       checks = forAllSystems (pkgs: {
         tests = pkgs.callPackage ./nix/tests.nix { };
-        project = pkgs.callPackage ./nix/project-check.nix { };
+        modules = pkgs.callPackage ./nix/modules-check.nix { inherit evalSandbox; };
         config = pkgs.callPackage ./nix/config-check.nix { inherit evalSandbox; };
         options = pkgs.callPackage ./nix/options-doc.nix { };
         default = mkSandbox { inherit pkgs; };

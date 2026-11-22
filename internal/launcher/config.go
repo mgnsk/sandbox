@@ -24,8 +24,7 @@ type config struct {
 		// with a Wayland display.
 		Notifications bool `json:"notifications"`
 		Wayland       struct {
-			// nil leaves it to the project.
-			Enable *bool `json:"enable"`
+			Enable bool `json:"enable"`
 			// The user's changes to the allowlist, over the defaults and
 			// the project's.
 			Globals        map[string]bool `json:"globals"`
@@ -44,7 +43,6 @@ type config struct {
 		BashCompletion string `json:"bashCompletion"`
 		Bashrc         string `json:"bashrc"`
 		Profile        string `json:"profile"`
-		AgentsMd       string `json:"agentsMd"`
 		NixLd          string `json:"nixLd"`
 		LdPath         string `json:"ldPath"`
 		SSL            string `json:"ssl"`
@@ -62,17 +60,19 @@ type config struct {
 		NixProfile  bool `json:"nixProfile"`
 		HomeManager bool `json:"homeManager"`
 	} `json:"init"`
-	HostPath   string        `json:"hostPath"`
-	DBusDaemon string        `json:"dbusDaemon"`
-	Project    nixEvaluation `json:"project"`
+	HostPath   string `json:"hostPath"`
+	DBusDaemon string `json:"dbusDaemon"`
+	// Files at /etc/<path> inside, read-only: Claude Code's managed
+	// config, AGENTS.md, ...
+	Etc []etcFile `json:"etc"`
+	Git struct {
+		FromHost bool `json:"fromHost"`
+	} `json:"git"`
 }
 
-// nixEvaluation is a nix file to evaluate a config file with, against a
-// nixpkgs.
-type nixEvaluation struct {
-	Eval    string `json:"eval"`
-	Nixpkgs string `json:"nixpkgs"`
-	System  string `json:"system"`
+type etcFile struct {
+	Path   string `json:"path"`
+	Source string `json:"source"`
 }
 
 type profile struct {

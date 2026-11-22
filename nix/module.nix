@@ -32,23 +32,33 @@ let
     };
   };
 
-  # What every sandbox tells the agents in it (/etc/sandbox/AGENTS.md):
-  # what it is and what its guards do. sandbox.lib.mkClaude puts it in
-  # Claude Code's system prompt.
-  agentsMd = pkgs.concatText "AGENTS.md" [
-    ./agents/sandbox.md
-    ./agents/github.md
-    ./agents/forgejo.md
-  ];
+  etcType = types.submodule (
+    { config, name, ... }:
+    {
+      options = {
+        text = mkOption {
+          type = types.nullOr types.lines;
+          default = null;
+          description = "The file's content.";
+        };
+        source = mkOption {
+          type = types.path;
+          description = "The file; `text` makes one.";
+        };
+      };
+      config.source = lib.mkIf (config.text != null) (
+        lib.mkDefault (pkgs.writeText (baseNameOf name) config.text)
+      );
+    }
+  );
 
-  # The userland inside, fixed: what the sandbox itself needs (a shell, nix
-  # to enter the project's dev shell, terminfo; git and ssh, which its
+  # The userland inside: what the sandbox itself needs (a shell, nix to
+  # enter the project's dev shell, terminfo; git and ssh, which its
   # ssh-agent guard and commit signing are for - pushes run ssh, ssh signing
   # runs ssh-keygen; less and nano, the pager and editor git runs), the tools
   # `nix develop` puts on PATH anyway (stdenv's initialPath), and the few
-  # every session reaches for whatever the project is. Every other tool -
-  # Claude Code, ... - comes from the project's dev shell, or the user's
-  # ~/.nix-profile or home-manager; no configuration adds any.
+  # every session reaches for whatever the project is. The configuration's
+  # `packages` come on top.
   basePackages = [
     pkgs.bashInteractive
     pkgs.bash-completion
@@ -85,7 +95,7 @@ let
   # The same for every profile.
   env = pkgs.buildEnv {
     name = "sandbox-env";
-    paths = basePackages;
+    paths = basePackages ++ cfg.packages;
     pathsToLink = [
       "/bin"
       "/share"
@@ -158,7 +168,6 @@ let
       # before the user's files.
       bashrc = "${bashrc}";
       profile = "${profile}";
-      agentsMd = "${agentsMd}";
       nixLd = "${pkgs.nix-ld}/libexec/nix-ld";
       ldPath =
         if pkgs.stdenv.hostPlatform.isx86_64 then
@@ -198,13 +207,11 @@ let
         defaultGlobals = import ./wayland.nix;
       };
     };
-    # A project's flake.nix, evaluated inside a sandbox by project.nix
-    # against this nixpkgs.
-    project = {
-      eval = "${./.}/project.nix";
-      nixpkgs = "${pkgs.path}";
-      system = pkgs.stdenv.hostPlatform.system;
-    };
+    etc = lib.mapAttrsToList (path: f: {
+      inherit path;
+      source = "${f.source}";
+    }) cfg.etc;
+    git.fromHost = cfg.git.fromHost;
     init = {
       nixProfile = cfg.nixProfile.enable;
       homeManager = cfg.homeManager.enable;
@@ -223,7 +230,54 @@ let
   configFile = json.generate "sandbox-config.json" runtimeConfig;
 in
 {
+  imports = [
+    ./modules/claude.nix
+    ./modules/vscode.nix
+  ];
+
   options = layerOptions // {
+    packages = mkOption {
+      type = types.listOf types.package;
+      default = [ ];
+      example = lib.literalExpression "[ pkgs.gh pkgs.go-task ]";
+      description = ''
+        Packages on PATH inside, after the sandbox's own: the tools every
+        project gets, whatever its dev shell brings (which comes first on
+        PATH inside `nix develop`).
+      '';
+    };
+
+    etc = mkOption {
+      type = types.attrsOf etcType;
+      default = { };
+      example = lib.literalExpression ''{ "claude-code/CLAUDE.md".text = "..."; }'';
+      description = ''
+        Files at /etc/<name> inside, read-only: config programs read there,
+        out of the sandbox's reach. claude.* sets /etc/claude-code.
+      '';
+    };
+
+    agentsMd = mkOption {
+      type = types.lines;
+      description = ''
+        /etc/sandbox/AGENTS.md: what the sandbox is and what its guards do,
+        for the agents inside. Claude Code's managed CLAUDE.md starts with
+        it. Merged across modules: what's added goes after the sandbox's
+        own.
+      '';
+    };
+
+    git.fromHost = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Take git's name, email and ssh signing key inside from your global
+        git config on the host (`git config --global`, run from /), where
+        nothing more specific sets them. A project's .sandbox.yml can turn
+        it off (git.fromHost: false).
+      '';
+    };
+
     profiles = mkOption {
       type = types.attrsOf profileType;
       default = { };
@@ -235,8 +289,8 @@ in
       default = null;
       description = ''
         Host directory with a folder per project: its home volume, its
-        exchange dir and what the host keeps for it (approvals of what
-        projects ask for);
+        exchange dir and what the host keeps for it (approvals of the
+        commands a project's .sandbox.yml runs);
         $XDG_DATA_HOME/sandbox (~/.local/share/sandbox) when null. `~` and
         environment variables are expanded at start; $SANDBOX_STATE_DIR
         overrides it.
@@ -296,7 +350,7 @@ in
       description = ''
         Link the host's ~/.nix-profile into the volume and put its bin/ on
         PATH (after the sandbox's own). Off, a link from an earlier start is
-        removed. The home-manager module turns this on.
+        removed. Each user's own tools, in every project.
       '';
     };
 
@@ -306,13 +360,13 @@ in
       description = ''
         Link the host's current home-manager generation into the volume at
         each start, removing links into older ones. Off, the links of an
-        earlier start are removed. The home-manager module
-        turns this on.
+        earlier start are removed. Each user's own dotfiles (and a
+        ~/.claude of theirs, under the managed config), in every project.
       '';
     };
 
     guards =
-      layer'.tokenCommandOptions "Trusted, as your config: run without asking, and it wins over a project's, which runs only once you approve it. A profile can set its own."
+      layer'.tokenCommandOptions "Trusted, as your config: run without asking, and it wins over a project's .sandbox.yml, whose commands run only once you approve them. A profile can set its own."
       // {
         sshAgent = {
           enable = mkOption {
@@ -360,16 +414,14 @@ in
         };
         wayland = {
           enable = mkOption {
-            type = types.nullOr types.bool;
-            default = null;
+            type = types.bool;
+            default = false;
             description = ''
               Windows on the host's Wayland display, for GUI programs inside:
               through a proxy (wl-veil) that passes on only an allowlist of
               the compositor's globals, as $XDG_RUNTIME_DIR/wayland-0 inside.
-              The real socket is never bound in. null leaves it to each
-              project's sandbox module, whose guards.wayland.enable takes your
-              yes on the terminal; true or false decides it for every
-              project.
+              The real socket is never bound in. Without a display on the
+              host, the sandbox starts without one. vscode.enable turns it on.
             '';
           };
           globals = mkOption {
@@ -382,7 +434,7 @@ in
             description = ''
               Changes to the allowlist of Wayland globals, by interface name:
               true adds one to the default list (nix/wayland.nix), false
-              removes one. Applied after a project's changes, so yours win.
+              removes one.
             '';
           };
         };
@@ -407,5 +459,14 @@ in
     package = pkgs.writeShellScriptBin "sandbox" ''
       exec ${lib.getExe sandboxPkgs.sandbox} launch --config ${configFile} "$@"
     '';
+
+    agentsMd = lib.mkBefore (
+      lib.concatMapStringsSep "\n" builtins.readFile [
+        ./agents/sandbox.md
+        ./agents/github.md
+        ./agents/forgejo.md
+      ]
+    );
+    etc."sandbox/AGENTS.md".text = config.agentsMd;
   };
 }

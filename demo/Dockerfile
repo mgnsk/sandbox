@@ -1,6 +1,6 @@
 # A plain Debian with a multi-user nix install and a user without any
 # dotfiles, to try the sandbox the way a new user meets it: entrypoint.sh
-# sets up one of the demos. See `make demo-flake` and `make demo-home-manager`.
+# sets up the demo. See `make demo`.
 FROM debian:bookworm-slim
 
 RUN apt-get update \

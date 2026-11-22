@@ -16,8 +16,6 @@ package launcher
 //     destination is under the test's $XDG_RUNTIME_DIR become symlinks
 //     there, so a client inside finds a guard's socket where it would in a
 //     real sandbox.
-//   - nix (inside, for flake.nix) records its argv and prints
-//     $FAKE_NIX_OUT.
 //
 // The guards are the real ones.
 
@@ -49,7 +47,6 @@ import (
 // the harness's tools dir.
 var helpers = map[string]func() int{
 	"pasta": fakePasta,
-	"nix":   fakeNix,
 	// Run inside.
 	"echo-size":   echoSize,
 	"agent-list":  agentList,
@@ -176,14 +173,6 @@ loop:
 	return code
 }
 
-func fakeNix() int {
-	writeLog(logEntry{Tool: "nix", Argv: os.Args[1:]})
-	fmt.Println("some noise from a shell startup file")
-	fmt.Println(os.Getenv("FAKE_NIX_OUT"))
-	code, _ := strconv.Atoi(os.Getenv("FAKE_NIX_EXIT"))
-	return code
-}
-
 // echoSize says the terminal's size, and echoes a line it's typed.
 func echoSize() int {
 	cols, rows, _ := term.GetSize(0)
@@ -254,7 +243,6 @@ func newHarness(t *testing.T) *harness {
 		ResolvConf: h.resolv,
 		HostPath:   h.hostBin,
 		DBusDaemon: dbus,
-		Project:    nixEvaluation{Eval: "/store/project.nix", Nixpkgs: "/store/nixpkgs", System: "x86_64-linux"},
 	}
 	cfg.Guards.SSHAgent.Path = "$XDG_RUNTIME_DIR/ssh-agent.sock"
 	cfg.FHS.Bin, cfg.FHS.UsrBin, cfg.FHS.NixLd, cfg.FHS.LdPath, cfg.FHS.SSL =

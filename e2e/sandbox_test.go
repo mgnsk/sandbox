@@ -27,7 +27,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -204,35 +203,6 @@ func TestASubdirectoryGetsTheWholeWorkTree(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.dir, "top")); err != nil {
 		t.Error(err)
-	}
-}
-
-// Evaluated in a nested sandbox, the default dev shell's sandbox module
-// applies. The module is evaluated with the launcher's options, so a flake
-// needs no input for it.
-func TestProjectFlakeIsApplied(t *testing.T) {
-	p := newProject(t)
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("needs git")
-	}
-	os.RemoveAll(filepath.Join(p.dir, ".git"))
-	if out, err := exec.Command(git, "init", "-q", p.dir).CombinedOutput(); err != nil {
-		t.Fatalf("%v %s", err, out)
-	}
-	system := map[string]string{"amd64": "x86_64-linux", "arm64": "aarch64-linux"}[runtime.GOARCH]
-	os.WriteFile(filepath.Join(p.dir, "flake.nix"), []byte(`{
-  outputs = _: {
-    devShells.`+system+`.default.sandbox = { command = [ "sh" "-c" "echo from-project" ]; };
-  };
-}
-`), 0o644)
-	if out, err := exec.Command(git, "-C", p.dir, "add", "flake.nix").CombinedOutput(); err != nil {
-		t.Fatalf("%v %s", err, out)
-	}
-	r := p.run(t, "", nil).ok(t)
-	if lines := strings.Split(strings.TrimSpace(r.stdout), "\n"); lines[len(lines)-1] != "from-project" {
-		t.Errorf("%q", r.stdout)
 	}
 }
 

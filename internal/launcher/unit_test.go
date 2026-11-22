@@ -229,29 +229,6 @@ func TestHostName(t *testing.T) {
 	}
 }
 
-func TestIsStorePath(t *testing.T) {
-	hash := strings.Repeat("a", 32)
-	for path, want := range map[string]bool{
-		"/nix/store/" + hash + "-x":                    true,
-		"/nix/store/" + hash + "-x/sub/file":           true,
-		"/nix/store/" + hash + "-x/../../etc":          false,
-		"/nix/store/" + hash + "-x/./y":                false,
-		"/nix/store/" + hash + "-x/":                   false,
-		"/nix/store/" + hash:                           false,
-		"/nix/store/" + strings.Repeat("e", 32) + "-x": false, // Not in nix's base32.
-		"/etc/passwd":                                  false,
-		"/nix/store/short-x":                           false,
-	} {
-		if got := isStorePath(path); got != want {
-			t.Errorf("isStorePath(%q) = %v", path, got)
-		}
-	}
-	out := "noise\n/nix/store/" + hash + "-a\nmore noise\n/nix/store/" + hash + "-b\n"
-	if got := lastStorePath(out); got != "/nix/store/"+hash+"-b" {
-		t.Errorf("lastStorePath = %q", got)
-	}
-}
-
 func TestSelectProfile(t *testing.T) {
 	dir := t.TempDir()
 	dotfiles := filepath.Join(dir, "dotfiles")
@@ -344,43 +321,11 @@ func TestInsideEnv(t *testing.T) {
 	}
 }
 
-func TestReadManifest(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.json")
-	read := func(content string) (*manifest, error) {
-		os.WriteFile(path, []byte(content), 0o644)
-		return readManifest(path)
-	}
-	m, err := read(`{"binds": [{"src": "~/x", "dst": null, "mode": "rw", "optional": false, "hideGit": false}], "hostPorts": ["5432"], "command": ["true"]}`)
-	if err != nil || len(m.Binds) != 1 || m.Binds[0].Mode != "rw" || m.HostPorts[0] != "5432" || m.Command[0] != "true" {
-		t.Errorf("%+v %v", m, err)
-	}
-	// It comes out of a sandbox; nothing in it is taken on trust.
-	for _, bad := range []string{
-		`{`,
-		// Gone with the managed Claude config.
-		`{"claudeDir": null}`,
-		`{"env": {"A": "b"}}`,
-		`{"binds": [{"src": "~/x", "mode": "rwx"}]}`,
-		`{"binds": [{"src": "~/x"}]}`,
-		`{"binds": [{"src": "~/x", "mode": "ro", "optional": "yes"}]}`,
-		`{"binds": [{"src": "~/x", "mode": "ro", "extra": 1}]}`,
-		`{"hostPorts": [5432]}`,
-		`{"command": []}`,
-		`{"command": "ls"}`,
-		`{"command": ["a"], "command": ["b"]}`,
-	} {
-		if _, err := read(bad); err == nil {
-			t.Errorf("%s read", bad)
-		}
-	}
-}
-
-// The launcher reads flake.nix and flake.lock on the host; a link would let
-// the sandbox pick which host file.
+// The launcher reads .sandbox.yml on the host; a link would let the
+// sandbox pick which host file.
 func TestReadProjectFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "flake.nix")
+	path := filepath.Join(dir, ".sandbox.yml")
 	os.Symlink("/etc/passwd", path)
 	if _, err := readProjectFile(path); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("link: %v", err)
@@ -390,27 +335,13 @@ func TestReadProjectFile(t *testing.T) {
 	if _, err := readProjectFile(path); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("fifo: %v", err)
 	}
-	// No lock is no error; a linked one is.
-	lock := filepath.Join(dir, "flake.lock")
-	if data, err := readLockFile(lock); data != nil || err != nil {
-		t.Errorf("no lock: %q %v", data, err)
-	}
-	os.Symlink("/etc/passwd", lock)
-	if _, err := readLockFile(lock); err == nil {
-		t.Error("linked lock read")
-	}
 }
 
 func TestHostAccessString(t *testing.T) {
-	access := hostAccess{
-		Binds: []approvedBind{{bind: bind{Src: "~/d", Mode: "rw"}, Resolved: "/mnt/d"},
-			{bind: bind{Src: "/srv/x", Dst: "/x", Mode: "ro", Optional: true}}},
-		HostPorts:          []string{"5432"},
-		GitHubTokenCommand: "one\ntwo",
-	}
+	access := hostAccess{tokenCommands: tokenCommands{GitHubTokenCommand: "one\ntwo"}, GitSigningKeyCommand: "key"}
 	// A command's further lines stay under it.
-	want := "  bind ~/d -> /mnt/d (read-write)\n  bind /srv/x at /x (read-only, optional)\n  host port 5432\n" +
-		"  run on this host at each start, for the GitHub token:\n    one\n    two"
+	want := "  run on this host at each start, for the GitHub token:\n    one\n    two\n" +
+		"  run on this host at each start, for git's signing key:\n    key"
 	if got := access.String(); got != want {
 		t.Errorf("%q", got)
 	}
@@ -442,7 +373,7 @@ func TestTokenCommandsPrecedence(t *testing.T) {
 		!maps.Equal(got.ForgejoTokenCommands, map[string]string{"a.example": "mine-a", "b.example": "local-b", "c.example": "theirs-c"}) {
 		t.Errorf("used: %+v", got)
 	}
-	if !(tokenCommands{}).empty() || asked.empty() || !theirs.without(theirs).empty() {
+	if !noCommands(tokenCommands{}) || noCommands(asked) || !noCommands(theirs.without(theirs)) {
 		t.Error("empty")
 	}
 	if _, err := forgejoHosts("x", map[string]string{"not a host": "c"}); err == nil {

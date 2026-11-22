@@ -34,7 +34,7 @@ git:
 		c.Git.FromHost == nil || *c.Git.FromHost {
 		t.Errorf("got %+v", c)
 	}
-	if c, err := parseLocalConfig(nil); err != nil || c.Git.FromHost != nil || !c.tokenCommands.empty() {
+	if c, err := parseLocalConfig(nil); err != nil || c.Git.FromHost != nil || !noCommands(c.tokenCommands) {
 		t.Errorf("empty: %+v %v", c, err)
 	}
 
@@ -82,7 +82,7 @@ func TestGitEnv(t *testing.T) {
 
 func TestReadLocalConfigRefusesALink(t *testing.T) {
 	dir := t.TempDir()
-	if c, err := readLocalConfig(dir); err != nil || !c.tokenCommands.empty() || c.Git != (gitSettings{}) {
+	if c, err := readLocalConfig(dir); err != nil || !noCommands(c.tokenCommands) || c.Git != (gitSettings{}) {
 		t.Errorf("none: %+v %v", c, err)
 	}
 	os.WriteFile(filepath.Join(dir, "elsewhere"), []byte("git:\n  userName: x\n"), 0o644)
@@ -91,3 +91,6 @@ func TestReadLocalConfigRefusesALink(t *testing.T) {
 		t.Errorf("link: %v", err)
 	}
 }
+
+// noCommands says whether t has no command.
+func noCommands(t tokenCommands) bool { return len(hostAccess{tokenCommands: t}.items()) == 0 }

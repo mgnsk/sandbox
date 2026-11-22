@@ -7,12 +7,12 @@ SYSTEM = $(eval SYSTEM := $$(shell nix eval --raw --impure --expr builtins.curre
 # A go test -run filter, e.g. make test RUN=HostPort
 RUN ?=
 
-NIX_FILES := flake.nix nix/*.nix nix/fixtures/*.nix demo/*/*.nix
-SHELL_FILES := demo/entrypoint.sh nix/claude/*.sh nix/etc/bashrc nix/etc/profile
+NIX_FILES := flake.nix nix/*.nix nix/modules/*.nix nix/fixtures/*.nix demo/*/*.nix
+SHELL_FILES := demo/entrypoint.sh nix/modules/claude-hooks/*.sh nix/etc/bashrc nix/etc/profile
 
 BIN := .build/go/bin
 
-.PHONY: list test race coverage build lint vuln vendor-hash options fmt demo-flake demo-home-manager demo-clean
+.PHONY: list test race coverage build lint vuln vendor-hash options fmt demo demo-clean
 
 .DEFAULT_GOAL := list
 
@@ -23,12 +23,12 @@ list: ## List the commands
 # The sandbox built from this checkout, for the real-sandbox tests (e2e).
 SANDBOX_BIN = $$(nix build --no-link --print-out-paths .\#checks.$(SYSTEM).default)/bin/sandbox
 
-# Everything: the checks of the configuration and of a project flake's
-# evaluation, the Go tests - the real-sandbox ones (e2e) against a fresh
-# build of the sandbox - and lint. The real-sandbox tests need a host with
+# Everything: the checks of the configuration and its modules, the Go
+# tests - the real-sandbox ones (e2e) against a fresh build of the sandbox -
+# and lint. The real-sandbox tests need a host with
 # unprivileged user namespaces; inside a sandbox they skip.
 test: ## Nix checks, all Go tests (RUN=filter) and lint
-	nix build --no-link .#checks.$(SYSTEM).project .#checks.$(SYSTEM).config .#checks.$(SYSTEM).options
+	nix build --no-link .#checks.$(SYSTEM).modules .#checks.$(SYSTEM).config .#checks.$(SYSTEM).options
 	SANDBOX_BIN=$(SANDBOX_BIN) $(DEV) go test $(if $(RUN),-run '$(RUN)') ./...
 	$(if $(RUN),,$(MAKE) lint)
 
@@ -75,16 +75,14 @@ fmt: ## Format the Go and nix files
 	$(DEV) gofmt -w cmd internal e2e
 	nix fmt -- $(NIX_FILES)
 
-# A shell as a fresh user, in a Debian container with multi-user nix, in a
-# demo set up by demo/entrypoint.sh - the sandbox as a new user meets it,
-# from the remote (github:mgnsk/sandbox), not this checkout:
-#   demo-flake          `nix run github:mgnsk/sandbox`, in a project whose
-#                       flake.nix brings and shapes everything
-#   demo-home-manager   programs.sandbox in the user's home-manager config
-# Run on the host (no docker inside a sandbox). The nix store is kept in a
-# volume between runs, the home isn't; make demo-clean drops the store, e.g.
-# after changing demo/Dockerfile. A command instead of the shell:
-# make demo-flake ARGS='sandbox nix develop -c claude'
+# A shell as a fresh user, in a Debian container with multi-user nix, set
+# up by demo/entrypoint.sh: a distribution of the sandbox (demo/distribution)
+# installed with `nix profile add`, and a Go project to start it in - the
+# sandbox as a new user meets it, from the remote (github:mgnsk/sandbox),
+# not this checkout. Run on the host (no docker inside a sandbox). The nix
+# store is kept in a volume between runs, the home isn't; make demo-clean
+# drops the store, e.g. after changing demo/Dockerfile. A command instead of
+# the shell: make demo ARGS='sandbox claude'
 DEMO_IMAGE := sandbox-demo
 DEMO_NIX_VOLUME := sandbox-demo-nix
 ARGS ?=
@@ -99,17 +97,13 @@ define demo
 		--security-opt apparmor=unconfined \
 		--security-opt systempaths=unconfined \
 		--device /dev/net/tun \
-		-e DEMO=$(1) \
 		-v $(DEMO_NIX_VOLUME):/nix \
 		-v $(CURDIR):/src:ro \
 		$(DEMO_IMAGE) $(ARGS)
 endef
 
-demo-flake: ## Demo: a project whose flake.nix configures the sandbox (ARGS='cmd')
-	$(call demo,flake)
-
-demo-home-manager: ## Demo: the sandbox from home-manager (ARGS='cmd')
-	$(call demo,home-manager)
+demo: ## Demo: a distribution of the sandbox, in a fresh container (ARGS='cmd')
+	$(call demo)
 
 demo-clean: ## Drop the demo's nix store volume
 	docker volume rm -f $(DEMO_NIX_VOLUME)

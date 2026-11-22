@@ -1,6 +1,5 @@
-# OPTIONS.md, from the option declarations: a sandbox config's (module.nix),
-# a project's sandbox module's (project-options.nix) and mkClaude's
-# (claude.nix). The check fails when
+# OPTIONS.md, from the option declarations: a sandbox config's (module.nix
+# and the modules it imports). The check fails when
 # the file in the repository isn't what these give; `make options` writes
 # it (passthru.doc).
 {
@@ -21,17 +20,21 @@ let
     );
   names = map (o: o.name);
 
-  # What a sandbox config, a profile and a project all take is said once.
+  # What the top level and a profile both take is said once.
   shared = optionsOf [ { options = layer.options; } ];
   config = optionsOf [ ./module.nix ];
-  project = optionsOf [ { options = import ./project-options.nix { inherit lib layer; }; } ];
-  claude = optionsOf [ (import ./claude.nix { inherit lib; }).module ];
+  under = prefix: lib.filter (o: lib.hasPrefix prefix o.name) config;
   # A profile's option that the top level has too, under its name there.
   ofProfile =
     o:
     lib.hasPrefix "profiles.<name>." o.name
     && lib.elem (lib.removePrefix "profiles.<name>." o.name) (names config);
-  own = lib.filter (o: !lib.elem o.name (names shared));
+  own = lib.filter (
+    o:
+    !lib.elem o.name (names shared)
+    && !lib.hasPrefix "claude." o.name
+    && !lib.hasPrefix "vscode." o.name
+  );
 
   # A default or an example: in the list when it's a line, under it when
   # it's more.
@@ -70,42 +73,31 @@ let
 
     Every option, with its type and default. Generated from the option
     declarations in `nix/` by `make options`: change those, not this file.
-    The [README](README.md#configuring-the-sandbox) says what they're for
-    and where a setting belongs.
+    The [README](README.md#configuring-the-sandbox) says what they're for.
 
-    - [In your config, a profile or a project](#in-your-config-a-profile-or-a-project)
-    - [Your sandbox config](#your-sandbox-config)
-    - [A project's sandbox](#a-projects-sandbox)
-    - [A project's Claude Code](#a-projects-claude-code)
+    They're the modules given to `sandbox.lib.mkSandbox`: a distribution's
+    own, trusted like the rest of it. Nothing here is asked about.
 
-    ## In your config, a profile or a project
+    - [At the top level or in a profile](#at-the-top-level-or-in-a-profile)
+    - [The sandbox](#the-sandbox)
+    - [Claude Code](#claude-code)
+    - [VS Code](#vs-code)
 
-    These are the same in all three. A profile's go over your config's for
-    its projects, and a project's over both - where its binds take your yes
-    on the terminal first.
+    ## At the top level or in a profile
+
+    A profile's (`profiles.<name>`) go over the top level's for its
+    projects; a profile also takes the guards' token commands.
 
     ${section shared}
-    ## Your sandbox config
-
-    `programs.sandbox.settings` in home-manager. Trusted like the rest of
-    your config: nothing here is asked about. A profile
-    (`profiles.<name>`) also takes the options above and the guards' token
-    commands, for its projects.
+    ## The sandbox
 
     ${section (lib.filter (o: !ofProfile o) (own config))}
-    ## A project's sandbox
+    ## Claude Code
 
-    `sandbox` of `sandbox.lib.mkShell` in the project's flake.nix, which
-    sandboxed code can write: what reaches the host takes your yes on the
-    terminal first.
+    ${section (under "claude.")}
+    ## VS Code
 
-    ${section (own project)}
-    ## A project's Claude Code
-
-    `claude` of `sandbox.lib.mkShell`, or `sandbox.lib.mkClaude`'s
-    arguments besides `pkgs`.
-
-    ${section claude}'';
+    ${section (under "vscode.")}'';
 in
 runCommand "sandbox-options-check" { passthru = { inherit doc; }; } ''
   if ! diff -u ${../OPTIONS.md} ${doc}; then
