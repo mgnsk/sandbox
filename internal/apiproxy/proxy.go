@@ -321,6 +321,10 @@ func serve(ctx context.Context, srv *http.Server, ln net.Listener) error {
 
 // ReadBody reads r's body in full, up to limit bytes, leaving it in place to
 // be forwarded; an *http.MaxBytesError past limit.
+//
+// With GetBody too, so the transport can send it again: an HTTP/2
+// connection the host shuts down (GOAWAY) after the body went out is
+// retried on a new one only with it, and is a 502 without.
 func ReadBody(r *http.Request, limit int64) ([]byte, error) {
 	if r.ContentLength > limit {
 		return nil, &http.MaxBytesError{Limit: limit}
@@ -329,7 +333,8 @@ func ReadBody(r *http.Request, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	r.Body, _ = r.GetBody()
 	r.ContentLength = int64(len(body))
 	return body, nil
 }
