@@ -13,6 +13,11 @@
 # So they're pinned defaults, not enforced: anything inside can replace a
 # link or disable the plugin until the next run. Only admin_settings.json,
 # at /etc/antigravity, is out of the sandbox's reach.
+#
+# TODO: a Gemini API key guard like guards.claudeApiKey (agy takes
+# modelProvider "gemini" with GEMINI_API_KEY and GOOGLE_GEMINI_BASE_URL, so
+# a host proxy could hold the key); until then agy logs in inside. Drop
+# this once that guard exists.
 {
   config,
   lib,
