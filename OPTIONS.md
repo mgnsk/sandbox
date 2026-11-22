@@ -353,7 +353,7 @@ Whether to enable Claude Code in the sandbox, as `claude`, with managed config a
 
 Language servers, in a plugin of their own (--plugin-dir) that runs
 each from its store path, so plugin and server are pinned together.
-The LSP tool is allowed without a prompt, in plan mode too.
+The LSP tool is allowed without a prompt.
 
 - Type: `attribute set of (submodule)`
 - Default: `{ }`
@@ -415,8 +415,7 @@ Server settings (workspace/configuration).
 
 Managed MCP servers. Managed MCP config is exclusive: once any is
 set, a project's own .mcp.json is ignored. Their tools are allowed
-without a prompt, in plan mode too (`mcp__<name>__*` in the managed
-settings, and a PreToolUse hook).
+without a prompt (`mcp__<name>__*` in the managed settings).
 
 - Type: `attribute set of (JSON value)`
 - Default: `{ }`
