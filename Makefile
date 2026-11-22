@@ -8,7 +8,7 @@ SYSTEM = $(eval SYSTEM := $$(shell nix eval --raw --impure --expr builtins.curre
 RUN ?=
 
 NIX_FILES := flake.nix nix/*.nix nix/modules/*.nix nix/fixtures/*.nix demo/*/*.nix
-SHELL_FILES := demo/entrypoint.sh nix/modules/claude-hooks/*.sh nix/etc/bashrc nix/etc/profile
+SHELL_FILES := demo/entrypoint.sh nix/modules/agent-hooks/*.sh nix/etc/bashrc nix/etc/profile
 
 BIN := .build/go/bin
 

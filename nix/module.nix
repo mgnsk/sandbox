@@ -231,6 +231,7 @@ let
 in
 {
   imports = [
+    ./modules/antigravity.nix
     ./modules/claude.nix
     ./modules/vscode.nix
   ];
@@ -253,7 +254,8 @@ in
       example = lib.literalExpression ''{ "claude-code/CLAUDE.md".text = "..."; }'';
       description = ''
         Files at /etc/<name> inside, read-only: config programs read there,
-        out of the sandbox's reach. claude.* sets /etc/claude-code.
+        out of the sandbox's reach. claude.* sets /etc/claude-code,
+        antigravity.adminSettings /etc/antigravity.
       '';
     };
 
@@ -261,9 +263,9 @@ in
       type = types.lines;
       description = ''
         /etc/sandbox/AGENTS.md: what the sandbox is and what its guards do,
-        for the agents inside. Claude Code's managed CLAUDE.md starts with
-        it. Merged across modules: what's added goes after the sandbox's
-        own.
+        for the agents inside. Claude Code's managed CLAUDE.md and the
+        Antigravity CLI's sandbox rules start with it. Merged across
+        modules: what's added goes after the sandbox's own.
       '';
     };
 

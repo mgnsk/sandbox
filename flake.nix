@@ -26,7 +26,7 @@
       # tools flake:
       #   packages.sandbox = sandbox.lib.mkSandbox { inherit pkgs; modules = [ ./sandbox ]; };
       # pkgs must allow what's unfree among the packages (claude-code,
-      # vscode). The options are in OPTIONS.md.
+      # antigravity-cli, vscode). The options are in OPTIONS.md.
       lib = { inherit mkSandbox; };
 
       checks = forAllSystems (pkgs: {

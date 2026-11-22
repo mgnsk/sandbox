@@ -32,6 +32,7 @@ let
   own = lib.filter (
     o:
     !lib.elem o.name (names shared)
+    && !lib.hasPrefix "antigravity." o.name
     && !lib.hasPrefix "claude." o.name
     && !lib.hasPrefix "vscode." o.name
   );
@@ -81,6 +82,7 @@ let
     - [At the top level or in a profile](#at-the-top-level-or-in-a-profile)
     - [The sandbox](#the-sandbox)
     - [Claude Code](#claude-code)
+    - [Antigravity CLI](#antigravity-cli)
     - [VS Code](#vs-code)
 
     ## At the top level or in a profile
@@ -95,6 +97,9 @@ let
     ## Claude Code
 
     ${section (under "claude.")}
+    ## Antigravity CLI
+
+    ${section (under "antigravity.")}
     ## VS Code
 
     ${section (under "vscode.")}'';

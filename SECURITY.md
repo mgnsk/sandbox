@@ -261,8 +261,10 @@ it, so the sandbox makes the usual ways fail and reports the rest:
 - forgejo-api-proxy refuses the OAuth token exchange of `fj auth login`, for
   instances with a token command;
 - with `claude.enable`, a managed Claude Code hook
-  (`nix/modules/claude-hooks/deny-cli-login.sh`) denies `gh auth
+  (`nix/modules/agent-hooks/deny-cli-login.sh`) denies `gh auth
   login|refresh|token` and `fj auth login|add-token|add-key`, guard or not;
+  with `antigravity.enable`, the same hook in agy's sandbox plugin, which
+  sandboxed code can disable (agy has no managed hooks);
 - at each start, init warns of a login stored in the volume - hosts in gh's
   `hosts.yml` or fj's `keys.json` - and secret-service-guard of gh tokens
   among the project's items in the host keyring (when it's unlocked), with
