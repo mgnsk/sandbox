@@ -11,7 +11,6 @@
 
   claude = {
     enable = true;
-    settings.permissions.allow = [ "mcp__mcp-nixos__nix" ];
     memory = ''
       # Demo
 
