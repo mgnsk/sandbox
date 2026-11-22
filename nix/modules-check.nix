@@ -61,13 +61,14 @@ let
   claude = lib.findFirst (p: lib.getName p == "claude-code-sandbox") null cfg.packages;
   code = lib.findFirst (p: lib.getName p == "code") null cfg.packages;
   agy = lib.findFirst (p: lib.getName p == "antigravity-cli-sandbox") null cfg.packages;
-  # Without settings: no --settings.
-  agyBare =
+  # agy's own sandbox, turned back on.
+  agyOwnSandbox =
     lib.findFirst (p: lib.getName p == "antigravity-cli-sandbox") null
       (eval [
         {
           antigravity.enable = true;
           antigravity.package = fakeAgy;
+          antigravity.settings.enableTerminalSandbox = true;
         }
       ]).packages;
   etc = lib.mapAttrs (_: f: f.source) cfg.etc;
@@ -96,7 +97,7 @@ assert fails [
   })
 ];
 assert fails [ (lsp { package = vscode-langservers-extracted; }) ];
-assert claude != null && code != null && agy != null && agyBare != null;
+assert claude != null && code != null && agy != null && agyOwnSandbox != null;
 assert cfg.guards.wayland.enable;
 assert !off.guards.wayland.enable && off.packages == [ ];
 # Without them, /etc has only AGENTS.md.
@@ -149,7 +150,7 @@ runCommand "sandbox-modules-check" { nativeBuildInputs = [ jq ]; } ''
   echo "$ran"
   test "$(head -1 <<<"$ran")" = 1
   test "$(sed -n 2p <<<"$ran")" = --settings
-  jq -e '. == {agentMode: "plan"}' "$(sed -n 3p <<<"$ran")"
+  jq -e '. == {agentMode: "plan", enableTerminalSandbox: false}' "$(sed -n 3p <<<"$ran")"
   test "$(tail -2 <<<"$ran")" = "$(printf -- '-p\nhi')"
   test -d "$plugins/own" && test -L "$plugins/theirs" && ! test -L "$plugins/sandbox-gone"
   test "$(readlink "$plugins/sandbox-extra")" = ${extraPlugin}
@@ -160,7 +161,7 @@ runCommand "sandbox-modules-check" { nativeBuildInputs = [ jq ]; } ''
   grep -q 'Company notes.' "$plugin/rules/AGENTS.md"
   tail -1 "$plugin/rules/AGENTS.md" | grep -qx 'antigravity rules'
   jq -e '.mcp.enabled == false' ${etc."antigravity/admin_settings.json"}
-  ! grep -qx -- --settings <<<"$(${lib.getExe agyBare})"
+  jq -e '. == {enableTerminalSandbox: true}' "$(${lib.getExe agyOwnSandbox} | sed -n 3p)"
 
   # The hooks, in each agent's format: the call's command in, a denial out.
   hooks=$(jq -r '.sandbox.PreToolUse[0].hooks[].command' "$plugin/hooks.json")

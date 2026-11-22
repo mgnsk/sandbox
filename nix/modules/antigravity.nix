@@ -10,6 +10,8 @@
 #   ~/.gemini/antigravity-cli/settings.json for that run and are never
 #   saved;
 # - turns the auto-updater off (a store path can't update itself).
+# Its own sandbox for commands (enableTerminalSandbox) is off by default:
+# it needs nested namespaces, which the sandbox blocks.
 # So they're pinned defaults, not enforced: anything inside can replace a
 # link or disable the plugin until the next run. Only admin_settings.json,
 # at /etc/antigravity, is out of the sandbox's reach.
@@ -133,7 +135,10 @@ in
       description = ''
         Settings given with --settings at every run: over
         ~/.gemini/antigravity-cli/settings.json, for that run only, never
-        saved. Merged across modules.
+        saved. Merged across modules. `enableTerminalSandbox` defaults to
+        false: agy's own sandbox for commands needs nested namespaces, which
+        the sandbox blocks, so each command would fail there before agy
+        retried it outside.
       '';
     };
     rules = mkOption {
@@ -171,6 +176,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    antigravity.settings.enableTerminalSandbox = lib.mkDefault false;
     packages = [ wrapper ];
     etc = lib.optionalAttrs (cfg.adminSettings != { }) {
       "antigravity/admin_settings.json".source = json.generate "admin_settings.json" cfg.adminSettings;
