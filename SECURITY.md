@@ -32,8 +32,8 @@ sandbox is not a boundary for:
   `git.fromHost`, your git name, email and signing key.
 - **Other machines you allow.** The LAN, a tailnet and every other private
   network are out of reach by default; what `allowNet` or
-  `SANDBOX_ALLOW_NET` names is as reachable as from the host, on every port.
-  The public internet always is.
+  `SANDBOX_ALLOW_NET` names is as reachable as from the host, on the ports
+  the entry gives or on all of them. The public internet always is.
 - **Ports on the host's loopback.** A port bound inside shows up on the
   host's `127.0.0.1`: sandboxed code can take a port a host service isn't
   holding at the moment, and be talked to in its place.
@@ -141,11 +141,16 @@ listed in `SANDBOX_ALLOW_NET`, read from the host's environment when
 | `tailscale` | `100.64.0.0/10` and `fd7a:115c:a1e0::/48` |
 | `all` | every other machine, as before this policy |
 
+Any of them takes ports, written as in `SANDBOX_HOST_PORTS`, and then allows
+those only: `192.168.100.1:8080`, `192.168.1.*:8000-8100`, `nas.lan:53/udp`,
+`tailscale:22` - tcp unless it says `/udp`. An IPv6 address with ports goes
+in brackets, `[fd00::5]:8080`. Without ports an entry allows every port and
+protocol, ping included.
+
 Entries are separated by spaces or commas. None of them opens the host
 itself: its addresses and the metadata service's are refused first, under
-`all` too. An entry allows an address on every port. A name that doesn't
-resolve at start is left out with a warning, and one whose address changes
-later isn't followed.
+`all` too. A name that doesn't resolve at start is left out with a warning,
+and one whose address changes later isn't followed.
 
 tailscale is its address ranges and not its interface, because the sandbox
 has no such interface: inside there is only pasta's, and pasta's

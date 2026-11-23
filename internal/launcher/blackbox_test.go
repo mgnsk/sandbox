@@ -389,14 +389,20 @@ func TestAllowNet(t *testing.T) {
 		}
 	}
 
-	h.cfg.AllowNet = []string{"192.168.1.*"}
-	got = rules(map[string]string{"SANDBOX_ALLOW_NET": "tailscale, 10.0.0.5"})
-	for _, want := range []string{"ip daddr { 192.168.1.0/24, 100.64.0.0/10, 10.0.0.5 } accept", "ip6 daddr { fd7a:115c:a1e0::/48 } accept"} {
+	h.cfg.AllowNet = []string{"192.168.1.*", "192.168.100.1:8080"}
+	got = rules(map[string]string{"SANDBOX_ALLOW_NET": "tailscale, 10.0.0.5 [fd00::5]:53/udp"})
+	for _, want := range []string{
+		"ip daddr { 192.168.1.0/24, 100.64.0.0/10, 10.0.0.5 } accept",
+		"ip daddr { 192.168.100.1 } tcp dport 8080 accept",
+		"ip6 daddr { fd7a:115c:a1e0::/48 } accept",
+		"ip6 daddr { fd00::5 } udp dport 53 accept",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("no %q in %s", want, got)
 		}
 	}
 	h.run("", map[string]string{"SANDBOX_ALLOW_NET": "192.168.1"}).refused(t, "SANDBOX_ALLOW_NET")
+	h.run("", map[string]string{"SANDBOX_ALLOW_NET": "192.168.1.1:0"}).refused(t, "SANDBOX_ALLOW_NET")
 
 	// A forwarded resolver is reached at dnsForwardAddr, a second
 	// nameserver directly.

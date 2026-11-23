@@ -35,10 +35,11 @@ What you get, per project:
 - **Network** out to the public internet only. The host's own services
   take a port you open: `hostPorts`, or `SANDBOX_HOST_PORTS="5037 8080/udp"`
   for one run. Other machines on the LAN or a tailnet take an entry in
-  `allowNet`, or `SANDBOX_ALLOW_NET="192.168.1.50 10.0.3.* nas.lan tailscale"`
+  `allowNet`, or `SANDBOX_ALLOW_NET="192.168.100.1:8080 10.0.3.* nas.lan tailscale"`
   for one run: an address, a CIDR, `*` for an IPv4 address's last octets, a
-  host name, or `lan`, `tailscale` or `all`. Ports bound inside are
-  reachable from the host's `127.0.0.1` (dev servers, OAuth callbacks).
+  host name, or `lan`, `tailscale` or `all`, each on every port or with
+  `:PORT[-PORT][/udp]` on those only. Ports bound inside are reachable from
+  the host's `127.0.0.1` (dev servers, OAuth callbacks).
 - **Guarded host access**: credentials stay outside, and what could act on
   your behalf waits for a popup on the terminal the sandbox runs in.
 
@@ -564,7 +565,7 @@ sandbox's own terminal.
   "no route to host" - a git remote over ssh there, a NAS, a device's adb
   port): only the public internet is, by default. Name it in `allowNet` or
   `SANDBOX_ALLOW_NET`: its address, `192.168.1.*`, its host name, or
-  `tailscale`.
+  `tailscale`, with `:PORT` for one port of it (`192.168.1.50:5555`).
 - **The sandbox doesn't start: nft couldn't load the network policy**: the
   host's kernel has no `nf_tables` (`modprobe nf_tables` on the host).
 - **gh has no access**: no token command is set. See

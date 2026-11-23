@@ -73,6 +73,17 @@ func TestParseAllowNet(t *testing.T) {
 		"tailscale":       "100.64.0.0/10 fd7a:115c:a1e0::/48",
 		"ALL":             "0.0.0.0/0 ::/0",
 		"NAS.lan":         "192.168.1.9/32 10.0.0.9/32 fe80::9/128",
+		// With ports: those only, tcp unless it says udp.
+		"192.168.100.1:8080":      "192.168.100.1/32:8080/tcp",
+		"192.168.100.1:8000-8100": "192.168.100.1/32:8000-8100/tcp",
+		"192.168.100.1:53/udp":    "192.168.100.1/32:53/udp",
+		"192.168.1.*:22/tcp":      "192.168.1.0/24:22/tcp",
+		"10.0.0.0/8:7-7":          "10.0.0.0/8:7/tcp",
+		"nas.lan:445":             "192.168.1.9/32:445/tcp 10.0.0.9/32:445/tcp fe80::9/128:445/tcp",
+		"tailscale:22":            "100.64.0.0/10:22/tcp fd7a:115c:a1e0::/48:22/tcp",
+		"[fd00::5]:8080":          "fd00::5/128:8080/tcp",
+		"[fd00::/8]:53/udp":       "fd00::/8:53/udp",
+		"[fd00::5]":               "fd00::5/128",
 	} {
 		allow, warnings, err := parseAllowNet([]string{spec}, lookup)
 		var got []string
@@ -88,7 +99,9 @@ func TestParseAllowNet(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"", "*", "*.1", "10.*.1.*", "10.1*", "1.2.3.4.*", "256.*", "01.*", "fd00::*", "192.168.1", "192.168.1.0/33",
-		"10.0.0.0/8/8", "fe80::1%eth0", "192.168.1.50:5555", "a b", "nas.lan.", "-x.lan", "http://nas.lan",
+		"10.0.0.0/8/8", "fe80::1%eth0", "a b", "nas.lan.", "-x.lan", "http://nas.lan",
+		"192.168.1.50:", "192.168.1.50:0", "192.168.1.50:http", "192.168.1.50:70000", "192.168.1.50:9-8", "192.168.1.50:22/sctp",
+		":22", "192.168.1:22", "[fd00::5", "[fd00::5]8080", "[fd00::5]:", "[nas.lan]:22", "[10.0.0.1]:22", "fd00::5:x",
 	} {
 		if _, _, err := parseAllowNet([]string{bad}, lookup); err == nil || !strings.Contains(err.Error(), "SANDBOX_ALLOW_NET") {
 			t.Errorf("%q: %v", bad, err)
@@ -142,7 +155,7 @@ func TestNftRules(t *testing.T) {
 	// nameservers reached for DNS only, and what's allowed is one element
 	// per range: inside another or twice isn't a set nft takes.
 	got = lines(nftRules(
-		prefixes("192.168.1.0/24", "192.168.1.50/32", "192.168.0.0/16", "10.0.0.1/32", "10.0.0.1/32", "fd00::/8", "fd7a:115c:a1e0::/48"),
+		everyPort(prefixes("192.168.1.0/24", "192.168.1.50/32", "192.168.0.0/16", "10.0.0.1/32", "10.0.0.1/32", "fd00::/8", "fd7a:115c:a1e0::/48")),
 		addrs("169.254.169.254", "192.168.1.2", "100.64.0.1", "fe80::2", "2001:db8::2", "192.168.1.2"),
 		addrs("192.168.1.1", "fe80::1", "9.9.9.9"),
 		true))
@@ -167,7 +180,7 @@ func TestNftRules(t *testing.T) {
 	}
 
 	// all: every address isn't a set element, and the host stays refused.
-	got = lines(nftRules(allowNetKeywords["all"], addrs("192.168.1.2"), nil, false))
+	got = lines(nftRules(everyPort(allowNetKeywords["all"]), addrs("192.168.1.2"), nil, false))
 	want = []string{
 		"table inet sandbox {", "chain out {",
 		"type filter hook output priority 0; policy accept;",
@@ -182,6 +195,39 @@ func TestNftRules(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("%q", got)
+	}
+}
+
+// Entries with ports allow those only: a rule for each set of ports, after
+// the host's addresses are refused like any.
+func TestNftRulesWithPorts(t *testing.T) {
+	allow, _, err := parseAllowNet([]string{
+		"192.168.100.1:8080", "10.0.0.5", "192.168.1.*:8080", "192.168.100.1:53/udp", "[fd00::5]:8000-8100",
+		"192.168.1.7:8080", "all:22", "10.9.9.9:22",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := nftRules(allow, []netip.Addr{netip.MustParseAddr("192.168.100.2")}, nil, false)
+	var got []string
+	for line := range strings.Lines(rules) {
+		if line = strings.TrimSpace(line); strings.HasSuffix(line, "accept") && !strings.Contains(line, "icmpv6") && !strings.Contains(line, "oifname") {
+			got = append(got, line)
+		}
+	}
+	want := []string{
+		"ip daddr { 192.168.100.1, 192.168.1.0/24 } tcp dport 8080 accept",
+		"ip daddr { 10.0.0.5 } accept",
+		"ip daddr { 192.168.100.1 } udp dport 53 accept",
+		"meta nfproto ipv4 tcp dport 22 accept",
+		"ip6 daddr { fd00::5 } tcp dport 8000-8100 accept",
+		"meta nfproto ipv6 tcp dport 22 accept",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%q", got)
+	}
+	if strings.Index(rules, "192.168.100.2 } reject") > strings.Index(rules, "dport 8080") {
+		t.Errorf("the host isn't refused first: %s", rules)
 	}
 }
 

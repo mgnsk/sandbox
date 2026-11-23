@@ -15,18 +15,9 @@ import (
 // entries like 5037, 8080/udp or 9000-9010.
 func parseHostPorts(specs []string) (tcp, udp []string, err error) {
 	for _, spec := range specs {
-		ports, proto, _ := strings.Cut(spec, "/")
-		from, to, isRange := strings.Cut(ports, "-")
-		first, err1 := strconv.ParseUint(from, 10, 16)
-		last, err2 := first, error(nil)
-		if isRange {
-			last, err2 = strconv.ParseUint(to, 10, 16)
-		}
-		if err1 != nil || err2 != nil || first == 0 || last < first || proto != "" && proto != "tcp" && proto != "udp" {
+		ports, proto, ok := portRange(spec)
+		if !ok {
 			return nil, nil, fmt.Errorf("bad SANDBOX_HOST_PORTS entry %q (want PORT[-PORT][/tcp|/udp], ports 1-65535)", spec)
-		}
-		if first == last {
-			ports = strconv.FormatUint(first, 10)
 		}
 		if proto == "udp" {
 			udp = append(udp, ports)
@@ -35,6 +26,28 @@ func parseHostPorts(specs []string) (tcp, udp []string, err error) {
 		}
 	}
 	return tcp, udp, nil
+}
+
+// portRange is the ports and protocol of PORT[-PORT][/tcp|/udp]: 5037 or
+// 9000-9010, tcp unless it says udp.
+func portRange(spec string) (ports, proto string, ok bool) {
+	ports, proto, _ = strings.Cut(spec, "/")
+	from, to, isRange := strings.Cut(ports, "-")
+	first, err1 := strconv.ParseUint(from, 10, 16)
+	last, err2 := first, error(nil)
+	if isRange {
+		last, err2 = strconv.ParseUint(to, 10, 16)
+	}
+	if err1 != nil || err2 != nil || first == 0 || last < first || proto != "" && proto != "tcp" && proto != "udp" {
+		return "", "", false
+	}
+	if first == last {
+		ports = strconv.FormatUint(first, 10)
+	}
+	if proto == "" {
+		proto = "tcp"
+	}
+	return ports, proto, true
 }
 
 // hostPortSpecs is the configured ports plus SANDBOX_HOST_PORTS from the

@@ -61,60 +61,121 @@ func lookupHost(host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 }
 
+// allowed is a destination the sandbox reaches past nonPublic: on every
+// port and protocol, or with ports (8080, 8000-8100) on proto (tcp, udp)
+// only.
+type allowed struct {
+	prefix       netip.Prefix
+	proto, ports string
+}
+
+func (a allowed) String() string {
+	if a.ports == "" {
+		return a.prefix.String()
+	}
+	return fmt.Sprintf("%s:%s/%s", a.prefix, a.ports, a.proto)
+}
+
+// everyPort allows list whole.
+func everyPort(list []netip.Prefix) []allowed {
+	out := make([]allowed, len(list))
+	for i, p := range list {
+		out[i] = allowed{prefix: p}
+	}
+	return out
+}
+
 // parseAllowNet gives what's allowed past nonPublic, from entries like
-// 192.168.1.50, 10.0.0.0/8, 192.168.1.*, nas.lan, lan, tailscale or all.
-// A host name that doesn't resolve is a warning and left out: the sandbox
-// still starts offline.
-func parseAllowNet(specs []string, lookup func(string) ([]netip.Addr, error)) (allow []netip.Prefix, warnings []string, err error) {
+// 192.168.1.50, 10.0.0.0/8, 192.168.1.*, nas.lan, lan, tailscale or all,
+// each on every port or with :PORT[-PORT][/tcp|/udp] on those only
+// (192.168.1.50:8080, [fd00::5]:53/udp). A host name that doesn't resolve
+// is a warning and left out: the sandbox still starts offline.
+func parseAllowNet(specs []string, lookup func(string) ([]netip.Addr, error)) (allow []allowed, warnings []string, err error) {
 	for _, spec := range specs {
-		bad := fmt.Errorf("bad SANDBOX_ALLOW_NET entry %q (want an address, a CIDR, 192.168.1.*, a host name, lan, tailscale or all)", spec)
-		name := strings.ToLower(spec)
-		if list, ok := allowNetKeywords[name]; ok {
-			allow = append(allow, list...)
-			continue
+		target, proto, ports, ok := splitPorts(strings.ToLower(spec))
+		var list []netip.Prefix
+		warning := ""
+		if ok {
+			list, warning, ok = allowTarget(target, lookup)
 		}
-		if strings.Contains(name, "*") {
-			p, ok := wildcard(name)
-			if !ok {
-				return nil, nil, bad
-			}
-			allow = append(allow, p)
-			continue
+		if !ok {
+			return nil, nil, fmt.Errorf("bad SANDBOX_ALLOW_NET entry %q (want an address, a CIDR, 192.168.1.*, a host name, lan, tailscale or all, "+
+				"with :PORT[-PORT][/tcp|/udp] for those ports only, an IPv6 address then in brackets)", spec)
 		}
-		if strings.Contains(name, "/") {
-			p, err := netip.ParsePrefix(name)
-			if err != nil {
-				return nil, nil, bad
-			}
-			allow = append(allow, netip.PrefixFrom(p.Addr().Unmap(), p.Bits()).Masked())
-			continue
+		if warning != "" {
+			warnings = append(warnings, warning)
 		}
-		if addr, err := netip.ParseAddr(name); err == nil {
-			if addr.Zone() != "" {
-				return nil, nil, bad
-			}
-			allow = append(allow, single(addr))
-			continue
-		}
-		// An address cut short (192.168.1) is a mistake, not a name.
-		last := name[strings.LastIndex(name, ".")+1:]
-		if _, err := strconv.ParseUint(last, 10, 64); err == nil || !hostname.Valid(name) {
-			return nil, nil, bad
-		}
-		addrs, err := lookup(name)
-		if err != nil || len(addrs) == 0 {
-			reason := "no addresses"
-			if err != nil {
-				reason = err.Error()
-			}
-			warnings = append(warnings, fmt.Sprintf("SANDBOX_ALLOW_NET: %s not resolved, so not allowed (%s)", name, reason))
-			continue
-		}
-		for _, addr := range addrs {
-			allow = append(allow, single(addr.WithZone("")))
+		for _, p := range list {
+			allow = append(allow, allowed{prefix: p, proto: proto, ports: ports})
 		}
 	}
 	return allow, warnings, nil
+}
+
+// splitPorts takes the ports off an entry: 10.0.0.1:8080, nas.lan:53/udp,
+// [fd00::5]:8000-8100. An IPv6 address has colons of its own, so it takes
+// ports only in brackets; proto and ports are "" for an entry without.
+func splitPorts(spec string) (target, proto, ports string, ok bool) {
+	port := ""
+	switch {
+	case strings.HasPrefix(spec, "["):
+		inside, rest, closed := strings.Cut(spec[1:], "]")
+		if !closed || !strings.Contains(inside, ":") {
+			return "", "", "", false
+		}
+		if rest == "" {
+			return inside, "", "", true
+		}
+		if !strings.HasPrefix(rest, ":") {
+			return "", "", "", false
+		}
+		target, port = inside, rest[1:]
+	case strings.Count(spec, ":") == 1:
+		target, port, _ = strings.Cut(spec, ":")
+	default:
+		return spec, "", "", true
+	}
+	ports, proto, ok = portRange(port)
+	return target, proto, ports, ok
+}
+
+// allowTarget is what an entry without its ports names; a warning and
+// nothing for a host name that doesn't resolve.
+func allowTarget(name string, lookup func(string) ([]netip.Addr, error)) (list []netip.Prefix, warning string, ok bool) {
+	if list, ok := allowNetKeywords[name]; ok {
+		return list, "", true
+	}
+	if strings.Contains(name, "*") {
+		p, ok := wildcard(name)
+		return []netip.Prefix{p}, "", ok
+	}
+	if strings.Contains(name, "/") {
+		p, err := netip.ParsePrefix(name)
+		if err != nil {
+			return nil, "", false
+		}
+		return []netip.Prefix{netip.PrefixFrom(p.Addr().Unmap(), p.Bits()).Masked()}, "", true
+	}
+	if addr, err := netip.ParseAddr(name); err == nil {
+		return []netip.Prefix{single(addr)}, "", addr.Zone() == ""
+	}
+	// An address cut short (192.168.1) is a mistake, not a name.
+	last := name[strings.LastIndex(name, ".")+1:]
+	if _, err := strconv.ParseUint(last, 10, 64); err == nil || !hostname.Valid(name) {
+		return nil, "", false
+	}
+	addrs, err := lookup(name)
+	if err != nil || len(addrs) == 0 {
+		reason := "no addresses"
+		if err != nil {
+			reason = err.Error()
+		}
+		return nil, fmt.Sprintf("SANDBOX_ALLOW_NET: %s not resolved, so not allowed (%s)", name, reason), true
+	}
+	for _, addr := range addrs {
+		list = append(list, single(addr.WithZone("")))
+	}
+	return list, "", true
 }
 
 func single(addr netip.Addr) netip.Prefix {
@@ -168,9 +229,10 @@ func distinct(list []netip.Prefix) []netip.Prefix {
 // mirrors there; the forwarded resolver; IPv6's neighbour discovery, whose
 // link-local and multicast destinations are refused further down; host,
 // the host's own addresses and the metadata service's, refused whatever is
-// allowed; nameservers, the sandbox's own, for DNS only; allow; and
-// nonPublic, refused. The rest - the public internet - passes.
-func nftRules(allow []netip.Prefix, host, nameservers []netip.Addr, dnsForward bool) string {
+// allowed; nameservers, the sandbox's own, for DNS only; allow, a rule for
+// each set of ports; and nonPublic, refused. The rest - the public
+// internet - passes.
+func nftRules(allow []allowed, host, nameservers []netip.Addr, dnsForward bool) string {
 	const dns = "meta l4proto { tcp, udp } th dport { 53, 853 }"
 	const reject = "reject with icmpx type admin-prohibited"
 	rules := []string{
@@ -190,10 +252,23 @@ func nftRules(allow []netip.Prefix, host, nameservers []netip.Addr, dnsForward b
 		}
 		return out
 	}
+	// What's allowed by its ports, "" for every one, in the entries' order.
+	var dports []string
+	byPorts := map[string][]netip.Prefix{}
+	for _, a := range allow {
+		dport := ""
+		if a.ports != "" {
+			dport = fmt.Sprintf(" %s dport %s", a.proto, a.ports)
+		}
+		if _, seen := byPorts[dport]; !seen {
+			dports = append(dports, dport)
+		}
+		byPorts[dport] = append(byPorts[dport], a.prefix)
+	}
 	for _, family := range []struct {
-		name string
-		is4  bool
-	}{{"ip", true}, {"ip6", false}} {
+		name, nfproto string
+		is4           bool
+	}{{"ip", "ipv4", true}, {"ip6", "ipv6", false}} {
 		// "" for nothing of this family, so no rule.
 		daddr := func(list []netip.Prefix) string {
 			var elems []string
@@ -217,11 +292,14 @@ func nftRules(allow []netip.Prefix, host, nameservers []netip.Addr, dnsForward b
 		if match := daddr(singles(nameservers)); match != "" {
 			rules = append(rules, match+" "+dns+" accept")
 		}
-		// Every address isn't a set element nft takes.
-		if slices.ContainsFunc(allow, func(p netip.Prefix) bool { return p.Addr().Is4() == family.is4 && p.Bits() == 0 }) {
-			rules = append(rules, fmt.Sprintf("meta nfproto %s accept", map[bool]string{true: "ipv4", false: "ipv6"}[family.is4]))
-		} else if match := daddr(allow); match != "" {
-			rules = append(rules, match+" accept")
+		for _, dport := range dports {
+			list := byPorts[dport]
+			// Every address isn't a set element nft takes.
+			if slices.ContainsFunc(list, func(p netip.Prefix) bool { return p.Addr().Is4() == family.is4 && p.Bits() == 0 }) {
+				rules = append(rules, fmt.Sprintf("meta nfproto %s%s accept", family.nfproto, dport))
+			} else if match := daddr(list); match != "" {
+				rules = append(rules, match+dport+" accept")
+			}
 		}
 		rules = append(rules, daddr(nonPublic)+" "+reject)
 	}

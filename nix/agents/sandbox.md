@@ -36,10 +36,11 @@ Not reachable - don't probe, plan around it:
 - other machines on the LAN or a tailnet, and every private, link-local or
   multicast address: only the public internet is reachable, plus what the
   user listed in `SANDBOX_ALLOW_NET` when starting the sandbox (addresses,
-  CIDRs, `192.168.1.*`, host names, `lan`, `tailscale`, `all`). A refused
-  connection fails at once with "permission denied" or "no route to host".
-  If a task needs one, ask the user to restart the sandbox with e.g.
-  `SANDBOX_ALLOW_NET=192.168.1.50` or `SANDBOX_ALLOW_NET=tailscale`
+  CIDRs, `192.168.1.*`, host names, `lan`, `tailscale`, `all`, each
+  optionally with `:PORT[-PORT][/udp]`). A refused connection fails at once
+  with "permission denied" or "no route to host". If a task needs one, ask
+  the user to restart the sandbox with e.g.
+  `SANDBOX_ALLOW_NET=192.168.1.50:8080` or `SANDBOX_ALLOW_NET=tailscale`
 
 Works: nix builds (through the host's nix-daemon, landing in the host
 store), network, git push over ssh (gated by a popup on the host, which

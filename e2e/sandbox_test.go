@@ -680,6 +680,13 @@ func TestOnlyThePublicInternetIsReachableUnlessAllowed(t *testing.T) {
 		"lan":             {public, lan, lan2, wifi, linkLocal, mdns},
 		"tailscale":       {public, tailnet},
 		"all":             all,
+		// With ports, those only: send's is 9, udp.
+		"10.255.255.1:9/udp":    {public, lan},
+		"10.255.255.1:9":        {public},
+		"10.255.*:1-8/udp":      {public},
+		"10.255.*:8-10/udp":     {public, lan, lan2},
+		"tailscale:9/udp":       {public, tailnet},
+		"all:9/udp 10.255.*:22": all,
 	} {
 		got := p.send(t, map[string]string{"SANDBOX_ALLOW_NET": allowed}, all...)
 		for _, addr := range all {
@@ -737,7 +744,7 @@ for target in sys.argv[1:]:
 
 func TestBadAllowNetStopsTheSandbox(t *testing.T) {
 	p := newProject(t)
-	for _, bad := range []string{"192.168.1", "10.*.1.*", "10.0.0.0/33", "192.168.1.50:5555"} {
+	for _, bad := range []string{"192.168.1", "10.*.1.*", "10.0.0.0/33", "192.168.1.50:0", "[fd00::5]8080"} {
 		r := p.run(t, "echo started\n", map[string]string{"SANDBOX_ALLOW_NET": bad})
 		if r.code == 0 || strings.Contains(r.stdout, "started") || !strings.Contains(r.stderr, "SANDBOX_ALLOW_NET") {
 			t.Errorf("%s: %d %q %q", bad, r.code, r.stdout, r.stderr)
