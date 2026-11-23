@@ -30,6 +30,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -697,11 +698,85 @@ func TestOnlyThePublicInternetIsReachableUnlessAllowed(t *testing.T) {
 	}
 }
 
+// With only prohibit routes for the host's addresses, a datagram from a
+// socket bound to the interface arrived at a host service on them: a route
+// refuses an ordinary socket, and for a bound one the kernel takes the
+// destination for on-link. Nothing came back, so a connection doesn't show
+// it and a listener on the host does.
+func TestDatagramsDoNotReachTheHostWhateverTheSocket(t *testing.T) {
+	p := newProject(t)
+	ln, err := net.ListenPacket("udp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.LocalAddr().(*net.UDPAddr).Port
+	var mu sync.Mutex
+	var arrived []string
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, _, err := ln.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			arrived = append(arrived, string(buf[:n]))
+			mu.Unlock()
+		}
+	}()
+	addrs, _ := net.InterfaceAddrs()
+	var targets []string
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() != nil && !ipnet.IP.IsLoopback() {
+			targets = append(targets, ipnet.IP.String())
+		}
+	}
+	if len(targets) == 0 {
+		t.Skip("no IPv4 address on this host")
+	}
+	code := `import socket, sys
+port = int(sys.argv[1])
+dev = [name for _, name in socket.if_nameindex() if name != 'lo'][0].encode()
+def bound(s): s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev)
+def dontroute(s): s.setsockopt(socket.SOL_SOCKET, socket.SO_DONTROUTE, 1)
+for addr in sys.argv[2:]:
+    for how in (None, bound, dontroute):
+        name = how.__name__ if how else 'plain'
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                if how:
+                    how(s)
+                s.sendto(f'{name} to {addr}'.encode(), (addr, port))
+            got = 'sent'
+        except OSError as e:
+            got = type(e).__name__
+        print(addr, name, got)
+`
+	script := fmt.Sprintf("python3 -c \"$(cat <<'EOF'\n%sEOF\n)\" %d %s\n", code, port, strings.Join(targets, " "))
+	for _, allowed := range []string{"", "all"} {
+		r := p.run(t, script, map[string]string{"SANDBOX_HOST_PORTS": "", "SANDBOX_ALLOW_NET": allowed}).ok(t)
+		if strings.Count(r.stdout, "\n") != 3*len(targets) {
+			t.Errorf("SANDBOX_ALLOW_NET=%q: %s", allowed, r.stdout)
+		}
+		// "sent" says little: so it was when the datagram arrived, and so
+		// it is to the address the sandbox shares with the host, where it
+		// stays inside. What the host got decides.
+		time.Sleep(500 * time.Millisecond)
+		mu.Lock()
+		if len(arrived) != 0 {
+			t.Errorf("SANDBOX_ALLOW_NET=%q: reached the host: %q\n%s", allowed, arrived, r.stdout)
+		}
+		arrived = nil
+		mu.Unlock()
+	}
+}
+
 // What SANDBOX_ALLOW_NET allows is other machines, never the host: its
-// services stay behind SANDBOX_HOST_PORTS. And a route alone wouldn't hold
-// that: a socket bound to the interface isn't refused by a prohibit route
-// (its connect times out or gets through, where an ordinary one's fails at
-// once), so that and SO_DONTROUTE are tried as well.
+// services stay behind SANDBOX_HOST_PORTS, for a socket bound to the
+// interface or set not to route too. (A connection never showed what got
+// past a route - see the datagrams above - so this holds the reply back,
+// not the proof.)
 func TestHostAddressesAreNotReachableWhateverIsAllowed(t *testing.T) {
 	p := newProject(t)
 	addrs, _ := net.InterfaceAddrs()
