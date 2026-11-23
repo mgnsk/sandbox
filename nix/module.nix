@@ -148,6 +148,7 @@ let
       pasta = lib.getExe' pkgs.passt "pasta";
       bwrap = lib.getExe pkgs.bubblewrap;
       ip = lib.getExe' pkgs.iproute2 "ip";
+      nft = lib.getExe' pkgs.nftables "nft";
       bash = lib.getExe pkgs.bash;
       shell = lib.getExe pkgs.bashInteractive;
       wlVeil = lib.getExe sandboxPkgs.wl-veil;
@@ -188,6 +189,7 @@ let
     ];
     stateDir = cfg.stateDir;
     hostPorts = cfg.hostPorts;
+    allowNet = cfg.allowNet;
     passEnv = [
       "TERM"
       "COLORTERM"
@@ -298,6 +300,7 @@ in
     };
 
     hostPorts = layer'.hostPortsOption "For every project.";
+    allowNet = layer'.allowNetOption "For every project.";
 
     passEnv = mkOption {
       type = types.listOf types.str;

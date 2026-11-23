@@ -2,6 +2,7 @@
 { ... }:
 {
   hostPorts = [ "5432" ];
+  allowNet = [ "tailscale" ];
   guards.wayland.globals.zwp_tablet_manager_v2 = false;
   profiles.work = {
     paths = [ "~/work" ];

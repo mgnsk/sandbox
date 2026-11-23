@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -179,6 +180,14 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	if err != nil {
 		return nil, nil, err
 	}
+	// Likewise allowNet and $SANDBOX_ALLOW_NET.
+	allow, warnings, err := parseAllowNet(allowNetSpecs(l.cfg.AllowNet), lookupHost)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, warning := range warnings {
+		fmt.Fprintf(os.Stderr, "sandbox: %s\n", popup.CleanText(warning))
+	}
 	if unix.Access(l.cfg.Seccomp, unix.R_OK) != nil {
 		return nil, nil, fmt.Errorf("missing seccomp filter %s", l.cfg.Seccomp)
 	}
@@ -187,7 +196,7 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	if err := l.gitEnv(ctx, git, inside); err != nil {
 		return nil, nil, err
 	}
-	a, resolver, err := l.sandboxArgs(ctx, g, prof, inside)
+	a, dns, err := l.sandboxArgs(ctx, g, prof, inside)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -199,13 +208,25 @@ func (l *launcher) prepare(ctx context.Context, g *guards) ([]string, *net.UnixL
 	if err != nil {
 		return nil, nil, err
 	}
-	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, args, l.initCommand(), resolver), g.popups, nil
+	rules, err := g.nftFile(nftRules(allow, addrs, dns.servers, dns.resolver != ""))
+	if err != nil {
+		return nil, nil, err
+	}
+	return pastaArgv(l.cfg, slices.Concat(tcp, g.tcpPorts), udp, addrs, rules, args, l.initCommand(), dns.resolver), g.popups, nil
+}
+
+// dnsInside is how the sandbox resolves names: resolver is the host
+// resolver DNS is forwarded to, if any (see dnsForward), and servers are
+// the nameservers it dials itself.
+type dnsInside struct {
+	resolver string
+	servers  []netip.Addr
 }
 
 // sandboxArgs are bwrap's arguments - the mounts, and inside as the
-// environment - and the resolver DNS is forwarded to, if any (see
-// resolvConf). The guards start here, each adding what brings it in.
-func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, inside map[string]string) (bwrapArgs, string, error) {
+// environment - and how the sandbox resolves names (see resolvConf). The
+// guards start here, each adding what brings it in.
+func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, inside map[string]string) (bwrapArgs, dnsInside, error) {
 	a := baseArgs(l.cfg, inside)
 	a.add("--hostname", hostName(l.project))
 	// Must precede every mount under $HOME - bwrap layers mounts in argv
@@ -216,20 +237,20 @@ func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, ins
 	// Before the guards start, so they get its path.
 	if popuprelay.Usable() {
 		if err := g.listenPopups(); err != nil {
-			return a, "", err
+			return a, dnsInside{}, err
 		}
 	}
 	if err := l.startGuards(ctx, g, &a, prof); err != nil {
-		return a, "", err
+		return a, dnsInside{}, err
 	}
 
-	resolver, err := l.resolvConf(g, &a)
+	dns, err := l.resolvConf(g, &a)
 	if err != nil {
-		return a, "", err
+		return a, dnsInside{}, err
 	}
 	exchange, err := exchangeArgs(l.volumeDir)
 	if err != nil {
-		return a, "", err
+		return a, dnsInside{}, err
 	}
 	a.add(exchange...)
 	a.add(bindArgs(prof.Binds, l.vars, l.project)...)
@@ -240,7 +261,7 @@ func (l *launcher) sandboxArgs(ctx context.Context, g *guards, prof profile, ins
 	// the project stay writable.
 	a.add("--remount-ro", "/")
 	a.add("--chdir", l.cwd)
-	return a, resolver, nil
+	return a, dns, nil
 }
 
 // locate finds the user, home and project, and checks the launcher may run
@@ -417,9 +438,9 @@ func (l *launcher) resolveWayland() error {
 }
 
 // resolvConf mounts a resolv.conf for inside over the host's when the
-// host's resolver is out of reach there (see dnsForward); the resolver to
-// forward to, or "".
-func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (string, error) {
+// host's resolver is out of reach there (see dnsForward), and says how the
+// sandbox resolves names.
+func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (dnsInside, error) {
 	path := l.cfg.ResolvConf
 	if path == "" {
 		path = "/etc/resolv.conf"
@@ -427,19 +448,19 @@ func (l *launcher) resolvConf(g *guards, a *bwrapArgs) (string, error) {
 	data, _ := os.ReadFile(path)
 	resolver, text := dnsForward(string(data))
 	if resolver == "" {
-		return "", nil
+		return dnsInside{servers: nameservers(string(data))}, nil
 	}
 	dir, err := g.tempdir()
 	if err != nil {
-		return "", err
+		return dnsInside{}, err
 	}
 	inside := filepath.Join(dir, "resolv.conf")
 	if err := os.WriteFile(inside, []byte(text), 0o644); err != nil {
-		return "", err
+		return dnsInside{}, err
 	}
 	// Over the host's, which hostEtc binds.
 	a.roBind(inside, "/etc/resolv.conf")
-	return resolver, nil
+	return dnsInside{resolver: resolver, servers: nameservers(text)}, nil
 }
 
 // initCommand is what bwrap runs: sandbox-bin init, which links the nix

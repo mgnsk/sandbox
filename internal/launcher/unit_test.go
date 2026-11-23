@@ -1,7 +1,9 @@
 package launcher
 
 import (
+	"errors"
 	"maps"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,9 +50,152 @@ func TestDNSForward(t *testing.T) {
 	}
 }
 
+func TestParseAllowNet(t *testing.T) {
+	lookup := func(name string) ([]netip.Addr, error) {
+		switch name {
+		case "nas.lan":
+			return []netip.Addr{netip.MustParseAddr("192.168.1.9"), netip.MustParseAddr("::ffff:10.0.0.9"), netip.MustParseAddr("fe80::9%eth0")}, nil
+		case "empty.lan":
+			return nil, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	for spec, want := range map[string]string{
+		"192.168.1.50":    "192.168.1.50/32",
+		"fd00::5":         "fd00::5/128",
+		"::ffff:10.0.0.1": "10.0.0.1/32",
+		"192.168.1.7/24":  "192.168.1.0/24",
+		"FD00::1/8":       "fd00::/8",
+		"192.168.1.*":     "192.168.1.0/24",
+		"192.168.*":       "192.168.0.0/16",
+		"10.*":            "10.0.0.0/8",
+		"10.*.*.*":        "10.0.0.0/8",
+		"tailscale":       "100.64.0.0/10 fd7a:115c:a1e0::/48",
+		"ALL":             "0.0.0.0/0 ::/0",
+		"NAS.lan":         "192.168.1.9/32 10.0.0.9/32 fe80::9/128",
+	} {
+		allow, warnings, err := parseAllowNet([]string{spec}, lookup)
+		var got []string
+		for _, p := range allow {
+			got = append(got, p.String())
+		}
+		if err != nil || len(warnings) != 0 || strings.Join(got, " ") != want {
+			t.Errorf("%s: %q %q %v", spec, got, warnings, err)
+		}
+	}
+	if allow, _, err := parseAllowNet([]string{"lan"}, lookup); err != nil || len(allow) != len(allowNetKeywords["lan"]) {
+		t.Errorf("%v %v", allow, err)
+	}
+	for _, bad := range []string{
+		"", "*", "*.1", "10.*.1.*", "10.1*", "1.2.3.4.*", "256.*", "01.*", "fd00::*", "192.168.1", "192.168.1.0/33",
+		"10.0.0.0/8/8", "fe80::1%eth0", "192.168.1.50:5555", "a b", "nas.lan.", "-x.lan", "http://nas.lan",
+	} {
+		if _, _, err := parseAllowNet([]string{bad}, lookup); err == nil || !strings.Contains(err.Error(), "SANDBOX_ALLOW_NET") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+	// A name that doesn't resolve leaves the rest standing.
+	allow, warnings, err := parseAllowNet([]string{"gone.lan", "10.0.0.1", "empty.lan"}, lookup)
+	if err != nil || len(allow) != 1 || len(warnings) != 2 || !strings.Contains(warnings[0], "gone.lan") || !strings.Contains(warnings[1], "empty.lan") {
+		t.Errorf("%v %q %v", allow, warnings, err)
+	}
+	t.Setenv("SANDBOX_ALLOW_NET", "tailscale, 10.* nas.lan")
+	if got := allowNetSpecs([]string{"lan"}); !slices.Equal(got, []string{"lan", "tailscale", "10.*", "nas.lan"}) {
+		t.Errorf("allowNetSpecs = %q", got)
+	}
+}
+
+func TestNftRules(t *testing.T) {
+	addrs := func(list ...string) []netip.Addr {
+		var out []netip.Addr
+		for _, a := range list {
+			out = append(out, netip.MustParseAddr(a))
+		}
+		return out
+	}
+	lines := func(rules string) []string {
+		var out []string
+		for line := range strings.Lines(rules) {
+			out = append(out, strings.TrimSpace(line))
+		}
+		return out
+	}
+	const reject = " reject with icmpx type admin-prohibited"
+	const blocked4 = "ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }" + reject
+	const blocked6 = "ip6 daddr { fc00::/7, fe80::/10, ff00::/8, 64:ff9b:1::/48 }" + reject
+	const ndp = "icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, mld-listener-report, mld-listener-done, mld2-listener-report } accept"
+
+	// Nothing allowed, nothing known of the host: only the public internet.
+	got := lines(nftRules(nil, nil, nil, false))
+	want := []string{
+		"table inet sandbox {", "chain out {",
+		"type filter hook output priority 0; policy accept;",
+		`oifname "lo" accept`,
+		ndp, blocked4, blocked6,
+		"}", "}",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%q", got)
+	}
+
+	// The host's addresses are refused ahead of what's allowed, the
+	// nameservers reached for DNS only, and what's allowed is one element
+	// per range: inside another or twice isn't a set nft takes.
+	got = lines(nftRules(
+		prefixes("192.168.1.0/24", "192.168.1.50/32", "192.168.0.0/16", "10.0.0.1/32", "10.0.0.1/32", "fd00::/8", "fd7a:115c:a1e0::/48"),
+		addrs("169.254.169.254", "192.168.1.2", "100.64.0.1", "fe80::2", "2001:db8::2", "192.168.1.2"),
+		addrs("192.168.1.1", "fe80::1", "9.9.9.9"),
+		true))
+	want = []string{
+		"table inet sandbox {", "chain out {",
+		"type filter hook output priority 0; policy accept;",
+		`oifname "lo" accept`,
+		"ip daddr 169.254.1.53 meta l4proto { tcp, udp } th dport { 53, 853 } accept",
+		ndp,
+		"ip daddr { 169.254.169.254, 192.168.1.2, 100.64.0.1 }" + reject,
+		"ip daddr { 192.168.1.1, 9.9.9.9 } meta l4proto { tcp, udp } th dport { 53, 853 } accept",
+		"ip daddr { 192.168.0.0/16, 10.0.0.1 } accept",
+		blocked4,
+		"ip6 daddr { fe80::2, 2001:db8::2 }" + reject,
+		"ip6 daddr { fe80::1 } meta l4proto { tcp, udp } th dport { 53, 853 } accept",
+		"ip6 daddr { fd00::/8 } accept",
+		blocked6,
+		"}", "}",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%q", got)
+	}
+
+	// all: every address isn't a set element, and the host stays refused.
+	got = lines(nftRules(allowNetKeywords["all"], addrs("192.168.1.2"), nil, false))
+	want = []string{
+		"table inet sandbox {", "chain out {",
+		"type filter hook output priority 0; policy accept;",
+		`oifname "lo" accept`,
+		ndp,
+		"ip daddr { 192.168.1.2 }" + reject,
+		"meta nfproto ipv4 accept",
+		blocked4,
+		"meta nfproto ipv6 accept",
+		blocked6,
+		"}", "}",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestNameservers(t *testing.T) {
+	got := nameservers("# x\nnameserver 169.254.1.53\nnameserver 192.168.1.1\nnameserver 127.0.0.1\nnameserver fe80::1%eth0\nnameserver ::1\nnameserver nope\nsearch lan\n")
+	if !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("fe80::1")}) {
+		t.Errorf("%v", got)
+	}
+}
+
 // pasta closes inherited fds past stdio before running its command, so the
-// seccomp filter is opened by the command itself, which first adds the
-// prohibit routes. Run here with stand-ins for ip and bwrap.
+// seccomp filter is opened by the command itself, which first loads the
+// network policy and adds the prohibit routes. Run here with stand-ins for
+// ip, nft and bwrap.
 func TestPastaInner(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -60,25 +205,40 @@ func TestPastaInner(t *testing.T) {
 	log := filepath.Join(dir, "log")
 	ip := filepath.Join(dir, "ip")
 	os.WriteFile(ip, []byte("#!/bin/sh\necho \"ip $*\" >> "+log+"\n"), 0o755)
+	nft := filepath.Join(dir, "nft")
+	os.WriteFile(nft, []byte("#!/bin/sh\necho \"nft $*\" >> "+log+"\n[ \"$2\" != /bad ]\n"), 0o755)
 	seccomp := filepath.Join(dir, "seccomp.bpf")
 	os.WriteFile(seccomp, make([]byte, 8), 0o644)
 	args := filepath.Join(dir, "args")
 	os.WriteFile(args, []byte("--x\x00"), 0o600)
-	cmd := exec.Command(bash, "-c", pastaInner, "bash", ip, seccomp, args, "2", "10.0.0.1", "100.1.2.3",
-		"sh", "-c", `echo "run $*" >> `+log+`; test -e /proc/self/fd/10 && [ "$(tr '\0' . <&11)" = --x. ]`, "sh", "a")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	inner := func(rules string) *exec.Cmd {
+		return exec.Command(bash, "-c", pastaInner, "bash", ip, nft, rules, seccomp, args, "2", "10.0.0.1", "100.1.2.3",
+			"sh", "-c", `echo "run $*" >> `+log+`; test -e /proc/self/fd/10 && [ "$(tr '\0' . <&11)" = --x. ]`, "sh", "a")
+	}
+	if out, err := inner("/rules").CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
 	data, _ := os.ReadFile(log)
-	if want := "ip route replace prohibit 10.0.0.1\nip route replace prohibit 100.1.2.3\nrun a\n"; string(data) != want {
+	if want := "nft -f /rules\nip route replace prohibit 10.0.0.1\nip route replace prohibit 100.1.2.3\nrun a\n"; string(data) != want {
 		t.Errorf("%q", data)
+	}
+
+	// Without the policy nothing runs.
+	os.Remove(log)
+	out, err := inner("/bad").CombinedOutput()
+	data, _ = os.ReadFile(log)
+	if err == nil || !strings.Contains(string(out), "sandbox: nft couldn't load the network policy") || string(data) != "nft -f /bad\n" {
+		t.Errorf("%v %q %q", err, out, data)
 	}
 }
 
 func TestPastaArgv(t *testing.T) {
 	cfg := &config{Seccomp: "/s.bpf"}
-	cfg.Tools.Pasta, cfg.Tools.Bash, cfg.Tools.IP, cfg.Tools.Bwrap = "pasta", "bash", "ip", "bwrap"
-	argv := pastaArgv(cfg, nil, nil, []string{"10.0.0.1"}, "/args", []string{"init", "x"}, "")
+	cfg.Tools.Pasta, cfg.Tools.Bash, cfg.Tools.IP, cfg.Tools.Nft, cfg.Tools.Bwrap = "pasta", "bash", "ip", "nft", "bwrap"
+	// Routes for the host's global addresses and the metadata service's;
+	// its link-local ones are the ruleset's alone.
+	host := []netip.Addr{metadataAddr, netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("fe80::1"), netip.MustParseAddr("169.254.7.7")}
+	argv := pastaArgv(cfg, nil, nil, host, "/rules", "/args", []string{"init", "x"}, "")
 	opt := func(argv []string, flag string) string { return argv[slices.Index(argv, flag)+1] }
 	for flag, want := range map[string]string{
 		"-T": "none", "-U": "none", "--map-host-loopback": "none", "--map-guest-addr": "none", "-t": "127.0.0.1/1-65535,auto",
@@ -91,10 +251,10 @@ func TestPastaArgv(t *testing.T) {
 		t.Errorf("%q", argv)
 	}
 	inner := argv[slices.Index(argv, "--")+1:]
-	if !slices.Equal(inner[3:], []string{"bash", "ip", "/s.bpf", "/args", "1", "10.0.0.1", "bwrap", "--seccomp", "10", "--args", "11", "init", "x"}) {
+	if !slices.Equal(inner[3:], []string{"bash", "ip", "nft", "/rules", "/s.bpf", "/args", "2", "169.254.169.254", "10.0.0.1", "bwrap", "--seccomp", "10", "--args", "11", "init", "x"}) {
 		t.Errorf("%q", inner)
 	}
-	argv = pastaArgv(cfg, []string{"5037", "1"}, []string{"53"}, nil, "/args", nil, "127.0.0.53")
+	argv = pastaArgv(cfg, []string{"5037", "1"}, []string{"53"}, nil, "/rules", "/args", nil, "127.0.0.53")
 	if opt(argv, "-T") != "5037,1" || opt(argv, "-U") != "53" || opt(argv, "--dns-forward") != dnsForwardAddr || opt(argv, "--dns-host") != "127.0.0.53" {
 		t.Errorf("%q", argv)
 	}

@@ -32,10 +32,13 @@ What you get, per project:
 - **No host userland**: a shell, nix, git and [the basics](#where-tools-come-from),
   the distribution's tools, and the project's dev shell.
 - **Nix builds** through the host's daemon (`/nix` is read-only inside).
-- **Network** out, but not to the host's own services, except the ports you
-  open: `hostPorts`, or `SANDBOX_HOST_PORTS="5037 8080/udp"` for one run.
-  Ports bound inside are reachable from the host's `127.0.0.1` (dev servers,
-  OAuth callbacks).
+- **Network** out to the public internet only. The host's own services
+  take a port you open: `hostPorts`, or `SANDBOX_HOST_PORTS="5037 8080/udp"`
+  for one run. Other machines on the LAN or a tailnet take an entry in
+  `allowNet`, or `SANDBOX_ALLOW_NET="192.168.1.50 10.0.3.* nas.lan tailscale"`
+  for one run: an address, a CIDR, `*` for an IPv4 address's last octets, a
+  host name, or `lan`, `tailscale` or `all`. Ports bound inside are
+  reachable from the host's `127.0.0.1` (dev servers, OAuth callbacks).
 - **Guarded host access**: credentials stay outside, and what could act on
   your behalf waits for a popup on the terminal the sandbox runs in.
 
@@ -292,7 +295,7 @@ the code does. The ones a distribution reaches for first:
   program reads from `/etc`.
 - `agentsMd`: added to `/etc/sandbox/AGENTS.md`, for what agents should
   know about the organisation's setup.
-- `git.fromHost`, `guards.*`, `binds`, `hostPorts`, `passEnv`.
+- `git.fromHost`, `guards.*`, `binds`, `hostPorts`, `allowNet`, `passEnv`.
 
 ### Claude Code
 
@@ -557,6 +560,13 @@ sandbox's own terminal.
   `guards.secretService.enable = false`.
 - **"address in use" for a service inside**: its port is in `hostPorts` or
   `SANDBOX_HOST_PORTS` of the same sandbox, and so held for the forward.
+- **A machine on the LAN or tailnet isn't reachable** ("permission denied",
+  "no route to host" - a git remote over ssh there, a NAS, a device's adb
+  port): only the public internet is, by default. Name it in `allowNet` or
+  `SANDBOX_ALLOW_NET`: its address, `192.168.1.*`, its host name, or
+  `tailscale`.
+- **The sandbox doesn't start: nft couldn't load the network policy**: the
+  host's kernel has no `nf_tables` (`modprobe nf_tables` on the host).
 - **gh has no access**: no token command is set. See
   [GitHub and Forgejo](#github-and-forgejo).
 - **TLS errors from a pip-installed `certifi`**: the guards' CAs are in the

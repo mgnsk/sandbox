@@ -30,8 +30,10 @@ sandbox is not a boundary for:
   Forgejo tokens allow; requests on the Claude API key; commit and tag
   signatures with your signing key; the names in your `known_hosts`; with
   `git.fromHost`, your git name, email and signing key.
-- **Other machines.** The LAN, a tailnet, and whatever the host can reach
-  that isn't the host itself are as reachable as from the host.
+- **Other machines you allow.** The LAN, a tailnet and every other private
+  network are out of reach by default; what `allowNet` or
+  `SANDBOX_ALLOW_NET` names is as reachable as from the host, on every port.
+  The public internet always is.
 - **Ports on the host's loopback.** A port bound inside shows up on the
   host's `127.0.0.1`: sandboxed code can take a port a host service isn't
   holding at the moment, and be talked to in its place.
@@ -94,7 +96,7 @@ plant something the host or another project runs. The trade is that state isn't
 shared across projects (e.g. first builds repopulate their caches), which a
 boundary is worth.
 
-## Network: host services only by allowlist
+## Network: the public internet, the rest by allowlist
 
 The sandbox gets its own pasta network namespace with ordinary outbound
 internet. Ports bound inside are forwarded to the host's `127.0.0.1` (so a
@@ -109,14 +111,60 @@ at `127.0.0.1:<port>` inside:
   default of every listener the host has;
 - `--map-host-loopback none` and `--map-guest-addr none` remove the addresses
   pasta would otherwise translate to the host;
-- the host's global addresses (LAN, tailscale, docker bridges, ...) get
-  `prohibit` routes in the namespace before bwrap drops capabilities.
+- the host's own addresses (LAN, tailscale, docker bridges, ...) are refused
+  by the network policy below, whatever it allows.
 
 The address list is a snapshot: an address the host gains after the sandbox
 started stays reachable until the next start. A cloud host's metadata
 service (`169.254.169.254`), which hands out the instance's credentials, is
-prohibited the same way. Other machines on the LAN or tailnet are not
-restricted.
+refused the same way.
+
+### Other machines
+
+Everything that isn't the public internet is refused too: the private
+ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), CGNAT
+(`100.64.0.0/10`, where a tailnet's addresses are), link-local
+(`169.254.0.0/16`, `fe80::/10`), multicast (`224.0.0.0/4`, `ff00::/8`, so no
+mDNS or SSDP discovery either) and the reserved `0.0.0.0/8`, `192.0.0.0/24`,
+`198.18.0.0/15`, `240.0.0.0/4` and `64:ff9b:1::/48`. A router's admin page,
+a NAS, a printer, another machine of the tailnet: none is reachable unless
+listed in `SANDBOX_ALLOW_NET`, read from the host's environment when
+`sandbox` starts, or in `allowNet` (the configuration). An entry is:
+
+| Entry | Allows |
+| --- | --- |
+| `192.168.1.50`, `fd00::5` | one address |
+| `192.168.1.0/24`, `fd00::/8` | a CIDR |
+| `192.168.1.*`, `10.*` | IPv4 with `*` for its last octets: a `/24`, `/16` or `/8` |
+| `nas.lan` | the addresses the name has on the host when the sandbox starts |
+| `lan` | the private, link-local and multicast ranges |
+| `tailscale` | `100.64.0.0/10` and `fd7a:115c:a1e0::/48` |
+| `all` | every other machine, as before this policy |
+
+Entries are separated by spaces or commas. None of them opens the host
+itself: its addresses and the metadata service's are refused first, under
+`all` too. An entry allows an address on every port. A name that doesn't
+resolve at start is left out with a warning, and one whose address changes
+later isn't followed.
+
+tailscale is its address ranges and not its interface, because the sandbox
+has no such interface: inside there is only pasta's, and pasta's
+connections leave the host by the host's own routing.
+
+The policy is an nftables `output` chain in the sandbox's network
+namespace, loaded by the command pasta runs, before bwrap drops the
+capability to change it; without it (a kernel without `nf_tables`) the
+sandbox doesn't start. The host's global addresses and the metadata
+service's get `prohibit` routes as well. Routes alone wouldn't do: a
+`prohibit` route refuses an ordinary socket's connect, but not one bound to
+the interface (`SO_BINDTODEVICE`, which needs no privilege), whose
+destination the kernel then takes for on-link and sends to anyway. The
+chain sees every packet the namespace sends, however its socket was set up.
+
+What stays reachable regardless is what the host does on the sandbox's
+behalf: the guards' proxies reach only their own hosts, but a fixed-output
+derivation built through the nix daemon fetches from the host's network,
+the LAN included (see "Nix daemon").
 
 The GitHub and Forgejo guards' proxies are mapped the same way, on ports
 picked at start; they take only requests carrying their per-launch secret.
@@ -132,10 +180,16 @@ it is the first `nameserver` in the host's `/etc/resolv.conf`. pasta's
 853 only, and the sandbox's `resolv.conf` points there. Without it the
 sandbox has no DNS on such hosts. What it exposes is the resolver itself:
 its parser as attack surface, the names it knows that public DNS doesn't
-(LAN, VPN and mDNS names; the addresses themselves were reachable anyway),
-and its cache, which shows by timing what the host resolved recently. DNS as
-an exfiltration channel adds nothing to the ordinary outbound internet the
+(LAN, VPN and mDNS names, though not the machines behind them), and its
+cache, which shows by timing what the host resolved recently. DNS as an
+exfiltration channel adds nothing to the ordinary outbound internet the
 sandbox has.
+
+The same goes for the nameservers the sandbox dials itself - a router's
+`192.168.1.1`, tailscale's `100.100.100.100` - which the policy would
+otherwise refuse with the rest of their network: each `nameserver` of the
+`resolv.conf` inside is reachable on ports 53 and 853, tcp and udp, and
+nothing else of that machine is.
 
 ## GitHub: gh and git run inside, the token stays outside
 
@@ -558,8 +612,8 @@ for the rest of that sandbox. What can be written inside is
 `/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR`, the home volume, the project and
 read-write binds.
 
-What the launcher runs is from the store too: bwrap, pasta, dbus-daemon and
-ip are store paths in its generated config, and the guards are its own
+What the launcher runs is from the store too: bwrap, pasta, dbus-daemon, ip
+and nft are store paths in its generated config, and the guards are its own
 binary. From the host's `PATH` it runs only what is the user's own: their
 token commands, and their `git`, for `git config --global` (the identity
 `git.fromHost` asks for, and the signing key the ssh agent guard doesn't
@@ -578,10 +632,16 @@ paths, its own substituters and build settings). Keep the user untrusted;
 extra binary caches belong in the daemon's own configuration
 (`extra-substituters`, `extra-trusted-public-keys`).
 
+The daemon's builds are also outside the sandbox's network policy: a
+fixed-output derivation fetches with the host's network, so sandboxed code
+can have one fetch from the LAN or a tailnet, and learn from the result what
+answered.
+
 ## Project config: none but .sandbox.yml
 
 Nothing in a project changes what the sandbox is: the packages, `/etc`
-files, binds, ports and guards are the configuration's alone, the same in
+files, binds, ports, allowed networks and guards are the configuration's
+alone, the same in
 every project. The project only brings what runs inside - its dev shell,
 whatever `nix develop` there evaluates, inside the sandbox - and the
 per-user `.sandbox.yml` below.

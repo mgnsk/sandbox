@@ -86,35 +86,65 @@ func dnsForward(resolvConf string) (resolver, text string) {
 	return resolver, strings.Join(lines, "\n") + "\n"
 }
 
+// nameservers are resolvConf's that aren't on loopback or forwarded: the
+// ones the sandbox dials itself, which the network policy lets it reach for
+// DNS wherever they are - a router's or tailscale's would be refused with
+// the rest of their network otherwise.
+func nameservers(resolvConf string) []netip.Addr {
+	var out []netip.Addr
+	for line := range strings.Lines(resolvConf) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		addr, err := netip.ParseAddr(fields[1])
+		if err != nil || addr.IsLoopback() || fields[1] == dnsForwardAddr {
+			continue
+		}
+		out = append(out, addr.WithZone("").Unmap())
+	}
+	return out
+}
+
 // Where a cloud host's metadata service answers, with the instance's
 // credentials: reached from the host, as pasta's connections are.
-const metadataAddr = "169.254.169.254"
+var metadataAddr = netip.MustParseAddr("169.254.169.254")
 
-// hostAddresses are the addresses that get prohibit routes inside: the
-// host's global ones, and the metadata service's.
-func hostAddresses() ([]string, error) {
+// hostAddresses are the addresses the sandbox is refused whatever it is
+// allowed (see nftRules): the host's own, and the metadata service's. A
+// snapshot at start.
+func hostAddresses() ([]netip.Addr, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
 	}
-	out := []string{metadataAddr}
+	out := []netip.Addr{metadataAddr}
 	for _, a := range addrs {
-		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.IsGlobalUnicast() {
-			out = append(out, ipnet.IP.String())
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if addr, ok := netip.AddrFromSlice(ipnet.IP); ok && !addr.IsLoopback() {
+			out = append(out, addr.Unmap())
 		}
 	}
 	return out, nil
 }
 
-// Run by pasta, inside its netns, before bwrap: adds the prohibit routes
-// while it still has pasta's CAP_NET_ADMIN (bwrap drops it, so the sandbox
-// can't remove them), and opens the seccomp filter and bwrap's arguments -
-// here rather than in the launcher, since pasta closes inherited fds past
-// stdio before running it.
+// Run by pasta, inside its netns, before bwrap: loads the network policy
+// and adds the prohibit routes while it still has pasta's CAP_NET_ADMIN
+// (bwrap drops it, so the sandbox can't remove them), and opens the seccomp
+// filter and bwrap's arguments - here rather than in the launcher, since
+// pasta closes inherited fds past stdio before running it. No policy, no
+// sandbox.
 const pastaInner = `
 set -e
-ip=$1 seccomp=$2 args=$3 n=$4
-shift 4
+ip=$1 nft=$2 rules=$3 seccomp=$4 args=$5 n=$6
+shift 6
+if ! "$nft" -f "$rules"; then
+	echo "sandbox: nft couldn't load the network policy (it needs the kernel's nf_tables)" >&2
+	exit 1
+fi
 for addr in "${@:1:n}"; do
 	"$ip" route replace prohibit "$addr"
 done
@@ -136,14 +166,20 @@ exec "$@"
 // The other direction is closed except for the listed host ports: -T/-U
 // mirror only those, --map-host-loopback/--map-guest-addr none remove the
 // addresses pasta would translate to the host, and the host's own
-// addresses get prohibit routes (a snapshot at start).
+// addresses are refused by rules, the nft ruleset (see nftRules), which
+// also keeps the sandbox off every network but the public internet and
+// what allowNet names.
+//
+// The host's global addresses get prohibit routes besides, which a plain
+// connect fails on at once; a socket bound to the interface gets past a
+// route, hence the ruleset.
 //
 // The one exception is dnsResolver, a host resolver on loopback (see
 // dnsForward), reachable at dnsForwardAddr on ports 53 and 853.
 //
 // bwrap reads its options from argsFile (see guards.argsFile) and runs
 // command.
-func pastaArgv(cfg *config, tcp, udp, addrs []string, argsFile string, command []string, dnsResolver string) []string {
+func pastaArgv(cfg *config, tcp, udp []string, addrs []netip.Addr, rules, argsFile string, command []string, dnsResolver string) []string {
 	orNone := func(list []string) string {
 		if len(list) == 0 {
 			return "none"
@@ -161,9 +197,15 @@ func pastaArgv(cfg *config, tcp, udp, addrs []string, argsFile string, command [
 	if dnsResolver != "" {
 		argv = append(argv, "--dns-forward", dnsForwardAddr, "--dns-host", dnsResolver)
 	}
+	var routes []string
+	for _, addr := range addrs {
+		if addr.IsGlobalUnicast() || addr == metadataAddr {
+			routes = append(routes, addr.String())
+		}
+	}
 	argv = append(argv, "--", cfg.Tools.Bash, "-c", pastaInner, "bash",
-		cfg.Tools.IP, cfg.Seccomp, argsFile, strconv.Itoa(len(addrs)))
-	argv = append(argv, addrs...)
+		cfg.Tools.IP, cfg.Tools.Nft, rules, cfg.Seccomp, argsFile, strconv.Itoa(len(routes)))
+	argv = append(argv, routes...)
 	argv = append(argv, cfg.Tools.Bwrap, "--seccomp", "10", "--args", "11")
 	return append(argv, command...)
 }

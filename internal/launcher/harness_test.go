@@ -88,11 +88,11 @@ func writeLog(e logEntry) {
 const execMarker = `exec "$@"`
 
 // expandArgs is pasta's command line with bwrap's `--args FD` replaced by
-// the arguments in the file bash would open there: the fourth argument of
+// the arguments in the file bash would open there: the fifth argument of
 // the inner script.
 func expandArgs(raw []string) []string {
 	inner := raw[slices.Index(raw, "--")+1:]
-	data, err := os.ReadFile(inner[6])
+	data, err := os.ReadFile(inner[8])
 	if err != nil {
 		panic(err)
 	}
@@ -110,6 +110,12 @@ func fakePasta() int {
 	bwrap := argv[slices.Index(argv, "--seccomp")+2:]
 	env := map[string]string{}
 	files := map[string]string{}
+	// The network policy, read like the files bound in: gone with the
+	// launcher.
+	if sep := slices.Index(raw, "--"); sep >= 0 && len(raw) > sep+7 {
+		data, _ := os.ReadFile(raw[sep+7])
+		files[raw[sep+7]] = string(data)
+	}
 	runtime := os.Getenv("XDG_RUNTIME_DIR")
 	chdir := ""
 loop:
@@ -247,8 +253,8 @@ func newHarness(t *testing.T) *harness {
 	cfg.Guards.SSHAgent.Path = "$XDG_RUNTIME_DIR/ssh-agent.sock"
 	cfg.FHS.Bin, cfg.FHS.UsrBin, cfg.FHS.NixLd, cfg.FHS.LdPath, cfg.FHS.SSL =
 		"/store/fhs/bin", "/store/fhs/usr/bin", "/store/nix-ld", "/lib64/ld-linux-x86-64.so.2", filepath.Join(tmp, "ssl")
-	cfg.Tools.Pasta, cfg.Tools.IP, cfg.Tools.Bash, cfg.Tools.Bwrap, cfg.Tools.Shell =
-		filepath.Join(h.tools, "pasta"), "/store/ip", bash, "/store/bwrap", "/store/bash"
+	cfg.Tools.Pasta, cfg.Tools.IP, cfg.Tools.Nft, cfg.Tools.Bash, cfg.Tools.Bwrap, cfg.Tools.Shell =
+		filepath.Join(h.tools, "pasta"), "/store/ip", "/store/nft", bash, "/store/bwrap", "/store/bash"
 	h.cfg = cfg
 
 	h.env = map[string]string{
@@ -398,19 +404,21 @@ func (r *result) refused(t *testing.T, want string) {
 type invocation struct {
 	pasta, args, mountArgs, init []string
 	bash, script, seccomp        string
-	bwrap, chdir                 string
+	// The nft ruleset's file.
+	rules        string
+	bwrap, chdir string
 }
 
 func parseInvocation(t *testing.T, argv []string) *invocation {
 	t.Helper()
 	sep := slices.Index(argv, "--")
 	inv := &invocation{pasta: argv[:sep]}
-	// bash -c SCRIPT bash IP SECCOMP ARGSFILE N ADDR... BWRAP --seccomp 10 ARGS...
+	// bash -c SCRIPT bash IP NFT RULES SECCOMP ARGSFILE N ADDR... BWRAP --seccomp 10 ARGS...
 	inner := argv[sep+1:]
-	inv.bash, inv.script, inv.seccomp = inner[0], inner[2], inner[5]
-	n, _ := strconv.Atoi(inner[7])
-	inv.bwrap = inner[8+n]
-	inv.args = inner[11+n:]
+	inv.bash, inv.script, inv.rules, inv.seccomp = inner[0], inner[2], inner[6], inner[7]
+	n, _ := strconv.Atoi(inner[9])
+	inv.bwrap = inner[10+n]
+	inv.args = inner[13+n:]
 	chdir := slices.Index(inv.args, "--chdir")
 	inv.mountArgs, inv.chdir, inv.init = inv.args[:chdir], inv.args[chdir+1], inv.args[chdir+2:]
 	return inv
