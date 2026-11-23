@@ -10,9 +10,12 @@ import (
 type config struct {
 	StateDir  string   `json:"stateDir"`
 	HostPorts []string `json:"hostPorts"`
-	PassEnv   []string `json:"passEnv"`
-	HostEtc   []string `json:"hostEtc"`
-	Guards    struct {
+	// What the sandbox reaches besides the public internet (see
+	// parseAllowNet).
+	AllowNet []string `json:"allowNet"`
+	PassEnv  []string `json:"passEnv"`
+	HostEtc  []string `json:"hostEtc"`
+	Guards   struct {
 		SSHAgent struct {
 			Enable bool   `json:"enable"`
 			Socket string `json:"socket"`
@@ -50,6 +53,7 @@ type config struct {
 	Tools struct {
 		Pasta string `json:"pasta"`
 		IP    string `json:"ip"`
+		Nft   string `json:"nft"`
 		Bash  string `json:"bash"`
 		Bwrap string `json:"bwrap"`
 		Shell string `json:"shell"`

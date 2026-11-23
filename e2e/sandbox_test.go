@@ -637,6 +637,121 @@ func TestBadHostPortsStopTheSandbox(t *testing.T) {
 	}
 }
 
+// send sends a datagram to each address from inside the sandbox; "sent" for
+// each, or the error's name. Nothing has to answer: a refused destination
+// fails in the sandbox's own netns, before pasta sees the packet.
+func (p project) send(t *testing.T, env map[string]string, addrs ...string) map[string]string {
+	t.Helper()
+	code := `import socket, sys
+for addr in sys.argv[1:]:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.sendto(b'x', (addr, 9))
+        got = 'sent'
+    except OSError as e:
+        got = type(e).__name__
+    print(addr, got)
+`
+	script := fmt.Sprintf("python3 -c \"$(cat <<'EOF'\n%sEOF\n)\" %s\n", code, strings.Join(addrs, " "))
+	r := p.run(t, script, env).ok(t)
+	got := map[string]string{}
+	for line := range strings.Lines(r.stdout) {
+		if addr, reply, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+			got[addr] = reply
+		}
+	}
+	return got
+}
+
+// Other machines on the LAN or tailnet were as reachable as from the host.
+// Now only the public internet is, and what SANDBOX_ALLOW_NET names.
+func TestOnlyThePublicInternetIsReachableUnlessAllowed(t *testing.T) {
+	p := newProject(t)
+	if strings.TrimSpace(p.run(t, "ip -4 route show default\n", nil).ok(t).stdout) == "" {
+		t.Skip("no IPv4 default route in the sandbox")
+	}
+	const lan, lan2, wifi, tailnet, linkLocal, mdns, public = "10.255.255.1", "10.255.255.2", "192.168.255.1", "100.64.255.1", "169.254.7.7", "224.0.0.251", "192.0.2.1"
+	all := []string{lan, lan2, wifi, tailnet, linkLocal, mdns, public}
+	for allowed, reachable := range map[string][]string{
+		"":                {public},
+		lan:               {public, lan},
+		"10.255.*":        {public, lan, lan2},
+		"10.255.255.0/31": {public, lan},
+		"lan":             {public, lan, lan2, wifi, linkLocal, mdns},
+		"tailscale":       {public, tailnet},
+		"all":             all,
+		// With ports, those only: send's is 9, udp.
+		"10.255.255.1:9/udp":    {public, lan},
+		"10.255.255.1:9":        {public},
+		"10.255.*:1-8/udp":      {public},
+		"10.255.*:8-10/udp":     {public, lan, lan2},
+		"tailscale:9/udp":       {public, tailnet},
+		"all:9/udp 10.255.*:22": all,
+	} {
+		got := p.send(t, map[string]string{"SANDBOX_ALLOW_NET": allowed}, all...)
+		for _, addr := range all {
+			if sent := got[addr] == "sent"; sent != slices.Contains(reachable, addr) {
+				t.Errorf("SANDBOX_ALLOW_NET=%q: %s %s (%v)", allowed, addr, got[addr], got)
+			}
+		}
+	}
+}
+
+// What SANDBOX_ALLOW_NET allows is other machines, never the host: its
+// services stay behind SANDBOX_HOST_PORTS. And a route alone wouldn't hold
+// that: a socket bound to the interface isn't refused by a prohibit route
+// (its connect times out or gets through, where an ordinary one's fails at
+// once), so that and SO_DONTROUTE are tried as well.
+func TestHostAddressesAreNotReachableWhateverIsAllowed(t *testing.T) {
+	p := newProject(t)
+	addrs, _ := net.InterfaceAddrs()
+	var targets []string
+	port := hostServer(t, "0.0.0.0")
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() != nil && !ipnet.IP.IsLoopback() {
+			targets = append(targets, target(ipnet.IP.String(), port))
+		}
+	}
+	if len(targets) == 0 {
+		t.Skip("no IPv4 address on this host")
+	}
+	code := `import socket, sys
+dev = [name for _, name in socket.if_nameindex() if name != 'lo'][0].encode()
+def bound(s): s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev)
+def dontroute(s): s.setsockopt(socket.SOL_SOCKET, socket.SO_DONTROUTE, 1)
+for target in sys.argv[1:]:
+    addr, port = target.rsplit(':', 1)
+    for how in (None, bound, dontroute):
+        try:
+            with socket.socket() as s:
+                s.settimeout(3)
+                if how:
+                    how(s)
+                s.connect((addr, int(port)))
+                got = s.recv(64).decode(errors='replace') or 'empty'
+        except OSError as e:
+            got = type(e).__name__
+        print(addr, how.__name__ if how else 'plain', got)
+`
+	script := fmt.Sprintf("python3 -c \"$(cat <<'EOF'\n%sEOF\n)\" %s\n", code, strings.Join(targets, " "))
+	for _, allowed := range []string{"", "all"} {
+		r := p.run(t, script, map[string]string{"SANDBOX_HOST_PORTS": "", "SANDBOX_ALLOW_NET": allowed}).ok(t)
+		if strings.Contains(r.stdout, hostReply) || strings.Count(r.stdout, "\n") != 3*len(targets) {
+			t.Errorf("SANDBOX_ALLOW_NET=%q: %s", allowed, r.stdout)
+		}
+	}
+}
+
+func TestBadAllowNetStopsTheSandbox(t *testing.T) {
+	p := newProject(t)
+	for _, bad := range []string{"192.168.1", "10.*.1.*", "10.0.0.0/33", "192.168.1.50:0", "[fd00::5]8080"} {
+		r := p.run(t, "echo started\n", map[string]string{"SANDBOX_ALLOW_NET": bad})
+		if r.code == 0 || strings.Contains(r.stdout, "started") || !strings.Contains(r.stderr, "SANDBOX_ALLOW_NET") {
+			t.Errorf("%s: %d %q %q", bad, r.code, r.stdout, r.stderr)
+		}
+	}
+}
+
 // Sharing the host's netns would expose its abstract unix sockets, like
 // X11's @/tmp/.X11-unix/X<n>, which Xwayland accepts unauthenticated local
 // connections on. One bound here, standing in for X11's, must be out of

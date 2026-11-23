@@ -22,6 +22,8 @@ assert fails [ { guards.forgejo.enable = true; } ];
 runCommand "sandbox-config-check" { nativeBuildInputs = [ jq ]; } ''
   jq -e '
     .hostPorts == ["5432"]
+    and .allowNet == ["tailscale"]
+    and (.tools.nft | endswith("/bin/nft"))
     and .guards.notifications == true
     and .guards.wayland.enable == false
     and .git.fromHost == false

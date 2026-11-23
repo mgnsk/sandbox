@@ -101,6 +101,22 @@ in
       description = "Host loopback ports reachable inside at 127.0.0.1, in addition to $SANDBOX_HOST_PORTS at start. ${note}";
     };
 
+  allowNetOption =
+    note:
+    mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [
+        "192.168.1.50"
+        "192.168.100.1:8080"
+        "10.0.0.0/8"
+        "192.168.1.*"
+        "nas.lan"
+        "tailscale"
+      ];
+      description = "Where the sandbox may connect besides the public internet, in addition to $SANDBOX_ALLOW_NET at start: by default it reaches no private, CGNAT, link-local or multicast address, so no other machine on the LAN or tailnet. An entry is an address, a CIDR, an IPv4 address with `*` for its last octets, a host name (resolved on the host at start), `lan` (the private and link-local ranges), `tailscale` (100.64.0.0/10 and fd7a:115c:a1e0::/48) or `all`; each on every port, or with `:PORT[-PORT][/tcp|/udp]` on those only (`192.168.100.1:8080`, `nas.lan:53/udp`, `[fd00::5]:8000-8100`). The host's own services stay behind hostPorts. ${note}";
+    };
+
   options = {
     binds = mkOption {
       type = types.listOf bindType;

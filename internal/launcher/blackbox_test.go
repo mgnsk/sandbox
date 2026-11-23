@@ -358,6 +358,66 @@ func TestHostPortsAndDNS(t *testing.T) {
 	}
 }
 
+// The network policy is nft's, loaded by pasta's command before bwrap: what
+// the configuration and $SANDBOX_ALLOW_NET allow, and the nameservers.
+func TestAllowNet(t *testing.T) {
+	h := newHarness(t)
+	rules := func(env map[string]string) string {
+		t.Helper()
+		r := h.run("", env)
+		inv := r.pasta(t)
+		if !strings.Contains(inv.script, `"$nft" -f "$rules"`) {
+			t.Errorf("%q", inv.script)
+		}
+		return r.files()[inv.rules]
+	}
+	// By default the private ranges are refused, and the harness's
+	// nameserver is let through for DNS.
+	got := rules(nil)
+	for _, want := range []string{
+		"ip daddr { 192.0.2.53 } meta l4proto { tcp, udp } th dport { 53, 853 } accept",
+		"192.168.0.0/16, ", "100.64.0.0/10, ", "fc00::/7, ",
+		"ip daddr { 169.254.169.254",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %s", want, got)
+		}
+	}
+	for line := range strings.Lines(got) {
+		if strings.Contains(line, "nfproto") || strings.Contains(line, "daddr {") && strings.HasSuffix(line, "} accept\n") && !strings.Contains(line, "dport") {
+			t.Errorf("something allowed: %s", got)
+		}
+	}
+
+	h.cfg.AllowNet = []string{"192.168.1.*", "192.168.100.1:8080"}
+	got = rules(map[string]string{"SANDBOX_ALLOW_NET": "tailscale, 10.0.0.5 [fd00::5]:53/udp"})
+	for _, want := range []string{
+		"ip daddr { 192.168.1.0/24, 100.64.0.0/10, 10.0.0.5 } accept",
+		"ip daddr { 192.168.100.1 } tcp dport 8080 accept",
+		"ip6 daddr { fd7a:115c:a1e0::/48 } accept",
+		"ip6 daddr { fd00::5 } udp dport 53 accept",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %s", want, got)
+		}
+	}
+	h.run("", map[string]string{"SANDBOX_ALLOW_NET": "192.168.1"}).refused(t, "SANDBOX_ALLOW_NET")
+	h.run("", map[string]string{"SANDBOX_ALLOW_NET": "192.168.1.1:0"}).refused(t, "SANDBOX_ALLOW_NET")
+
+	// A forwarded resolver is reached at dnsForwardAddr, a second
+	// nameserver directly.
+	os.WriteFile(h.resolv, []byte("nameserver 127.0.0.53\nnameserver 192.168.1.1\n"), 0o644)
+	got = rules(nil)
+	for _, want := range []string{
+		"ip daddr 169.254.1.53 meta l4proto { tcp, udp } th dport { 53, 853 } accept",
+		"ip daddr { 192.168.1.1 } meta l4proto { tcp, udp } th dport { 53, 853 } accept",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %s", want, got)
+		}
+	}
+}
+
 func TestEtcAndExchange(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Etc = []etcFile{{Path: "sandbox/AGENTS.md", Source: "/store/AGENTS.md"},
