@@ -160,11 +160,14 @@ The policy is an nftables `output` chain in the sandbox's network
 namespace, loaded by the command pasta runs, before bwrap drops the
 capability to change it; without it (a kernel without `nf_tables`) the
 sandbox doesn't start. The host's global addresses and the metadata
-service's get `prohibit` routes as well. Routes alone wouldn't do: a
-`prohibit` route refuses an ordinary socket's connect, but not one bound to
-the interface (`SO_BINDTODEVICE`, which needs no privilege), whose
-destination the kernel then takes for on-link and sends to anyway. The
-chain sees every packet the namespace sends, however its socket was set up.
+service's get `prohibit` routes as well. Routes alone didn't do: a
+`prohibit` route refuses an ordinary socket, but not one bound to the
+interface (`SO_BINDTODEVICE`, which needs no privilege). The kernel takes
+such a socket's destination for on-link, pasta answers for any address, and
+a datagram sent that way arrived at a service on the host's tailscale and
+docker addresses; a TCP connection got no answer back, so what a route let
+through was one-way. The chain sees every packet the namespace sends,
+however its socket was set up.
 
 What stays reachable regardless is what the host does on the sandbox's
 behalf: the guards' proxies reach only their own hosts, but a fixed-output
